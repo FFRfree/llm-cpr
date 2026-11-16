@@ -17,7 +17,7 @@
 - 2026-11-16 生产切换完成（用户逐项批准）：
   1) 网关真配置（config.json：ocg-main 经 ocg-proxy 8731 + admin_url 8742 快照鉴权；ccg-main 直连；12 个统一白名单；identity_header=x-session-id）；
   2) systemd `coding-plan-router.service`（EnvironmentFile=.env，enable --now，8741/8740 回环）；
-  3) Hermes config.yaml：model 块切 custom:sub-router + providers 新增条目（key_env: CPR_MASTER_KEY, session_affinity_header: x-session-id），原 opencode-go/commandcode 条目保留作为回滚；/root/.hermes/.env 追加 CPR_MASTER_KEY。
+  3) Hermes config.yaml：model 块切 custom:coding-plan-router + providers 新增条目（key_env: CPR_MASTER_KEY, session_affinity_header: x-session-id），原 opencode-go/commandcode 条目保留作为回滚；/root/.hermes/.env 追加 CPR_MASTER_KEY。
 - 生产排障两笔：① ocg 快照 401/HTML——admin_url 须为**完整 URL**（含 /api/route/status 路径），配裸端口会 GET 到看板 HTML；② 快照鉴权字段是 admin_key_env。均已修正并验证。
 - 验收：双订阅快照 known=true（OCG 月 8% 周 0/100、CCG 月 2.29% 5h 0.175/14）；systemd 服务真请求 200；`hermes -z` 单发穿透全链路（账本 id=6：identity_kind=session、gwk_ 身份、ocg-main、16k prompt tokens），Hermes→网关→OCG 会话头钉死链路实证。
 - 回滚：cp /root/.hermes/config.yaml.bak-subrouter-20261116 覆盖回去即可。

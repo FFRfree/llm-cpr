@@ -22,12 +22,12 @@
    default: z-ai/glm-5.3-flash
 -  provider: custom:commandcode
 -  base_url: https://api.commandcode.ai/provider/v1
-+  provider: custom:sub-router
++  provider: custom:coding-plan-router
 +  base_url: http://127.0.0.1:8741/v1
    api_mode: chat_completions
 
  providers:
-+  sub-router:
++  coding-plan-router:
 +    name: Coding Plan Router
 +    api: http://127.0.0.1:8741/v1
 +    transport: chat_completions
@@ -74,7 +74,7 @@
      base_url: https://api.commandcode.ai/provider/v1
      api_mode: chat_completions
    ```
-2. 从 `providers` 删除本次新增的整个 `sub-router:` 项（包括 `name`、`api`、`transport`、`key_env`、`session_affinity_header`、`discover_models` 和 `models`）。
+2. 从 `providers` 删除本次新增的整个 `coding-plan-router:` 项（包括 `name`、`api`、`transport`、`key_env`、`session_affinity_header`、`discover_models` 和 `models`）。
 3. 保留原有 `providers.opencode-go` 和 `providers.commandcode` 条目，不用新增项覆盖它们。其已核对的原始非凭据值如下：
    ```yaml
    providers:
@@ -113,7 +113,7 @@
          - google/gemini-3.7-flash
    ```
    若原配置中的其余字段或凭据与上述摘录不同，以切换前受控备份为准；不要用这份非凭据摘录重建、覆盖原条目。
-4. 用 YAML 解析/配置校验确认 model 恢复为原值、`custom:sub-router` 已移除；重新加载或重启 Hermes（需在批准的维护窗口操作）。
+4. 用 YAML 解析/配置校验确认 model 恢复为原值、`custom:coding-plan-router` 已移除；重新加载或重启 Hermes（需在批准的维护窗口操作）。
 5. 通过 Hermes 执行一条普通请求，确认恢复直连 `custom:commandcode`；同时确认没有继续向路由器发新请求。
 6. 若恢复后仍异常，使用切换前备份完整恢复配置并复查文件权限。回滚完成后再单独决定是否撤销 Hermes 进程的 `CPR_MASTER_KEY` 注入；不要删除其他服务共用的密钥配置。
 
