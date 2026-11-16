@@ -10,12 +10,18 @@
   },
   "backends": [
     {
-      "name": "ocg-main",
+      "name": "ocg-foxmail",
       "family": "ocg",
-      "base_url": "http://127.0.0.1:8731",
-      "key_env": "OCG_PROXY_MASTER_KEY",
-      "admin_url": "http://127.0.0.1:8742/api/route/status",
-      "admin_key_env": "OCG_PROXY_MASTER_KEY"
+      "base_url": "https://opencode.ai/zen/go/v1",
+      "key_env": "OPENCODE_GO_KEY_FOXMAIL",
+      "direct": true
+    },
+    {
+      "name": "ocg-gmail",
+      "family": "ocg",
+      "base_url": "https://opencode.ai/zen/go/v1",
+      "key_env": "OPENCODE_GO_KEY_GMAIL",
+      "direct": true
     },
     {
       "name": "ccg-main",

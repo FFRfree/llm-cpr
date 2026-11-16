@@ -22,3 +22,5 @@
 - 实现取舍：使用显式 `direct: true` 而非按 `base_url` 自动识别。这样同为 `family: ocg` 的直连条目与 legacy admin 桥接条目可共存/回滚，不会因改 URL 意外改变快照来源；未标记的 ocg 条目维持原 admin/status 路径。
 - 真上游冒烟（临时配置/随机回环端口，生产 backends 未改）：foxmail、gmail 两个直连快照均 `known=true`；monthly_percent 分别为 8%、42%，与只读 `ocg-proxy:8742/api/route/status` 同号数据分别为 8%、42%，差值均 0 个百分点。30 天周期自算 month_progress 分别约 28.26%、62.06%。网关非流式与流式请求各一笔均 HTTP 200；审计均记录到 `ocg-foxmail`（当次评分选中，gmail 快照也已对账）。
 - 路径兼容：当 backend base URL 已以 `/v1` 结尾时，转发追加 `/chat/completions` 而非重复 `/v1`；假上游 e2e 覆盖 `/zen/go/v1/chat/completions`。
+
+- 2026-11-16 迁移第②步完成（用户批准）：生产 config.json backends 从 ocg-main(桥接) 换为 ocg-foxmail/ocg-gmail(直连)+ccg-main；.env 追加两号 key。重启后三 backend 快照全 known（foxmail 8%/进度28.3%、gmail 42%/62.1%、ccg 2.7%），真请求落 ocg-foxmail 200。**切换前补了关键代码**：旧身份钉在被移除的后端名上原本 503 硬挡，改为走 migrate 自动迁移重钉（pin 保持不可变语义），实测钉在 ocg-main 的旧会话身份切后 HTTP 200。ocg-proxy 未停（回滚：config.json 换回桥接条目重启即可）。
