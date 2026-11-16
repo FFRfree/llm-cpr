@@ -130,6 +130,19 @@ test('existing ledgers gain ttft/stream columns via migration without losing row
   audit.close(); fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('summary filters subscriptions to currently configured names when given', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-summary-filter-'));
+  const audit = new UsageAudit({ dbFile: path.join(dir, 'usage.db') });
+  audit.record({ ts: 1, identity_kind: 'session', subscription: 'live-a' }, { completion_tokens: 1 });
+  audit.record({ ts: 2, identity_kind: 'session', subscription: 'retired-x' }, { completion_tokens: 1 });
+  const all = audit.summary();
+  assert.equal(all.subscriptions.length, 2); // 不传参：历史行为不变
+  const filtered = audit.summary({ subscriptionNames: ['live-a'] });
+  assert.deepEqual(filtered.subscriptions.map((entry) => entry.subscription), ['live-a']);
+  assert.equal(filtered.requests, 2); // 全局计数不过滤，只过滤订阅维度
+  audit.close(); fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('audit write failure logs degraded marker and does not block successful forwarding', async (t) => {
   const warnings = [];
   const logger = { warn: (...args) => warnings.push(args.join(' ')), log() {} };
