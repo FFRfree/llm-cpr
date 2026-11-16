@@ -16,7 +16,7 @@ const close = (server) => new Promise((resolve) => {
 });
 const chat = (url, session = 'identity', body = { model: 'm' }) => fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json', 'x-session-id': session }, body: JSON.stringify(body) });
 
-async function setup(t, handlers) {
+async function setup(t, handlers, configExtra = {}) {
   const seen = [];
   const upstreams = handlers.map((handler) => http.createServer(async (req, res) => {
     for await (const _chunk of req) {}
@@ -28,7 +28,7 @@ async function setup(t, handlers) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-migration-'));
   const env = { CPR_MASTER: 'master', CPR_SESSIONS_DB: path.join(dir, 'sessions.db'), K0: 'key0', K1: 'key1' };
   const backends = urls.map((base_url, i) => ({ name: handlers[i].name, family: 'ocg', base_url, key_env: `K${i}`, priority: i }));
-  const config = { master_key_env: 'CPR_MASTER', models: [{ id: 'm', backends: { ocg: 'native-m' } }], backends };
+  const config = { master_key_env: 'CPR_MASTER', models: [{ id: 'm', backends: { ocg: 'native-m' } }], backends, ...configExtra };
   const gateway = createGatewayServers(config, { env, logger: { warn() {} } });
   gateway.forwardServer.listen(0, '127.0.0.1'); gateway.adminServer.listen(0, '127.0.0.1');
   await Promise.all([once(gateway.forwardServer, 'listening'), once(gateway.adminServer, 'listening')]);
@@ -89,4 +89,47 @@ test('date-valued Retry-After is parsed as a bounded retry delay', async (t) => 
   const response = await chat(app.url, 'date');
   assert.equal(response.status, 200);
   assert.deepEqual(app.seen, ['first', 'first', 'first', 'first', 'second']);
+});
+
+test('admin POST /api/snapshots/refresh triggers refresh; other writes stay 405', async (t) => {
+  const app = await setup(t, [ok('first')]);
+  const admin = `http://127.0.0.1:${app.adminServer.address().port}`;
+  const post = await fetch(`${admin}/api/snapshots/refresh`, { method: 'POST' });
+  assert.equal(post.status, 200);
+  const body = await post.json();
+  assert.equal(body.intervalMs, 300000); // 默认轮询间隔 5 分钟
+  assert.ok(body.fetchedAt !== null);
+  assert.equal((await fetch(`${admin}/api/snapshots/refresh`)).status, 404); // GET 无此路由
+});
+
+test('long sessions refuse quota failover to preserve upstream cache; short sessions still migrate', async (t) => {
+  let hits = 0;
+  const app = await setup(t, [
+    { name: 'first', run: (_req, res) => { hits++; if (hits <= 2) return res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ backend: 'first' })); res.writeHead(403).end('quota-403'); } },
+    ok('second'),
+  ], { routing: { long_session_min_requests: 2 } });
+  // 先在 first 上积累 2 轮成功（达到阈值）
+  assert.equal((await chat(app.url, 'long-session')).status, 200);
+  assert.equal((await chat(app.url, 'long-session')).status, 200);
+  // 第 3 轮撞墙：长会话拒绝迁移，透传 403，钉住不变
+  const blocked = await chat(app.url, 'long-session');
+  assert.equal(blocked.status, 403);
+  assert.equal(await blocked.text(), 'quota-403');
+  assert.deepEqual(app.seen, ['first', 'first', 'first']);
+  assert.equal(createIdentityStore(app.env.CPR_SESSIONS_DB).get('session', 'long-session'), 'first');
+  // 短会话（无历史）：撞墙立即迁移，旧行为
+  assert.equal((await chat(app.url, 'short')).status, 200);
+  assert.deepEqual(app.seen, ['first', 'first', 'first', 'first', 'second']);
+});
+
+test('long-session sticky rule is disabled by long_session_min_requests=0', async (t) => {
+  let hits = 0;
+  const app = await setup(t, [
+    { name: 'first', run: (_req, res) => { hits++; if (hits <= 2) return res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ backend: 'first' })); res.writeHead(403).end('quota-403'); } },
+    ok('second'),
+  ], { routing: { long_session_min_requests: 0 } });
+  assert.equal((await chat(app.url, 'veteran')).status, 200);
+  assert.equal((await chat(app.url, 'veteran')).status, 200);
+  assert.equal((await chat(app.url, 'veteran')).status, 200); // 第 3 轮撞墙仍迁移
+  assert.deepEqual(app.seen, ['first', 'first', 'first', 'second']);
 });

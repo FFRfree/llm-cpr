@@ -91,8 +91,10 @@ curl -H "Authorization: Bearer $CPR_MASTER_KEY" \
 
 1. **会话钉死**：识别统一会话头（默认 `x-session-id`——OpenRouter/opencode/AWS AgentCore 的业界通用名，可在 `identity_header` 配置），已有映射优先复用原后端，避免缓存前缀因换账号失效。
 2. **欠账评分**：新身份在模型可用的后端中，按周期时间进度减已用进度选择；落后于日历进度的订阅优先获得新请求。窗口额度和快照可用性也会影响候选资格。
-3. **错误迁移**：遇到符合条件的 403 / 429 配额错误时，尝试将会话迁移到另一可用后端并更新映射；迁移有冷却保护。流式响应开始后不会静默重试。
+3. **错误迁移**：遇到符合条件的 403 / 429 配额错误时，尝试将会话迁移到另一可用后端并更新映射；迁移有冷却保护。流式响应开始后不会静默重试。**长会话例外**：请求轮数达到 `routing.long_session_min_requests`（默认 10，0 关闭）的会话不做额度迁移——换后端会作废上游 prompt cache，此时原样透传错误（含 `retry-after`），由客户端稍后重试原后端。
 4. **全员满挡住**：没有健康且可用的后端时返回错误，不会自动消耗额外计费额度或绕过限制。
+
+`routing.snapshot_interval_ms`（默认 300000，即 5 分钟）控制额度快照轮询间隔；管理口 `POST /api/snapshots/refresh` 可随时手动触发一轮刷新（看板「刷新快照」按钮走同一通道）。
 
 ## 看板与管理 API
 
@@ -106,6 +108,7 @@ curl -H "Authorization: Bearer $CPR_MASTER_KEY" \
 
 - `GET /api/route/status`：后端状态、额度快照与身份映射概况。
 - `GET /api/snapshots`：额度快照。
+- `POST /api/snapshots/refresh`：手动触发一轮额度快照刷新并返回结果（管理口唯一写操作）。
 - `GET /api/audit/requests`：请求审计列表，可用 `limit`、`identity` 查询参数筛选。
 - `GET /api/audit/sessions`：会话汇总。
 - `GET /api/audit/summary`：整体汇总；传入 `identity` 时返回该会话汇总及请求。各订阅含性能字段：`avg_ttft_ms`（首字节平均延迟）与 `tps`（按 Σtokens/Σstream_ms 加权的吐字速度，仅流式请求计入）。

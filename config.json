@@ -8,6 +8,10 @@
   "admin": {
     "port": 8740
   },
+  "routing": {
+    "snapshot_interval_ms": 300000,
+    "long_session_min_requests": 10
+  },
   "backends": [
     {
       "name": "ocg-foxmail",

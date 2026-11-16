@@ -167,6 +167,7 @@ tr.detail-row th{color:var(--muted)}
   <h1>Coding Plan Router</h1>
   <span id="status"><span class="dot"></span><span id="status-text">加载中…</span></span>
   <span class="spacer"></span>
+  <button id="snap-refresh-btn" type="button" title="立即向上游查询一次各订阅额度">刷新快照</button>
   <button id="refresh-btn" type="button">手动刷新</button>
 </header>
 <div id="summary"></div>
@@ -369,6 +370,17 @@ async function showDetail(id){
 
 /* ---- 主刷新循环 ---- */
 let timer=null;
+const fmtCountdown=(ms)=>ms<=0?'即将自动刷新':ms<60000?'<1 分后自动刷新':`${Math.ceil(ms/60000)} 分后自动刷新`;
+/* 快照状态栏：随 30s 数据轮刷新，另有 5s 本地 ticker 让倒计时活着 */
+const renderStatus=()=>{
+  const s=state.snap||{};
+  const box=$('#status');
+  box.className=s.stale?'stale':s.fetchedAt?'':'nodata';
+  $('#status-text').textContent=s.fetchedAt&&num(s.intervalMs)
+    ?`快照 ${rel(s.fetchedAt)}${s.stale?' · 已过期':''} · ${fmtCountdown(s.fetchedAt+s.intervalMs-Date.now())}`
+    :'尚无快照 · 等待首次刷新';
+};
+setInterval(renderStatus,5000);
 const refetchSessions=()=>fetch('/api/audit/sessions').then(r=>r.json()).then(d=>renderSessions(d.sessions));
 async function refresh(){
   const btn=$('#refresh-btn');btn.disabled=true;
@@ -381,12 +393,8 @@ async function refresh(){
     renderSummary(summary?.summary, status);
     renderSubscriptions(status);
     renderSessions(sessions.sessions);
-    const snap=status.snapshots||{};
-    const box=$('#status');
-    box.className=snap.stale?'stale':snap.fetchedAt?'':'nodata';
-    $('#status-text').textContent=snap.fetchedAt
-      ?`快照 ${rel(snap.fetchedAt)}${snap.stale?' · 已过期':''} · 30s 自动刷新`
-      :'尚无快照 · 30s 自动刷新';
+    state.snap=status.snapshots||{};
+    renderStatus();
     $('#err').textContent='';
   }catch(e){$('#err').textContent=`加载失败：${e.message}（将于下轮重试）`;}
   btn.disabled=false;
@@ -394,6 +402,14 @@ async function refresh(){
 
 /* ---- 事件 ---- */
 $('#refresh-btn').addEventListener('click',refresh);
+$('#snap-refresh-btn').addEventListener('click',async()=>{ // 立即向上游查一轮额度，绕过 5 分钟轮询间隔
+  const btn=$('#snap-refresh-btn');btn.disabled=true;
+  try{
+    await fetch('/api/snapshots/refresh',{method:'POST'});
+    await refresh();
+  }catch(e){$('#err').textContent=`快照刷新失败：${e.message}`;}
+  btn.disabled=false;
+});
 $('#filter').addEventListener('input',refetchSessions);
 $('#only-lost').addEventListener('change',refetchSessions);
 $('#sort-sel').addEventListener('change',()=>{ // 手机端无表头可点，下拉控制排序
