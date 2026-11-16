@@ -78,9 +78,10 @@ test('HTTP gateway returns local models, proxies JSON and SSE, rejects bad keys,
   assert.equal((await fetch(`${url}/v1/models`, { headers: { authorization: 'Bearer wrong' } })).status, 401);
   const jsonResponse = await fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer test-master', 'content-type': 'application/json', 'x-opencode-session': 'ocg-session' }, body: JSON.stringify({ model: 'unified-model', messages: [{ role: 'user', content: 'hi' }] }) });
   assert.equal(jsonResponse.status, 200); assert.equal((await jsonResponse.json()).choices[0].message.content, 'ok');
-  assert.equal(received[0].headers.authorization, 'Bearer test-upstream');
-  assert.equal(JSON.parse(received[0].body).model, 'native-model');
-  assert.equal(received[0].headers['x-opencode-session'], 'ocg-session');
+  const chatRequest = received.find((entry) => entry.url === '/v1/chat/completions');
+  assert.equal(chatRequest.headers.authorization, 'Bearer test-upstream');
+  assert.equal(JSON.parse(chatRequest.body).model, 'native-model');
+  assert.equal(chatRequest.headers['x-opencode-session'], 'ocg-session');
   const streamResponse = await fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer test-master', 'content-type': 'application/json' }, body: JSON.stringify({ model: 'unified-model', stream: true }) });
   assert.equal(await streamResponse.text(), 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\ndata: [DONE]\n\n');
   const errorResponse = await fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer test-master', 'content-type': 'application/json' }, body: JSON.stringify({ model: 'error' }) });

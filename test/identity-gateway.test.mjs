@@ -10,7 +10,7 @@ import { createGatewayServers } from '../lib/server.mjs';
 async function fakeBackend(name, seen) {
   const server = http.createServer(async (req, res) => {
     for await (const _chunk of req) { /* drain request */ }
-    seen.push({ name, session: req.headers['x-opencode-session'] });
+    if (req.method === 'POST') seen.push({ name, session: req.headers['x-opencode-session'] });
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ backend: name }));
   });
