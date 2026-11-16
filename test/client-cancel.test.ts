@@ -1,3 +1,6 @@
+import type { AddressInfo } from 'node:net';
+import type { TestContext } from 'node:test';
+import type { GatewayConfig } from '../lib/contracts.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import http from 'node:http';
@@ -5,17 +8,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { createGatewayServers } from '../lib/server.mjs';
+import { createGatewayServers } from '../lib/server.ts';
 
-const close = (server) => new Promise((resolve) => server.close(resolve));
+const close = (server: http.Server): Promise<void> => new Promise<void>((resolve) => server.close(() => resolve()));
 
 // 缓慢流式吐字的上游：每个 data 块间隔 60ms，共 8 块 + [DONE]。
 // 返回 { server, sawAbort, finished }：sawAbort=上游被提前掐断；finished=上游吐完了全部内容。
-function slowStreamUpstream() {
+function slowStreamUpstream(): { server: http.Server; state: { sawAbort: boolean; finished: boolean } } {
   const state = { sawAbort: false, finished: false };
   const server = http.createServer((req, res) => {
     // 非聊天路径（如 ocg 快照刷新的 GET /usage）回 JSON，别让 SSE 流拖住快照刷新
-    if (!req.url.includes('chat/completions')) {
+    if (!(req.url as string).includes('chat/completions')) {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end('{"usage":{"rolling":{"percent":10,"resetsAt":"2026-01-01T00:00:00Z"},"weekly":{"percent":10,"resetsAt":"2026-01-01T00:00:00Z"},"monthly":{"percent":10,"resetsAt":"2026-01-01T00:00:00Z"}}}');
     }
@@ -39,13 +42,13 @@ function slowStreamUpstream() {
   return { server, state };
 }
 
-function gatewayFor(t, upstream) {
+function gatewayFor(t: TestContext, upstream: http.Server): Promise<ReturnType<typeof createGatewayServers>> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-cancel-'));
   const env = { CPR_TEST_MASTER: 'master', CPR_TEST_UPSTREAM: 'up', CPR_SESSIONS_DB: path.join(dir, 'sessions.db'), CPR_USAGE_DB: path.join(dir, 'usage.db') };
-  const config = {
+  const config: GatewayConfig = {
     master_key_env: 'CPR_TEST_MASTER',
     models: [{ id: 'unified', backends: { ocg: 'native' } }],
-    backends: [{ name: 'sub-a', family: 'ocg', base_url: `http://127.0.0.1:${upstream.address().port}`, key_env: 'CPR_TEST_UPSTREAM' }],
+    backends: [{ name: 'sub-a', family: 'ocg', base_url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, key_env: 'CPR_TEST_UPSTREAM' }],
   };
   const gateway = createGatewayServers(config, { env, logger: { log() {}, warn() {} } });
   gateway.forwardServer.listen(0, '127.0.0.1');
@@ -62,10 +65,10 @@ test('client cancel cuts the upstream request early and records a 499 audit row'
   const { server: upstream, state } = slowStreamUpstream();
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
   const gateway = await gatewayFor(t, upstream);
-  const url = `http://127.0.0.1:${gateway.forwardServer.address().port}`;
+  const url = `http://127.0.0.1:${(gateway.forwardServer.address() as AddressInfo).port}`;
 
   // 客户端：收到第一个 data 块就立刻取消连接（模拟 Agent 停止推理）
-  await new Promise((resolve) => {
+  await new Promise<void>((resolve) => {
     const req = http.request(`${url}/v1/chat/completions`, {
       method: 'POST',
       headers: { authorization: 'Bearer master', 'content-type': 'application/json', 'x-session-id': 'cancel-1' },
@@ -92,7 +95,7 @@ test('normal streamed completion records 200 once and never fires the cancel pat
   const { server: upstream, state } = slowStreamUpstream();
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
   const gateway = await gatewayFor(t, upstream);
-  const url = `http://127.0.0.1:${gateway.forwardServer.address().port}`;
+  const url = `http://127.0.0.1:${(gateway.forwardServer.address() as AddressInfo).port}`;
 
   const text = await fetch(`${url}/v1/chat/completions`, {
     method: 'POST',

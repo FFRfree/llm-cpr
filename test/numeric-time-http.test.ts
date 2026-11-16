@@ -1,11 +1,13 @@
+import type { AddressInfo } from 'node:net';
+import type { GatewayConfig } from '../lib/contracts.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { once } from 'node:events';
-import { createGatewayServers } from '../lib/server.mjs';
-import { monthlyDebtScore } from '../lib/selection.mjs';
+import { createGatewayServers } from '../lib/server.ts';
+import { monthlyDebtScore } from '../lib/selection.ts';
 
 test('numeric millisecond quota reset expires and monthly timestamps score correctly', async (t) => {
   let calls = 0;
@@ -19,7 +21,7 @@ test('numeric millisecond quota reset expires and monthly timestamps score corre
   });
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/root/.hermes/cache/scratch', 'cpr-time-'));
-  const config = { master_key_env: 'MASTER', models: [{ id: 'm', backends: { ccg: 'native' } }], backends: [{ name: 'ccg', family: 'ccg', base_url: `http://127.0.0.1:${upstream.address().port}`, key_env: 'KEY' }] };
+  const config: GatewayConfig = { master_key_env: 'MASTER', models: [{ id: 'm', backends: { ccg: 'native' } }], backends: [{ name: 'ccg', family: 'ccg', base_url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, key_env: 'KEY' }] };
   const gateway = createGatewayServers(config, { env: { MASTER: 'master', KEY: 'test', CPR_SESSIONS_DB: path.join(dir, 'sessions.db') }, logger: { warn() {} } });
   gateway.forwardServer.listen(0, '127.0.0.1'); gateway.adminServer.listen(0, '127.0.0.1');
   await Promise.all([once(gateway.forwardServer, 'listening'), once(gateway.adminServer, 'listening')]);
@@ -28,7 +30,7 @@ test('numeric millisecond quota reset expires and monthly timestamps score corre
     fs.rmSync(dir, { recursive: true, force: true });
   });
   await gateway.snapshots.refresh();
-  const response = await fetch(`http://127.0.0.1:${gateway.forwardServer.address().port}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json' }, body: JSON.stringify({ model: 'm' }) });
+  const response = await fetch(`http://127.0.0.1:${(gateway.forwardServer.address() as AddressInfo).port}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json' }, body: JSON.stringify({ model: 'm' }) });
   assert.equal(response.status, 200);
   assert.equal(calls, 1);
   assert.equal(monthlyDebtScore({ known: true, periodStart: now - 86400000, periodEnd: now + 86400000, monthlyPercent: 20 }, now), 30);

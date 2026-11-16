@@ -3,9 +3,9 @@ import test from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveIdentity, createIdentityStore } from '../lib/identity.mjs';
+import { resolveIdentity, createIdentityStore } from '../lib/identity.ts';
 
-const request = (headers = {}, body = {}, remoteAddress = '127.0.0.1') => ({ headers, body, remoteAddress });
+const request = (headers: Record<string, string> = {}, body: Record<string, unknown> = {}, remoteAddress: string = '127.0.0.1'): { headers: Record<string, string>; body: Record<string, unknown>; remoteAddress: string } => ({ headers, body, remoteAddress });
 
 test('identity resolution prefers session header, then chat fingerprint, then address', () => {
   const withHeader = resolveIdentity(request({ 'x-session-id': 'session-1' }, { messages: [{ role: 'user', content: 'hi' }] }));

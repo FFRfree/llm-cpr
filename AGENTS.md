@@ -21,6 +21,7 @@ docs/design.md    设计文档（规划稿 v0.2）
 ## 约定（与 ocg-proxy 同源的规矩）
 
 - 运行时零第三方依赖（node:sqlite 与原生类型擦除），Node ≥ 22.18；TypeScript 为开发依赖。
+- 全仓 `.ts`（`lib/`、`test/`、`scripts/`）：Node 原生类型擦除直接运行，没有构建步骤，`import` 必须写 `.ts` 后缀；`npm run typecheck` 覆盖这三处，`node --test` 会自动发现 `test/*.test.ts`。编译期负例放 `type-tests/`（`node --test` 不扫该目录）。
 - 仓库只放不含密钥的 `config.example.json` 与 `.env.example`；开发时复制成本机 `config.json` / `.env`（均被 `.gitignore` 排除），生产唯一生效的配置在 `/root/.config/coding-plan-router/`。
 - 生产运行副本在 `/root/.local/lib/coding-plan-router/current`，SQLite 在 `/root/.local/share/coding-plan-router/`；源码树不是生产运行目录，发布/回滚见 `docs/xdg-deployment.md`。
 - 管理口永远只绑回环；开发期用端口覆盖 + 假上游冒烟，不碰生产端口。

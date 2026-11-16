@@ -7,17 +7,34 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createGatewayServers } from '../lib/server.mjs';
-import { UsageAudit } from '../lib/audit.mjs';
+import { createGatewayServers } from '../lib/server.ts';
+import { UsageAudit } from '../lib/audit.ts';
+import type { Gateway } from '../lib/server.ts';
+import type { TestContext } from 'node:test';
+import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import type { AuditRow, GatewayConfig, Logger } from '../lib/contracts.ts';
 
-const listen = async (server) => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return `http://127.0.0.1:${server.address().port}`; };
-const close = (server) => new Promise((resolve) => server.close(resolve));
-const fixture = async (t, { body, logger = { warn() {}, log() {} }, auditPath } = {}) => {
-  const upstream = http.createServer(async (req, res) => {
+interface RequestPayload extends Record<string, unknown> { stream?: boolean }
+interface FixtureOptions { body?: RequestPayload; logger?: Logger; auditPath?: string }
+interface AuditFixture {
+  gateway: Gateway;
+  env: { CPR_MASTER: string; KEY: string; CPR_SESSIONS_DB: string; CPR_USAGE_DB: string };
+  dir: string;
+  send(payload?: RequestPayload): Promise<Response>;
+  logger: Logger;
+}
+interface StoredAuditRow extends AuditRow { usage_json: string }
+
+const listen = async (server: Server): Promise<string> => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return `http://127.0.0.1:${(server.address() as AddressInfo).port}`; };
+const close = (server: Server): Promise<Error | undefined> => new Promise<Error | undefined>((resolve) => server.close(resolve));
+const fixture = async (t: TestContext, { body, logger = { warn() {}, log() {} }, auditPath }: FixtureOptions = {}): Promise<AuditFixture> => {
+  const upstream = http.createServer(async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (req.method !== 'POST') { res.writeHead(404).end(); return; }
-    const chunks = [];
+    const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk);
-    const request = JSON.parse(Buffer.concat(chunks).toString());
+    // HTTP JSON request boundary: the mock reads only the stream flag.
+    const request = JSON.parse(Buffer.concat(chunks).toString()) as RequestPayload;
     const result = { id: 'response', usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120, prompt_tokens_details: { cached_tokens: 50 } } };
     if (request.stream) {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -32,21 +49,22 @@ const fixture = async (t, { body, logger = { warn() {}, log() {} }, auditPath } 
   const baseUrl = await listen(upstream);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-audit-'));
   const env = { CPR_MASTER: 'master', KEY: 'upstream', CPR_SESSIONS_DB: path.join(dir, 'sessions.db'), ...(auditPath ? { CPR_USAGE_DB: auditPath } : { CPR_USAGE_DB: path.join(dir, 'usage.db') }) };
-  const config = { master_key_env: 'CPR_MASTER', models: [{ id: 'unified', backends: { ocg: 'native' } }], backends: [{ name: 'subscription-a', family: 'ocg', account: 'account-a', base_url: baseUrl, key_env: 'KEY' }] };
+  const config: GatewayConfig = { master_key_env: 'CPR_MASTER', models: [{ id: 'unified', backends: { ocg: 'native' } }], backends: [{ name: 'subscription-a', family: 'ocg', account: 'account-a', base_url: baseUrl, key_env: 'KEY' }] };
   const gateway = createGatewayServers(config, { env, logger });
   gateway.forwardServer.listen(0, '127.0.0.1');
   await once(gateway.forwardServer, 'listening');
   t.after(async () => { await close(gateway.forwardServer); await close(upstream); gateway.audit?.close(); fs.rmSync(dir, { recursive: true, force: true }); });
-  const send = (payload = body ?? { model: 'unified', messages: [{ role: 'user', content: 'TOP_SECRET_PROMPT' }] }) => fetch(`http://127.0.0.1:${gateway.forwardServer.address().port}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json', 'x-session-id': 'session-a' }, body: JSON.stringify(payload) });
+  const send = (payload: RequestPayload = body ?? { model: 'unified', messages: [{ role: 'user', content: 'TOP_SECRET_PROMPT' }] }): Promise<Response> => fetch(`http://127.0.0.1:${(gateway.forwardServer.address() as AddressInfo).port}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json', 'x-session-id': 'session-a' }, body: JSON.stringify(payload) });
   return { gateway, env, dir, send, logger };
 };
 
-test('audit stores complete request metadata and parsed upstream usage, never request body', async (t) => {
+test('audit stores complete request metadata and parsed upstream usage, never request body', async (t: TestContext): Promise<void> => {
   const { gateway, env, send } = await fixture(t);
   const response = await send();
   assert.equal(response.status, 200);
   const db = new DatabaseSync(env.CPR_USAGE_DB);
-  const row = db.prepare('SELECT * FROM requests').get();
+  // node:sqlite row boundary: this query returns the inserted request and its raw usage.
+  const row = db.prepare('SELECT * FROM requests').get() as unknown as StoredAuditRow;
   assert.equal(row.identity, 'session-a');
   assert.equal(row.identity_kind, 'session');
   assert.equal(row.subscription, 'subscription-a');
@@ -78,34 +96,35 @@ test('cache miss summaries use full-miss session rate and prior-prompt 0.6 loss 
   audit.close(); fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('streaming responses and concurrent requests each produce one audit row', async (t) => {
+test('streaming responses and concurrent requests each produce one audit row', async (t: TestContext): Promise<void> => {
   const { env, send } = await fixture(t);
   const responses = await Promise.all(Array.from({ length: 6 }, (_, index) => send({ model: 'unified', stream: index === 0 })));
   assert.ok(responses.every((response) => response.status === 200));
   await Promise.all(responses.map((response) => response.arrayBuffer()));
   const db = new DatabaseSync(env.CPR_USAGE_DB);
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM requests').get().n, 6);
-  assert.ok(db.prepare('SELECT COUNT(*) AS n FROM requests WHERE usage_json IS NOT NULL').get().n === 6);
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM requests').get() as { n: number }).n, 6);
+  assert.ok((db.prepare('SELECT COUNT(*) AS n FROM requests WHERE usage_json IS NOT NULL').get() as { n: number }).n === 6);
   db.close();
 });
 
-test('ttft/stream timings are recorded for streaming, ttft only for non-streaming', async (t) => {
+test('ttft/stream timings are recorded for streaming, ttft only for non-streaming', async (t: TestContext): Promise<void> => {
   const { env, gateway, send } = await fixture(t);
   await (await send({ model: 'unified', stream: true })).arrayBuffer();
   await (await send()).arrayBuffer();
   const db = new DatabaseSync(env.CPR_USAGE_DB);
-  const [streamRow, plainRow] = db.prepare('SELECT * FROM requests ORDER BY ts, id').all();
+  // node:sqlite row boundary: SELECT returns the two fixture request rows.
+  const [streamRow, plainRow] = db.prepare('SELECT * FROM requests ORDER BY ts, id').all() as unknown as StoredAuditRow[];
   assert.equal(typeof streamRow.ttft_ms, 'number');
-  assert.ok(streamRow.ttft_ms >= 0);
+  assert.ok((streamRow.ttft_ms as number) >= 0);
   assert.equal(typeof streamRow.stream_ms, 'number');
-  assert.ok(streamRow.stream_ms >= 20); // 夹具刻意拉开 30ms
+  assert.ok((streamRow.stream_ms as number) >= 20); // 夹具刻意拉开 30ms
   assert.equal(typeof plainRow.ttft_ms, 'number');
   assert.equal(plainRow.stream_ms, null); // 非流式没有流时长概念
   db.close();
   const summary = gateway.audit.summary();
   const perf = summary.subscriptions[0];
   assert.equal(typeof perf.avg_ttft_ms, 'number');
-  assert.ok(perf.tps > 0); // Σtokens / Σstream_ms
+  assert.ok((perf.tps as number) > 0); // Σtokens / Σstream_ms
 });
 
 test('existing ledgers gain ttft/stream columns via migration without losing rows', () => {
@@ -121,12 +140,12 @@ test('existing ledgers gain ttft/stream columns via migration without losing row
   legacy.prepare(`INSERT INTO requests(ts,identity_kind,subscription,status,cache_observed) VALUES(1,'session','sub',200,0)`).run();
   legacy.close();
   const audit = new UsageAudit({ dbFile: file });
-  const columns = audit.db.prepare('PRAGMA table_info(requests)').all().map((entry) => entry.name);
+  const columns = (audit.db as DatabaseSync).prepare('PRAGMA table_info(requests)').all().map((entry) => entry.name);
   assert.ok(columns.includes('ttft_ms') && columns.includes('stream_ms'));
-  assert.equal(audit.db.prepare('SELECT COUNT(*) AS n FROM requests').get().n, 1);
+  assert.equal(((audit.db as DatabaseSync).prepare('SELECT COUNT(*) AS n FROM requests').get() as { n: number }).n, 1);
   audit.record({ ts: 2, identity_kind: 'session', subscription: 'sub', ttft_ms: 900, stream_ms: 500 },
     { completion_tokens: 10 });
-  assert.equal(audit.db.prepare('SELECT COUNT(*) AS n FROM requests WHERE ttft_ms=900 AND stream_ms=500').get().n, 1);
+  assert.equal(((audit.db as DatabaseSync).prepare('SELECT COUNT(*) AS n FROM requests WHERE ttft_ms=900 AND stream_ms=500').get() as { n: number }).n, 1);
   audit.close(); fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -143,11 +162,11 @@ test('summary filters subscriptions to currently configured names when given', (
   audit.close(); fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('audit write failure logs degraded marker and does not block successful forwarding', async (t) => {
-  const warnings = [];
-  const logger = { warn: (...args) => warnings.push(args.join(' ')), log() {} };
+test('audit write failure logs degraded marker and does not block successful forwarding', async (t: TestContext): Promise<void> => {
+  const warnings: string[] = [];
+  const logger: Logger = { warn: (...args: unknown[]): number => warnings.push(args.join(' ')), log() {} };
   const { gateway, send } = await fixture(t, { logger });
-  gateway.audit.db.close();
+  (gateway.audit.db as DatabaseSync).close();
   const response = await send();
   assert.equal(response.status, 200);
   assert.ok(warnings.some((message) => /\[audit\].*degraded|\[audit\].*record failed/i.test(message)));

@@ -1,39 +1,56 @@
-import http from 'node:http';
+import http, { type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import https from 'node:https';
-import net from 'node:net';
+import net, { type AddressInfo } from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { endToEndHeaders } from './headers.ts';
 import { chatCompletions } from './protocols/chat-completions.ts';
-import { createIdentityStore, resolveIdentity } from './identity.mjs';
-import { UsageSnapshots } from './snapshots.mjs';
-import { rankBackends, monthlyDebtScore } from './selection.mjs';
-import { UsageAudit } from './audit.mjs';
+import { createIdentityStore, resolveIdentity } from './identity.ts';
+import { UsageSnapshots } from './snapshots.ts';
+import { rankBackends, monthlyDebtScore } from './selection.ts';
+import { UsageAudit } from './audit.ts';
+import type { AuditEntry, Backend, ChatBody, ChatUsage, Endpoint, Environment, GatewayConfig, Headers, Logger } from './contracts.ts';
 
-function json(res, status, value) {
+interface ForwardTimings {
+  ttftMs: number | null;
+  streamMs: number | null;
+}
+type CompleteHandler = (status: number, payload: string | ChatUsage | null, timings?: ForwardTimings) => void;
+
+function json(res: ServerResponse, status: number, value: unknown): void {
   const bytes = Buffer.from(JSON.stringify(value));
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': bytes.length });
   res.end(bytes);
 }
 
-function authorized(req, key) {
+function authorized(req: IncomingMessage, key: string | undefined): boolean {
   return typeof key === 'string' && key.length > 0 && req.headers.authorization === `Bearer ${key}`;
 }
 
-async function readBody(req) {
-  const chunks = [];
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function statusOf(error: unknown, fallback: number): number {
+  const status = error !== null && typeof error === 'object' ? (error as { statusCode?: unknown }).statusCode : undefined;
+  return typeof status === 'number' && status ? status : fallback;
+}
+
+async function readBody(req: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
-    size += chunk.length;
+    const bytes = chunk as Buffer;
+    size += bytes.length;
     if (size > 10 * 1024 * 1024) throw Object.assign(new Error('request body too large'), { statusCode: 413 });
-    chunks.push(chunk);
+    chunks.push(bytes);
   }
   return Buffer.concat(chunks);
 }
 
-function retryAfterMs(value, now = Date.now()) {
+function retryAfterMs(value: unknown, now = Date.now()): number | null {
   if (typeof value !== 'string' || !value.trim()) return null;
   const trimmed = value.trim();
   const seconds = Number(trimmed);
@@ -42,17 +59,40 @@ function retryAfterMs(value, now = Date.now()) {
   return Number.isFinite(at) ? Math.max(0, at - now) : null;
 }
 
-function sleep(ms, res) {
+function sleep(ms: number, res: ServerResponse): Promise<boolean> {
   return new Promise((resolve) => {
     if (res.destroyed) return resolve(false);
-    const finish = (active) => { clearTimeout(timer); res.off('close', cancel); resolve(active); };
+    const finish = (active: boolean) => { clearTimeout(timer); res.off('close', cancel); resolve(active); };
     const cancel = () => finish(false);
     const timer = setTimeout(() => finish(!res.destroyed), ms);
     res.once('close', cancel);
   });
 }
 
-function forwardAttempt({ res, backend, body, headers, startedAt, onComplete, timeoutMs }) {
+interface ForwardedResult {
+  status: number;
+  forwarded: true;
+}
+interface QuotaResult {
+  status: number;
+  forwarded: false;
+  headers: IncomingHttpHeaders;
+  responseHeaders: Headers;
+  body: Buffer;
+}
+type AttemptResult = ForwardedResult | QuotaResult;
+
+interface ForwardOptions {
+  res: ServerResponse;
+  backend: Backend;
+  body: string;
+  headers: Headers;
+  startedAt: number;
+  onComplete?: CompleteHandler;
+  timeoutMs: number;
+}
+
+function forwardAttempt({ res, backend, body, headers, startedAt, onComplete, timeoutMs }: ForwardOptions): Promise<AttemptResult> {
   return new Promise((resolve) => {
     if (res.destroyed) {
       try { onComplete?.(499, null); } catch {}
@@ -64,14 +104,14 @@ function forwardAttempt({ res, backend, body, headers, startedAt, onComplete, ti
     outgoingHeaders['content-type'] = 'application/json';
     outgoingHeaders['content-length'] = Buffer.byteLength(body);
     let finished = false;
-    let incoming;
-    let timer;
+    let incoming: IncomingMessage | undefined;
+    let timer: NodeJS.Timeout | undefined;
     const cleanup = () => { clearTimeout(timer); res.off('close', cancel); };
-    const fail = (error) => {
+    const fail = (error: Error & { code?: string }) => {
       if (finished) return;
       finished = true;
       cleanup();
-      const status = error?.code === 'ECANCELED' ? 499 : error?.code === 'ETIMEDOUT' ? 504 : 502;
+      const status = error.code === 'ECANCELED' ? 499 : error.code === 'ETIMEDOUT' ? 504 : 502;
       try { onComplete?.(status, null); } catch {}
       incoming?.unpipe(res);
       incoming?.destroy();
@@ -104,9 +144,9 @@ function forwardAttempt({ res, backend, body, headers, startedAt, onComplete, ti
       if (status === 403 || status === 429) {
         // Quota bodies gate retries: a drip must not keep that decision pending.
         armTimeout(Math.min(timeoutMs, 5000));
-        const chunks = [];
+        const chunks: Buffer[] = [];
         let size = 0;
-        response.on('data', (chunk) => {
+        response.on('data', (chunk: Buffer) => {
           size += chunk.length;
           if (size > 1024 * 1024) return fail(new Error('upstream quota response too large'));
           chunks.push(chunk);
@@ -114,7 +154,7 @@ function forwardAttempt({ res, backend, body, headers, startedAt, onComplete, ti
         response.on('end', () => {
           if (finished) return;
           finished = true; cleanup();
-          resolve({ status, headers: response.headers, responseHeaders, body: Buffer.concat(chunks) });
+          resolve({ status, forwarded: false, headers: response.headers, responseHeaders, body: Buffer.concat(chunks) });
         });
         return;
       }
@@ -124,10 +164,10 @@ function forwardAttempt({ res, backend, body, headers, startedAt, onComplete, ti
       // Resume starts a fresh idle window; cancellation/abort still use fail().
       response.on('pause', () => clearTimeout(timer));
       response.on('resume', () => { if (!finished) armTimeout(); });
-      let firstByteAt = null;
+      let firstByteAt: number | null = null;
       const streaming = chatCompletions.isStreaming(response.headers);
       const collector = chatCompletions.usageCollector(streaming);
-      response.on('data', (chunk) => {
+      response.on('data', (chunk: Buffer) => {
         if (finished) return;
         armTimeout();
         // Until a body byte arrives, keep the option of a structured 502/504.
@@ -138,7 +178,7 @@ function forwardAttempt({ res, backend, body, headers, startedAt, onComplete, ti
         if (finished) return;
         finished = true; cleanup();
         if (!res.headersSent) res.writeHead(status, responseHeaders);
-        const timings = {
+        const timings: ForwardTimings = {
           ttftMs: firstByteAt !== null ? firstByteAt - startedAt : null,
           streamMs: streaming && firstByteAt !== null ? Math.max(0, Date.now() - firstByteAt) : null,
         };
@@ -154,16 +194,16 @@ function forwardAttempt({ res, backend, body, headers, startedAt, onComplete, ti
   });
 }
 
-function passthroughError(res, result, onComplete) {
+function passthroughError(res: ServerResponse, result: QuotaResult, onComplete?: CompleteHandler): void {
   res.writeHead(result.status, result.responseHeaders);
   res.end(result.body);
   try { onComplete?.(result.status, result.body.toString('utf8')); } catch {}
 }
 
-function healthyBackend(backend, timeoutMs = 500) {
+function healthyBackend(backend: Backend, timeoutMs = 500): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (healthy) => {
+    const finish = (healthy: boolean) => {
       if (settled) return;
       settled = true;
       socket.destroy();
@@ -177,12 +217,24 @@ function healthyBackend(backend, timeoutMs = 500) {
   });
 }
 
-async function firstHealthyBackend(backends) {
+async function firstHealthyBackend(backends: Backend[]): Promise<Backend | undefined> {
   for (const backend of backends) if (await healthyBackend(backend)) return backend;
   return undefined;
 }
 
-export function createGatewayServers(config, { env = process.env, fetchImpl = fetch, logger = console } = {}) {
+export interface CreateGatewayOptions {
+  env?: Environment;
+  fetchImpl?: typeof fetch;
+  logger?: Logger;
+}
+export interface Gateway {
+  forwardServer: Server;
+  adminServer: Server;
+  snapshots: UsageSnapshots;
+  audit: UsageAudit;
+}
+
+export function createGatewayServers(config: GatewayConfig, { env = process.env, fetchImpl = fetch, logger = console }: CreateGatewayOptions = {}): Gateway {
   const masterKeyEnv = config.masterKeyEnv || config.master_key_env || 'CPR_MASTER_KEY';
   const masterKey = env[masterKeyEnv];
   const dbPath = env.CPR_SESSIONS_DB || config.sessions_db || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'sessions.db');
@@ -203,14 +255,15 @@ export function createGatewayServers(config, { env = process.env, fetchImpl = fe
     try {
       const bytes = await readBody(req);
       if (res.destroyed) return;
-      let body;
-      try { body = JSON.parse(bytes.toString('utf8')); } catch { return json(res, 400, { error: { message: 'invalid JSON request body', type: 'invalid_request_error' } }); }
-      if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, 400, { error: { message: 'request body must be a JSON object', type: 'invalid_request_error' } });
+      let parsed: unknown;
+      try { parsed = JSON.parse(bytes.toString('utf8')); } catch { return json(res, 400, { error: { message: 'invalid JSON request body', type: 'invalid_request_error' } }); }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return json(res, 400, { error: { message: 'request body must be a JSON object', type: 'invalid_request_error' } });
+      const body = parsed as ChatBody;
       const requestedModel = config.models.find((entry) => entry.id === body.model);
-      if (!requestedModel) return json(res, 400, { error: { message: `model not allowed: ${body.model ?? ''}`, type: 'invalid_request_error' } });
-      const identity = resolveIdentity({ headers: req.headers, body, remoteAddress: req.socket.remoteAddress, identityHeader: config.identityHeader });
+      if (!requestedModel) return json(res, 400, { error: { message: `model not allowed: ${String(body.model ?? '')}`, type: 'invalid_request_error' } });
+      const identity = resolveIdentity({ headers: req.headers, body, remoteAddress: req.socket.remoteAddress ?? 'unknown', identityHeader: config.identityHeader });
       const pinnedName = identityStore.get(identity.kind, identity.key);
-      let backend = pinnedName ? config.backends.find((candidate) => candidate.name === pinnedName) : undefined;
+      let backend: Backend | undefined = pinnedName ? config.backends.find((candidate) => candidate.name === pinnedName) : undefined;
       const stalePin = Boolean(pinnedName && !backend);
       if (stalePin) logger.warn?.(`[routing] pinned backend "${pinnedName}" no longer configured; re-selecting for identity ${identity.kind}`);
       if (backend && !requestedModel.backends[backend.family]) return json(res, 400, { error: { message: `model ${requestedModel.id} is not available on ${backend.family}`, type: 'invalid_request_error' } });
@@ -224,19 +277,26 @@ export function createGatewayServers(config, { env = process.env, fetchImpl = fe
         if (!backend) return json(res, 503, { error: { message: 'no healthy backend available', type: 'routing_error' } });
         // 正常新身份走 pin（不可变）；旧钉死后端已下线时走 migrate（唯一合法的改映射通道）
         const name = stalePin ? identityStore.migrate(identity.kind, identity.key, backend.name) : identityStore.pin(identity.kind, identity.key, backend.name);
-        backend = config.backends.find((candidate) => candidate.name === name);
+        const pinned = config.backends.find((candidate) => candidate.name === name);
+        if (!pinned) return json(res, 500, { error: { message: 'pinned backend vanished from config', type: 'configuration_error' } });
+        backend = pinned;
       }
       const startedAt = Date.now();
       let quotaRetries = 0;
-      let lastResult;
+      let lastResult: QuotaResult | undefined;
       while (true) {
-        const upstreamKey = env[backend.key_env];
-        if (!upstreamKey) return json(res, 500, { error: { message: `missing credential environment variable: ${backend.key_env}`, type: 'configuration_error' } });
-        const translated = chatCompletions.prepareRequest({ config, body, headers: req.headers, backend, upstreamKey, identity });
-        const record = (status, responseText, timings) => audit.record({ ts: startedAt, identity: identity.key, identity_kind: identity.kind, subscription: backend.name,
-          account: backend.account ?? backend.name, model: requestedModel.id, translated_model: translated.body.model,
-          path: req.url, status, ms: Date.now() - startedAt, ttft_ms: timings?.ttftMs, stream_ms: timings?.streamMs }, typeof responseText === 'string' ? chatCompletions.responseUsage(responseText) : responseText);
-        const result = await forwardAttempt({ res, backend, body: JSON.stringify(translated.body), headers: translated.headers, startedAt, onComplete: record, timeoutMs: upstreamTimeoutMs });
+        // Narrowed per iteration: migration reassigns `backend` between attempts.
+        const active: Backend = backend;
+        const upstreamKey = env[active.key_env];
+        if (!upstreamKey) return json(res, 500, { error: { message: `missing credential environment variable: ${active.key_env}`, type: 'configuration_error' } });
+        const translated = chatCompletions.prepareRequest({ config, body, headers: req.headers, backend: active, upstreamKey, identity });
+        const translatedModel = translated.body.model;
+        const record: CompleteHandler = (status, payload, timings) => audit.record({
+          ts: startedAt, identity: identity.key, identity_kind: identity.kind, subscription: active.name,
+          account: active.account ?? active.name, model: requestedModel.id, translated_model: typeof translatedModel === 'string' ? translatedModel : null,
+          path: req.url, status, ms: Date.now() - startedAt, ttft_ms: timings?.ttftMs, stream_ms: timings?.streamMs,
+        } satisfies AuditEntry, typeof payload === 'string' ? chatCompletions.responseUsage(payload) : payload);
+        const result = await forwardAttempt({ res, backend: active, body: JSON.stringify(translated.body), headers: translated.headers, startedAt, onComplete: record, timeoutMs: upstreamTimeoutMs });
         if (result.forwarded) return;
         if (res.destroyed) { record(499, null); return; }
         lastResult = result;
@@ -254,12 +314,13 @@ export function createGatewayServers(config, { env = process.env, fetchImpl = fe
           // 默认 10，0 关闭此规则恢复永远迁移的旧行为）。
           const history = longSessionMin > 0 ? audit.sessionSummary(identity.key) : null;
           // Missing/degraded history is not evidence that this is a short session.
+          const requestCount = history?.requests;
           const stickyLong = longSessionMin > 0 && (history?.degraded === true
-            || !Number.isFinite(history?.requests) || history.requests >= longSessionMin);
+            || typeof requestCount !== 'number' || requestCount >= longSessionMin);
           if (!stickyLong) {
-            let alternates = [];
+            let alternates: Backend[] = [];
             try {
-              alternates = rankBackends({ backends: config.backends.filter((candidate) => candidate.name !== backend.name),
+              alternates = rankBackends({ backends: config.backends.filter((candidate) => candidate.name !== active.name),
                 snapshots: snapshots.peek().snapshots, model: requestedModel.backends });
             } catch {}
             if (alternates.length) {
@@ -278,17 +339,17 @@ export function createGatewayServers(config, { env = process.env, fetchImpl = fe
         return passthroughError(res, lastResult);
       }
     } catch (error) {
-      return json(res, error.statusCode || 400, { error: { message: error.message, type: error.statusCode === 429 ? 'routing_error' : 'invalid_request_error' } });
+      return json(res, statusOf(error, 400), { error: { message: messageOf(error), type: statusOf(error, 400) === 429 ? 'routing_error' : 'invalid_request_error' } });
     }
   });
   const adminServer = http.createServer(async (req, res) => {
-    let url;
-    try { url = new URL(req.url, 'http://127.0.0.1'); }
+    let url: URL;
+    try { url = new URL(req.url ?? '/', 'http://127.0.0.1'); }
     catch { return json(res, 400, { error: { message: 'invalid URL', type: 'invalid_request_error' } }); }
     // 唯一的写操作：手动触发一轮额度快照刷新（轮询默认 5 分钟一次，看板按钮也走这里）
     if (req.method === 'POST' && url.pathname === '/api/snapshots/refresh') {
       try { await snapshots.refresh(); } catch (error) {
-        return json(res, 502, { error: { message: `snapshot refresh failed: ${error.message}`, type: 'server_error' } });
+        return json(res, 502, { error: { message: `snapshot refresh failed: ${messageOf(error)}`, type: 'server_error' } });
       }
       return json(res, 200, snapshots.peek());
     }
@@ -306,17 +367,17 @@ export function createGatewayServers(config, { env = process.env, fetchImpl = fe
       const current = snapshots.peek();
       // 「当前优先」：如果现在来一个新会话，selectBackend 会挑谁。按与路由核同一套
       // 逻辑排出候选顺序（已钉死的旧会话不走这个，只有新会话才用它）。
-      let preference = null;
+      let preference: { name: string; score: number | null }[] | null = null;
       try {
         const modelMap = config.models[0]?.backends;
         preference = rankBackends({ backends: config.backends, snapshots: current.snapshots, model: modelMap })
-          .map((backend) => ({ name: backend.name, score: monthlyDebtScore(current.snapshots[backend.name]) }));
+          .map((candidate) => ({ name: candidate.name, score: monthlyDebtScore(current.snapshots[candidate.name]) }));
       } catch { preference = null; }
-      return json(res, 200, { subscriptions: config.backends.map((backend) => ({
-        name: backend.name, family: backend.family, alias: backend.alias ?? backend.name,
-        account: backend.account ?? backend.name,
-        models: config.models.filter((model) => model.backends?.[backend.family]).map((model) => model.id),
-        snapshot: current.snapshots[backend.name] ?? { known: false, degraded: true, stale: true },
+      return json(res, 200, { subscriptions: config.backends.map((candidate) => ({
+        name: candidate.name, family: candidate.family, alias: candidate.alias ?? candidate.name,
+        account: candidate.account ?? candidate.name,
+        models: config.models.filter((model) => model.backends?.[candidate.family]).map((model) => model.id),
+        snapshot: current.snapshots[candidate.name] ?? { known: false, degraded: true, stale: true },
       })), preference, mappings: identityStore.mappingOverview(), snapshots: current });
     }
     if (url.pathname === '/api/audit/requests') {
@@ -327,12 +388,12 @@ export function createGatewayServers(config, { env = process.env, fetchImpl = fe
       const identity = url.searchParams.get('identity');
       // 汇总只看当前配置的订阅；已下线的（如历史 ocg-main/first/second）留在库里不上板
       return json(res, 200, identity === null
-        ? { summary: audit.summary({ subscriptionNames: config.backends.map((backend) => backend.name) }) }
+        ? { summary: audit.summary({ subscriptionNames: config.backends.map((candidate) => candidate.name) }) }
         : { summary: audit.sessionSummary(identity), requests: audit.listRequests({ limit: url.searchParams.get('limit'), identity }) });
     }
     const detail = url.pathname.match(/^\/api\/audit\/sessions\/(.+)$/);
     if (detail) {
-      let identity;
+      let identity: string;
       try { identity = decodeURIComponent(detail[1]); }
       catch { return json(res, 400, { error: { message: 'invalid session URL', type: 'invalid_request_error' } }); }
       return json(res, 200, { session: audit.sessionSummary(identity), requests: audit.listRequests({ limit: url.searchParams.get('limit'), identity }) });
@@ -344,16 +405,16 @@ export function createGatewayServers(config, { env = process.env, fetchImpl = fe
   return { forwardServer, adminServer, snapshots, audit };
 }
 
-export async function startGateway(config = undefined, { env = process.env, logger = console } = {}) {
-  if (!config) {
-    const { loadConfig } = await import('./config.mjs');
-    config = loadConfig({ env });
-  }
-  const { forwardServer, adminServer } = createGatewayServers(config, { env });
-  forwardServer.listen(config.listen.port, config.listen.host);
-  adminServer.listen(config.admin.port, '127.0.0.1');
+export async function startGateway(config: GatewayConfig | undefined = undefined, { env = process.env, logger = console }: CreateGatewayOptions = {}): Promise<Gateway> {
+  const resolved: GatewayConfig = config ?? (await import('./config.ts')).loadConfig({ env });
+  const gateway = createGatewayServers(resolved, { env });
+  const { forwardServer, adminServer } = gateway;
+  const listen: Endpoint = { host: resolved.listen?.host ?? '127.0.0.1', port: resolved.listen?.port ?? 8741 };
+  const admin: Endpoint = { host: resolved.admin?.host ?? '127.0.0.1', port: resolved.admin?.port ?? 8740 };
+  forwardServer.listen(listen.port, listen.host);
+  adminServer.listen(admin.port, '127.0.0.1');
   await Promise.all([once(forwardServer, 'listening'), once(adminServer, 'listening')]);
-  logger.log(`forward listening on http://${config.listen.host}:${forwardServer.address().port}`);
-  logger.log(`admin listening on http://127.0.0.1:${adminServer.address().port}`);
-  return { forwardServer, adminServer };
+  logger.log?.(`forward listening on http://${listen.host}:${(forwardServer.address() as AddressInfo).port}`);
+  logger.log?.(`admin listening on http://127.0.0.1:${(adminServer.address() as AddressInfo).port}`);
+  return gateway;
 }

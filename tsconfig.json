@@ -8,8 +8,6 @@
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true,
-    "allowJs": true,
-    "checkJs": false,
     "types": [
       "node"
     ],
@@ -17,7 +15,8 @@
   },
   "include": [
     "lib/**/*.ts",
-    "lib/translate.mjs",
+    "test/**/*.ts",
+    "scripts/**/*.ts",
     "type-tests/**/*.ts"
   ]
 }

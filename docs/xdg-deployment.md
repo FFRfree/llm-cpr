@@ -24,7 +24,7 @@ systemd 仍为**系统级** unit（`/etc/systemd/system/coding-plan-router.servi
 
 ## 为什么必须显式指定数据库路径
 
-`lib/server.mjs` 的默认值是「跟着代码走」：`CPR_SESSIONS_DB` → `config.sessions_db` → 代码目录上一层的 `sessions.db`，而 `usage.db` 取 sessions 所在目录。只把代码搬到 `~/.local/lib` 而不写路径，新进程会安静地开一套**空库**，服务照常 active。因此 unit 里固定写死：
+`lib/server.ts` 的默认值是「跟着代码走」：`CPR_SESSIONS_DB` → `config.sessions_db` → 代码目录上一层的 `sessions.db`，而 `usage.db` 取 sessions 所在目录。只把代码搬到 `~/.local/lib` 而不写路径，新进程会安静地开一套**空库**，服务照常 active。因此 unit 里固定写死：
 
 ```
 Environment=CPR_SESSIONS_DB=/root/.local/share/coding-plan-router/sessions.db
@@ -39,25 +39,25 @@ git status --short            # 确认要发布的提交，别把未提交改动
 SHA=$(git rev-parse --short HEAD)
 REL=/root/.local/lib/coding-plan-router/releases/$(date -u +%Y%m%d)-$SHA
 mkdir -p "$REL"
-git archive HEAD lib static | tar -x -C "$REL"
+git archive HEAD lib static package.json | tar -x -C "$REL"
 printf 'commit=%s\nnode=%s\npublished_at=%s\n' "$(git rev-parse HEAD)" "$(node -v)" "$(date -u +%FT%TZ)" > "$REL/RELEASE.txt"
 # 冒烟：本机假上游，临时目录，不碰真实订阅额度
-node scripts/xdg-deploy/smoke-release.mjs "$REL"
+node scripts/xdg-deploy/smoke-release.ts "$REL"
 ln -sfn "$REL" /root/.local/lib/coding-plan-router/current   # 切换生效版本（重启后才真正生效）
 ```
 
-`git archive HEAD lib static` 只取运行所需文件；`package.json`、`test/`、`tsconfig.json` 不在 HEAD 里也不需要，运行时不读它们。
+`git archive HEAD lib static package.json` 只取运行所需文件；`test/`、`tsconfig.json`、`package-lock.json` 不需要，运行时不读它们。`package.json` 必须带上：运行代码是 `.ts`，Node 按最近的 `package.json` 的 `"type": "module"` 判定为 ESM——发布目录里没有它就只能靠 Node 的语法探测兜底，多一层不必要的隐式依赖。
 
 ## 数据备份与迁移
 
-`scripts/xdg-deploy/migrate-dbs.mjs` 做三件事：WAL checkpoint（把只在 `-wal` 里的已提交数据并回主库）、复制到备份目录与目标目录、逐项校验 `integrity_check` 与行数/`max(id)`/`max(ts)`/各订阅计数完全一致。它在源库仍有其他连接持锁时（`busy != 0`）会直接报错退出；目标文件已存在时拒绝覆盖。
+`scripts/xdg-deploy/migrate-dbs.ts` 做三件事：WAL checkpoint（把只在 `-wal` 里的已提交数据并回主库）、复制到备份目录与目标目录、逐项校验 `integrity_check` 与行数/`max(id)`/`max(ts)`/各订阅计数完全一致。它在源库仍有其他连接持锁时（`busy != 0`）会直接报错退出；目标文件已存在时拒绝覆盖。
 
 必须停服后执行，因为两个库（`sessions.db` 是 `journal_mode=delete`，`usage.db` 是 WAL）各自拍快照不保证业务时点一致；在线只复制主库会漏掉 `-wal` 里已提交的数据。
 
 ```bash
 systemctl stop coding-plan-router
 TS=$(date -u +%Y%m%dT%H%M%SZ)
-node scripts/xdg-deploy/migrate-dbs.mjs \
+node scripts/xdg-deploy/migrate-dbs.ts \
   --sessions-db /root/workspace/services/coding-plan-router/sessions.db \
   --usage-db    /root/workspace/services/coding-plan-router/usage.db \
   --dest-dir    /root/.local/share/coding-plan-router \

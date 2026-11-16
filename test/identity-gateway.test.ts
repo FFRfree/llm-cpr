@@ -1,3 +1,6 @@
+import type { AddressInfo } from 'node:net';
+import type { Backend, GatewayConfig } from '../lib/contracts.ts';
+interface Seen { name: string; session: string | string[] | undefined }
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import http from 'node:http';
@@ -5,9 +8,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { createGatewayServers } from '../lib/server.mjs';
+import { createGatewayServers } from '../lib/server.ts';
 
-async function fakeBackend(name, seen) {
+async function fakeBackend(name: string, seen: Seen[]): Promise<{ server: http.Server; url: string }> {
   const server = http.createServer(async (req, res) => {
     for await (const _chunk of req) { /* drain request */ }
     if (req.method === 'POST') seen.push({ name, session: req.headers['x-session-id'] });
@@ -16,39 +19,39 @@ async function fakeBackend(name, seen) {
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  return { server, url: `http://127.0.0.1:${server.address().port}` };
+  return { server, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
 }
 
-async function closeServer(server) {
-  if (server.listening) await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+async function closeServer(server: http.Server): Promise<void> {
+  if (server.listening) await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
-async function start(config, env) {
+async function start(config: GatewayConfig, env: NodeJS.ProcessEnv): Promise<ReturnType<typeof createGatewayServers> & { url: string }> {
   const servers = createGatewayServers(config, { env });
   servers.forwardServer.listen(0, '127.0.0.1');
   servers.adminServer.listen(0, '127.0.0.1');
   await Promise.all([once(servers.forwardServer, 'listening'), once(servers.adminServer, 'listening')]);
-  return { ...servers, url: `http://127.0.0.1:${servers.forwardServer.address().port}` };
+  return { ...servers, url: `http://127.0.0.1:${(servers.forwardServer.address() as AddressInfo).port}` };
 }
 
-const config = (backends) => ({
+const config = (backends: Backend[]): GatewayConfig => ({
   master_key_env: 'CPR_MASTER',
   listen: { host: '127.0.0.1', port: 0 },
   models: [{ id: 'model', backends: { ocg: 'native' } }],
   backends,
 });
-const request = (url, body, headers = {}) => fetch(`${url}/v1/chat/completions`, {
+const request = (url: string, body: object, headers: Record<string, string> = {}): Promise<Response> => fetch(`${url}/v1/chat/completions`, {
   method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
 });
 
 test('gateway pins session and conversation identities to a persisted backend', async (t) => {
-  const seen = [];
+  const seen: Seen[] = [];
   const first = await fakeBackend('first', seen);
   const second = await fakeBackend('second', seen);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-routing-'));
   const dbPath = path.join(dir, 'sessions.db');
   const env = { CPR_MASTER: 'master', CPR_UPSTREAM: 'upstream', CPR_SESSIONS_DB: dbPath };
-  const backend = (name, url) => ({ name, family: 'ocg', base_url: url, key_env: 'CPR_UPSTREAM' });
+  const backend = (name: string, url: string): Backend => ({ name, family: 'ocg', base_url: url, key_env: 'CPR_UPSTREAM' });
   let gateway = await start(config([backend('second', second.url), backend('first', first.url)]), env);
   try {
     const convo = { model: 'model', messages: [{ role: 'system', content: 'rules' }, { role: 'user', content: 'hello' }] };
@@ -82,13 +85,13 @@ test('gateway pins session and conversation identities to a persisted backend', 
 });
 
 test('a stale pin to a removed backend re-selects and re-pins instead of failing', async (t) => {
-  const seen = [];
+  const seen: Seen[] = [];
   const retired = await fakeBackend('retired', seen);
   const fresh = await fakeBackend('fresh', seen);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-stalepin-'));
   const dbPath = path.join(dir, 'sessions.db');
   const env = { CPR_MASTER: 'master', CPR_UPSTREAM: 'upstream', CPR_SESSIONS_DB: dbPath };
-  const backend = (name, url) => ({ name, family: 'ocg', base_url: url, key_env: 'CPR_UPSTREAM' });
+  const backend = (name: string, url: string): Backend => ({ name, family: 'ocg', base_url: url, key_env: 'CPR_UPSTREAM' });
 
   // 第一阶段：把身份钉到 "retired"
   let gateway = await start(config([backend('retired', retired.url)]), env);

@@ -30,6 +30,11 @@ export interface Identity {
 }
 export type Headers = OutgoingHttpHeaders;
 export type Environment = Record<string, string | undefined>;
+export interface Logger {
+  log?: (...args: unknown[]) => void;
+  warn?: (...args: unknown[]) => void;
+  error?: (...args: unknown[]) => void;
+}
 export interface QuotaWindow {
   used: number | null;
   cap?: number | null;
@@ -82,4 +87,111 @@ export type ChatUsage = Record<string, unknown>;
 export interface UsageCollector {
   write(chunk: Buffer): void;
   end(): ChatUsage | null;
+}
+
+export interface RoutingConfig {
+  long_session_min_requests?: number;
+  upstream_timeout_ms?: number;
+  snapshot_interval_ms?: number;
+}
+export interface Endpoint {
+  host: string;
+  port: number;
+}
+// The on-disk config.json shape; only the required fields are checked at load.
+export interface GatewayConfig extends RequestConfig {
+  backends: Backend[];
+  models: Model[];
+  listen?: Partial<Endpoint>;
+  admin?: Partial<Endpoint>;
+  routing?: RoutingConfig;
+  master_key_env?: string;
+  masterKeyEnv?: string;
+  identity_header?: string;
+  identityHeader?: string;
+  sessions_db?: string;
+}
+// loadConfig() fills every default, so routing code never re-derives them.
+export interface LoadedConfig extends GatewayConfig {
+  listen: Endpoint;
+  admin: Endpoint;
+  masterKeyEnv: string;
+  identityHeader: string;
+}
+
+// node:sqlite rows and HTTP payloads are untyped at the boundary; these are the
+// shapes the gateway itself produces and reads back.
+export interface AuditEntry {
+  ts?: number | null;
+  identity?: string | null;
+  identity_kind?: string | null;
+  subscription?: string | null;
+  account?: string | null;
+  model?: string | null;
+  translated_model?: string | null;
+  path?: string | null;
+  status?: number | null;
+  ms?: number | null;
+  ttft_ms?: number | null;
+  stream_ms?: number | null;
+}
+export interface AuditRow {
+  id: number;
+  ts: number;
+  identity: string | null;
+  identity_kind: string;
+  subscription: string | null;
+  account: string | null;
+  model: string | null;
+  translated_model: string | null;
+  path: string | null;
+  status: number | null;
+  ms: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  cache_hit_tokens: number | null;
+  cache_miss_tokens: number | null;
+  cache_write_tokens: number | null;
+  total_tokens: number | null;
+  cache_observed: number;
+  cache_outcome: string | null;
+  ttft_ms: number | null;
+  stream_ms: number | null;
+}
+export interface CacheLossEvent {
+  ts: number;
+  previous_prompt_tokens: number;
+  cache_hit_tokens: number;
+}
+export interface SessionSummary {
+  identity: string;
+  requests: number | null;
+  full_miss_rate: number | null;
+  loss_events: CacheLossEvent[];
+  degraded?: boolean;
+  full_misses?: number;
+  cache_observed_requests?: number;
+}
+export interface SubscriptionSummary {
+  subscription: string;
+  requests: number;
+  errors: number;
+  total_tokens: number;
+  avg_ttft_ms: number | null;
+  tps: number | null;
+}
+export interface AuditSummary {
+  requests: number | null;
+  sessions: number | null;
+  subscriptions: SubscriptionSummary[];
+  degraded?: boolean;
+}
+export interface SnapshotView {
+  snapshots: Record<string, QuotaSnapshot>;
+  fetchedAt: number | null;
+  ageMs: number | null;
+  intervalMs: number;
+  stale: boolean;
+  degraded: boolean;
+  lastError: Record<string, string>;
 }

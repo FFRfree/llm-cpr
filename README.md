@@ -77,7 +77,7 @@ CPR_UPSTREAM_KEY=replace-with-your-provider-api-key
 set -a
 . ./.env
 set +a
-node lib/main.mjs
+node lib/main.ts
 ```
 
 客户端配置为 OpenAI 兼容地址 `http://127.0.0.1:8741/v1`，API key 使用 `CPR_MASTER_KEY` 的值。请求需带 `Authorization: Bearer …`。例如：
@@ -123,19 +123,19 @@ npm run typecheck   # 项目本地 tsc --noEmit；strict + erasableSyntaxOnly
 npm test            # 等同 node --test
 ```
 
-生产仍用 `node lib/main.mjs`，不用编译或安装开发依赖；若用 npm 安装生产环境，可用 `npm ci --omit=dev`。`package-lock.json` 固定开发工具链，不依赖全局 `tsc`。
+生产仍用 `node lib/main.ts`，不用编译或安装开发依赖；若用 npm 安装生产环境，可用 `npm ci --omit=dev`。`package-lock.json` 固定开发工具链，不依赖全局 `tsc`。
 
 测试只用公开配置、真实本机 HTTP、假凭据和可丢弃数据库，包含 main 入口、两家族会话头/额度端点、JSON/SSE 原字节透传、路由钉死与迁移、审计/看板，以及超时/取消/流式缓冲上限回归。不要连接生产账号、读取真实凭据或请求真实上游。`type-tests/` 只用于编译期正负类型契约，刻意放在 Node 测试自动发现目录之外。
 
 ### 渐进类型化与模块职责
 
 - `lib/providers/opencode.ts` / `commandcode.ts` 是同一 `ProviderAdapter` 的两个真实实现：负责各家的会话头和 quota read。OCG 保留直连 `/usage`（浏览器 UA + 订阅 key）与代理 route-status（管理 key + `account` 匹配）；CCG 读取三个 `/alpha` 额度端点。`providers/index.ts` 集中注册家族，不把家族分支放进路由核。
-- `lib/protocols/chat-completions.ts` 是具体 Chat 实现：入口匹配、上游路径拼接、模型重映射、透明保留其他请求字段、JSON/SSE 用量观察。256 KiB 的有界旁路只供审计，不重写响应字节。`lib/translate.mjs` 保留原调用入口，转到同一实现。
+- `lib/protocols/chat-completions.ts` 是具体 Chat 实现：入口匹配、上游路径拼接、模型重映射、透明保留其他请求字段、JSON/SSE 用量观察。256 KiB 的有界旁路只供审计，不重写响应字节。`lib/translate.ts` 保留原调用入口，转到同一实现。
 - `lib/contracts.ts` 类型覆盖后端身份/模型映射、会话身份、HTTP headers、额度窗口/快照，以及 provider/protocol 输入输出；第三方 JSON 从 `unknown` 检查后读取，不用 `any` 假装已验证。用量对象仍是开放字段集，token 数值与 cache 字段的校验继续由原审计层负责。
-- `server.mjs` 继续负责 HTTP 生命周期、超时、取消、选路、钉死、重试、迁移与审计；`snapshots.mjs` 继续负责轮询、去重、过期与降级状态，只将获取各家额度委托给 provider。没有改变持久化 schema、订阅 `name`、重试阈值或迁移策略。
+- `server.ts` 继续负责 HTTP 生命周期、超时、取消、选路、钉死、重试、迁移与审计；`snapshots.ts` 继续负责轮询、去重、过期与降级状态，只将获取各家额度委托给 provider。没有改变持久化 schema、订阅 `name`、重试阈值或迁移策略。
 - 无会话头时，OCG 上游 session 使用路由已经解析的 fingerprint（无可指纹化消息时用 address），使上游缓存键与钉死/审计身份一致；有效统一头仍优先，旧 `x-opencode-session` 仍兼容，空统一头不覆盖有效旧头。CCG 不接收这两种会话头。
 
-类型检查目前严格覆盖 `.ts` 实现及 `translate.mjs` 兼容入口；旧的 server/config/selection/identity/audit/snapshots `.mjs` **尚未整体静态检查**，其行为靠回归测试保护。这不是全仓 TypeScript 迁移，也不代替运行时配置校验。
+全仓 TypeScript：`lib/`、`test/`、`scripts/` 下只有 `.ts`，Node 原生类型擦除直接运行，没有构建步骤也没有运行时依赖。`npm run typecheck` 对这三处全部做 strict 静态检查；`type-tests/` 只放编译期正负类型契约，刻意放在 Node 测试自动发现目录之外。类型不代替运行时校验：配置、上游 JSON 与 SQLite 行仍从 `unknown` 检查后读取。
 
 未来 Responses/Messages 应作为 `lib/protocols/` 下独立的具体模块，先验证协议能力、状态归属、流事件和 usage 再接入路由；目前 `/v1/responses`、`/v1/messages` 仍返回 404，没有空适配器、跨协议转换或虚构能力声明。
 

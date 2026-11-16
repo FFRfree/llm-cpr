@@ -1,39 +1,46 @@
+import type { Backend, QuotaSnapshot } from '../lib/contracts.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { UsageSnapshots } from '../lib/snapshots.mjs';
+import { UsageSnapshots } from '../lib/snapshots.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const fixture = (name) => JSON.parse(fs.readFileSync(path.join(here, 'fixtures', name), 'utf8'));
+// Boundary: fixture JSON is untyped.
+const fixture = <T>(name: string): T => JSON.parse(fs.readFileSync(path.join(here, 'fixtures', name), 'utf8')) as T;
+interface Credits { credits: { monthlyCredits: number }; windowLimits: { fiveHour: { used: number; cap: number; resetAt: number }; weekly: { used: number; cap: number } } }
+interface Usage { totalCost: number }
+interface Subscriptions { data: { currentPeriodStart: string; currentPeriodEnd: string } }
+type CompleteSnapshot = QuotaSnapshot & { monthlyRemaining: number; monthlySpent: number; monthlyCap: number; monthlyPercent: number; fiveHour: NonNullable<QuotaSnapshot['fiveHour']>; weekly: NonNullable<QuotaSnapshot['weekly']> };
 
-const ccgBackend = {
+const ccgBackend: Backend = {
   name: 'ccg-main',
   family: 'ccg',
   base_url: 'https://api.commandcode.ai/provider/v1',
   key_env: 'COMMANDCODE_API_KEY',
 };
 
-function stubFetch({ credits, usage, subscriptions }) {
-  return async (url) => {
-    if (url.endsWith('/billing/credits')) return { ok: true, json: async () => credits };
-    if (url.endsWith('/usage/summary')) return { ok: true, json: async () => usage };
-    if (url.endsWith('/billing/subscriptions')) return { ok: true, json: async () => subscriptions };
+function stubFetch({ credits, usage, subscriptions }: { credits: Credits; usage: Usage | object; subscriptions: Subscriptions | object }): typeof fetch {
+  return async (input) => {
+    const url = String(input);
+    if (url.endsWith('/billing/credits')) return { ok: true, json: async () => credits } as Response;
+    if (url.endsWith('/usage/summary')) return { ok: true, json: async () => usage } as Response;
+    if (url.endsWith('/billing/subscriptions')) return { ok: true, json: async () => subscriptions } as Response;
     throw new Error(`unexpected url: ${url}`);
   };
 }
 
 test('real CCG /alpha sample shapes parse into a known snapshot', async () => {
-  const credits = fixture('ccg-credits.json');
-  const usage = fixture('ccg-usage-summary.json');
-  const subscriptions = fixture('ccg-subscriptions.json');
+  const credits = fixture<Credits>('ccg-credits.json');
+  const usage = fixture<Usage>('ccg-usage-summary.json');
+  const subscriptions = fixture<Subscriptions>('ccg-subscriptions.json');
   const snap = new UsageSnapshots({
     backends: [ccgBackend], fetchImpl: stubFetch({ credits, usage, subscriptions }),
     now: () => 1_000_000, intervalMs: 60_000, logger: { warn: () => {} },
   });
   const out = await snap.refresh();
-  const value = out.snapshots['ccg-main'];
+  const value = out.snapshots['ccg-main'] as CompleteSnapshot;
 
   assert.equal(value.known, true);
   assert.equal(value.degraded, false);
@@ -59,14 +66,14 @@ test('real CCG /alpha sample shapes parse into a known snapshot', async () => {
 });
 
 test('CCG sample with missing summary fields degrades instead of crashing', async () => {
-  const credits = fixture('ccg-credits.json');
+  const credits = fixture<Credits>('ccg-credits.json');
   const snap = new UsageSnapshots({
     backends: [ccgBackend],
     fetchImpl: stubFetch({ credits, usage: {}, subscriptions: {} }),
     now: () => 1_000_000, intervalMs: 60_000, logger: { warn: () => {} },
   });
   const out = await snap.refresh();
-  const value = out.snapshots['ccg-main'];
+  const value = out.snapshots['ccg-main'] as CompleteSnapshot;
   assert.equal(value.known, false);
   assert.equal(value.degraded, true);
   // 部分字段（窗口数据）仍可用，不因月度字段缺失而全废

@@ -1,3 +1,5 @@
+import type { AddressInfo } from 'node:net';
+import type { Backend, GatewayConfig } from '../lib/contracts.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import http from 'node:http';
@@ -5,11 +7,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { loadConfig } from '../lib/config.mjs';
-import { translateRequest } from '../lib/translate.mjs';
-import { createGatewayServers } from '../lib/server.mjs';
+import { loadConfig } from '../lib/config.ts';
+import { translateRequest } from '../lib/translate.ts';
+import { createGatewayServers } from '../lib/server.ts';
 
-const baseConfig = (baseUrl, family = 'ocg') => ({
+const baseConfig = (baseUrl: string, family: Backend['family'] = 'ocg'): GatewayConfig => ({
   master_key_env: 'CPR_TEST_MASTER',
   listen: { host: '127.0.0.1', port: 8741 },
   models: [{ id: 'unified-model', backends: { [family]: 'native-model' } }],
@@ -53,9 +55,9 @@ test('translation keeps legacy x-opencode-session clients working: passthrough o
 });
 
 test('HTTP gateway returns local models, proxies JSON and SSE, rejects bad keys, and passes upstream errors through', async (t) => {
-  const received = [];
+  const received: { url: string | undefined; headers: http.IncomingHttpHeaders; body: string }[] = [];
   const upstream = http.createServer(async (req, res) => {
-    const chunks = [];
+    const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk);
     const entry = { url: req.url, headers: req.headers, body: Buffer.concat(chunks).toString() };
     received.push(entry);
@@ -69,7 +71,7 @@ test('HTTP gateway returns local models, proxies JSON and SSE, rejects bad keys,
     }
   });
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
-  const config = baseConfig(`http://127.0.0.1:${upstream.address().port}`, 'ocg');
+  const config = baseConfig(`http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, 'ocg');
   config.models.push({ id: 'error', backends: { ocg: 'error-model' } });
   const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-gateway-db-'));
   const env = { CPR_TEST_MASTER: 'test-master', CPR_TEST_UPSTREAM: 'test-upstream', CPR_SESSIONS_DB: path.join(dbDir, 'sessions.db') };
@@ -80,14 +82,14 @@ test('HTTP gateway returns local models, proxies JSON and SSE, rejects bad keys,
     await Promise.all([forwardServer, adminServer, upstream].map((server) => new Promise((resolve) => server.close(resolve))));
     fs.rmSync(dbDir, { recursive: true, force: true });
   });
-  const url = `http://127.0.0.1:${forwardServer.address().port}`;
+  const url = `http://127.0.0.1:${(forwardServer.address() as AddressInfo).port}`;
   const models = await fetch(`${url}/v1/models`, { headers: { authorization: 'Bearer test-master' } });
   assert.equal(models.status, 200);
-  assert.deepEqual((await models.json()).data.map((model) => model.id), ['unified-model', 'error']);
+  assert.deepEqual((await models.json()).data.map((model: { id: string }) => model.id), ['unified-model', 'error']);
   assert.equal((await fetch(`${url}/v1/models`, { headers: { authorization: 'Bearer wrong' } })).status, 401);
   const jsonResponse = await fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer test-master', 'content-type': 'application/json', 'x-session-id': 'ocg-session' }, body: JSON.stringify({ model: 'unified-model', messages: [{ role: 'user', content: 'hi' }] }) });
   assert.equal(jsonResponse.status, 200); assert.equal((await jsonResponse.json()).choices[0].message.content, 'ok');
-  const chatRequest = received.find((entry) => entry.url === '/v1/chat/completions');
+  const chatRequest = received.find((entry) => entry.url === '/v1/chat/completions') as { url: string | undefined; headers: http.IncomingHttpHeaders; body: string };
   assert.equal(chatRequest.headers.authorization, 'Bearer test-upstream');
   assert.equal(JSON.parse(chatRequest.body).model, 'native-model');
   assert.equal(chatRequest.headers['x-opencode-session'], 'ocg-session');

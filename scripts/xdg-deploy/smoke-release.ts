@@ -122,6 +122,9 @@ const waitReady = async (url: string, timeoutMs: number = 10_000): Promise<void>
 try {
   assert.ok(fs.existsSync(path.join(releaseDir, 'lib', 'main.ts')), `missing lib/main.ts in ${releaseDir}`);
   assert.ok(fs.existsSync(path.join(releaseDir, 'static', 'dashboard.html')), `missing static/dashboard.html in ${releaseDir}`);
+  // .ts 的模块类型由最近的 package.json 决定；缺了它就只能靠 Node 语法探测兜底。
+  const manifest: unknown = JSON.parse(fs.readFileSync(path.join(releaseDir, 'package.json'), 'utf8'));
+  assert.ok(isRecord(manifest) && manifest.type === 'module', '发布副本必须带 package.json 且 "type": "module"');
   record('发布副本结构', `${releaseDir}`);
 
   await waitReady(adminUrl);

@@ -1,14 +1,16 @@
+import type { Backend, QuotaSnapshot } from '../lib/contracts.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { UsageSnapshots } from '../lib/snapshots.mjs';
+import { UsageSnapshots } from '../lib/snapshots.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const status = JSON.parse(fs.readFileSync(path.join(here, 'fixtures', 'ocg-route-status.json'), 'utf8'));
+// Boundary: fixture JSON is untyped.
+const status: { accounts: { monthly_percent: number; month_progress: number; monthly_resets_at: string; rolling_percent: number; rolling_resets_at: string; weekly_percent: number; weekly_resets_at: string }[] } = JSON.parse(fs.readFileSync(path.join(here, 'fixtures', 'ocg-route-status.json'), 'utf8'));
 
-const ocgBackend = {
+const ocgBackend: Backend = {
   name: 'ocg-main',
   family: 'ocg',
   base_url: 'http://127.0.0.1:8731',
@@ -21,13 +23,13 @@ test('direct OCG usage parses all windows, sends browser UA, and calculates 30-d
   const now = Date.parse('2026-11-16T00:00:00.000Z');
   const resetsAt = new Date(now + 15 * 24 * 60 * 60 * 1000).toISOString();
   let requestedUrl;
-  let requestHeaders;
+  const captured: { headers?: Record<string, string> } = {};
   const snapshots = new UsageSnapshots({
     backends: [{ name: 'ocg-foxmail', family: 'ocg', direct: true, base_url: 'https://opencode.ai/zen/go/v1', key_env: 'OCG_KEY' }],
     env: { OCG_KEY: 'fixture-only' },
     fetchImpl: async (url, options) => {
       requestedUrl = url;
-      requestHeaders = options.headers;
+      captured.headers = options?.headers as Record<string, string>;
       return Response.json({ usage: {
         rolling: { percent: 12, resetsAt },
         weekly: { percent: 34, resetsAt },
@@ -38,11 +40,11 @@ test('direct OCG usage parses all windows, sends browser UA, and calculates 30-d
     logger: { warn: () => {} },
   });
   const out = await snapshots.refresh();
-  const value = out.snapshots['ocg-foxmail'];
+  const value = out.snapshots['ocg-foxmail'] as QuotaSnapshot & { fiveHour: NonNullable<QuotaSnapshot['fiveHour']>; weekly: NonNullable<QuotaSnapshot['weekly']> };
 
   assert.equal(requestedUrl, 'https://opencode.ai/zen/go/v1/usage');
-  assert.equal(requestHeaders.authorization, 'Bearer fixture-only');
-  assert.ok(requestHeaders['user-agent'].includes('Mozilla/'));
+  assert.equal((captured.headers as Record<string, string>).authorization, 'Bearer fixture-only');
+  assert.ok((captured.headers as Record<string, string>)['user-agent'].includes('Mozilla/'));
   assert.equal(value.known, true);
   assert.equal(value.monthlyPercent, 56);
   assert.equal(value.monthProgress, 50);
@@ -52,7 +54,7 @@ test('direct OCG usage parses all windows, sends browser UA, and calculates 30-d
 });
 
 test('direct OCG missing usage data and HTTP failures degrade to unknown snapshots', async () => {
-  const direct = { name: 'ocg', family: 'ocg', direct: true, base_url: 'https://opencode.ai/zen/go/v1', key_env: 'KEY' };
+  const direct: Backend = { name: 'ocg', family: 'ocg', direct: true, base_url: 'https://opencode.ai/zen/go/v1', key_env: 'KEY' };
   const incomplete = new UsageSnapshots({ backends: [direct], env: { KEY: 'x' }, fetchImpl: async () => Response.json({ usage: { monthly: { percent: 3 } } }), logger: { warn() {} } });
   await incomplete.refresh();
   assert.equal(incomplete.peek().snapshots.ocg.known, false);
@@ -64,25 +66,25 @@ test('direct OCG missing usage data and HTTP failures degrade to unknown snapsho
 
 test('real OCG route-status account shape parses as a known snapshot', async () => {
   let requestedUrl;
-  let requestHeaders;
+  const captured: { headers?: Record<string, string> } = {};
   const snapshots = new UsageSnapshots({
     backends: [ocgBackend],
     env: { OPENC_PROXY_MASTER_KEY: 'fixture-only' },
     fetchImpl: async (url, options) => {
       requestedUrl = url;
-      requestHeaders = options.headers;
-      return { ok: true, json: async () => status };
+      captured.headers = options?.headers as Record<string, string>;
+      return { ok: true, json: async () => status } as Response;
     },
     now: () => 1_000_000,
     logger: { warn: () => {} },
   });
 
   const out = await snapshots.refresh();
-  const value = out.snapshots['ocg-main'];
+  const value = out.snapshots['ocg-main'] as QuotaSnapshot & { fiveHour: NonNullable<QuotaSnapshot['fiveHour']>; weekly: NonNullable<QuotaSnapshot['weekly']> };
   const account = status.accounts[0];
 
   assert.equal(requestedUrl, 'http://127.0.0.1:8731/api/route/status');
-  assert.equal(requestHeaders.authorization, 'Bearer fixture-only');
+  assert.equal((captured.headers as Record<string, string>).authorization, 'Bearer fixture-only');
   assert.equal(value.known, true);
   assert.equal(value.degraded, false);
   assert.equal(value.monthlyPercent, account.monthly_percent);

@@ -1,3 +1,7 @@
+import type { AddressInfo } from 'node:net';
+import type { Backend, GatewayConfig } from '../lib/contracts.ts';
+import type { TestContext } from 'node:test';
+interface Handler { name: string; run: (req: http.IncomingMessage, res: http.ServerResponse) => void }
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import http from 'node:http';
@@ -5,19 +9,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { createGatewayServers } from '../lib/server.mjs';
-import { createIdentityStore } from '../lib/identity.mjs';
+import { createGatewayServers } from '../lib/server.ts';
+import { createIdentityStore } from '../lib/identity.ts';
 
-const listen = async (server) => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return `http://127.0.0.1:${server.address().port}`; };
-const close = (server) => new Promise((resolve) => {
+const listen = async (server: http.Server): Promise<string> => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return `http://127.0.0.1:${(server.address() as AddressInfo).port}`; };
+const close = (server: http.Server): Promise<void> => new Promise<void>((resolve) => {
   if (!server.listening) return resolve();
   server.closeAllConnections();
-  server.close(resolve);
+  server.close(() => resolve());
 });
-const chat = (url, session = 'identity', body = { model: 'm' }) => fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json', 'x-session-id': session }, body: JSON.stringify(body) });
+const chat = (url: string, session: string = 'identity', body: { model: string; stream?: boolean } = { model: 'm' }): Promise<Response> => fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json', 'x-session-id': session }, body: JSON.stringify(body) });
 
-async function setup(t, handlers, configExtra = {}) {
-  const seen = [];
+async function setup(t: TestContext, handlers: Handler[], configExtra: Partial<GatewayConfig> = {}): Promise<ReturnType<typeof createGatewayServers> & { url: string; seen: string[]; config: GatewayConfig; env: Record<string, string>; dir: string }> {
+  const seen: string[] = [];
   const upstreams = handlers.map((handler) => http.createServer(async (req, res) => {
     for await (const _chunk of req) {}
     if (req.method === 'GET') return res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ accounts: [] }));
@@ -27,17 +31,17 @@ async function setup(t, handlers, configExtra = {}) {
   const urls = await Promise.all(upstreams.map(listen));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-migration-'));
   const env = { CPR_MASTER: 'master', CPR_SESSIONS_DB: path.join(dir, 'sessions.db'), K0: 'key0', K1: 'key1' };
-  const backends = urls.map((base_url, i) => ({ name: handlers[i].name, family: 'ocg', base_url, key_env: `K${i}`, priority: i }));
-  const config = { master_key_env: 'CPR_MASTER', models: [{ id: 'm', backends: { ocg: 'native-m' } }], backends, ...configExtra };
+  const backends: Backend[] = urls.map((base_url, i) => ({ name: handlers[i].name, family: 'ocg', base_url, key_env: `K${i}`, priority: i }));
+  const config: GatewayConfig = { master_key_env: 'CPR_MASTER', models: [{ id: 'm', backends: { ocg: 'native-m' } }], backends, ...configExtra };
   const gateway = createGatewayServers(config, { env, logger: { warn() {} } });
   gateway.forwardServer.listen(0, '127.0.0.1'); gateway.adminServer.listen(0, '127.0.0.1');
   await Promise.all([once(gateway.forwardServer, 'listening'), once(gateway.adminServer, 'listening')]);
   t.after(async () => { await close(gateway.forwardServer); await close(gateway.adminServer); await Promise.all(upstreams.map(close)); fs.rmSync(dir, { recursive: true, force: true }); });
-  return { ...gateway, url: `http://127.0.0.1:${gateway.forwardServer.address().port}`, seen, config, env, dir };
+  return { ...gateway, url: `http://127.0.0.1:${(gateway.forwardServer.address() as AddressInfo).port}`, seen, config, env, dir };
 }
 
-const ok = (name) => ({ name, run: (_req, res) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ backend: name })) });
-const quota = (name, status, headers = {}) => ({ name, run: (_req, res) => res.writeHead(status, headers).end(`quota-${status}`) });
+const ok = (name: string): Handler => ({ name, run: (_req, res) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ backend: name })) });
+const quota = (name: string, status: number, headers: http.OutgoingHttpHeaders = {}): Handler => ({ name, run: (_req, res) => res.writeHead(status, headers).end(`quota-${status}`) });
 
 test('429 retries only with short Retry-After, then migrates and persists the replacement pin', async (t) => {
   let attempts = 0;
@@ -93,7 +97,7 @@ test('date-valued Retry-After is parsed as a bounded retry delay', async (t) => 
 
 test('admin POST /api/snapshots/refresh triggers refresh; other writes stay 405', async (t) => {
   const app = await setup(t, [ok('first')]);
-  const admin = `http://127.0.0.1:${app.adminServer.address().port}`;
+  const admin = `http://127.0.0.1:${(app.adminServer.address() as AddressInfo).port}`;
   const post = await fetch(`${admin}/api/snapshots/refresh`, { method: 'POST' });
   assert.equal(post.status, 200);
   const body = await post.json();

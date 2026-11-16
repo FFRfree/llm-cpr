@@ -3,7 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createIdentityStore } from '../lib/identity.mjs';
+import { createIdentityStore } from '../lib/identity.ts';
 
 test('migration cooldown remains active until one hour has elapsed', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-cooldown-'));
