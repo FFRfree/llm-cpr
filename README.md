@@ -49,6 +49,7 @@ CPR_UPSTREAM_KEY=replace-with-your-provider-api-key
     {
       "name": "ccg-main",
       "family": "ccg",
+      "alias": "foxmail",
       "base_url": "https://api.commandcode.ai/provider",
       "key_env": "CPR_UPSTREAM_KEY"
     }
@@ -65,6 +66,8 @@ CPR_UPSTREAM_KEY=replace-with-your-provider-api-key
   ]
 }
 ```
+
+`backends[].alias` 是可选的看板显示名：后台各处（订阅卡标题、汇总、钉住会话、请求明细）优先显示它，家族一律用全名 `OpenCode Go` / `CommandCode GOAT`，卡片脚注保留内部名 `name` 便于对日志。不配 `alias` 时显示内部名。
 
 默认配置路径是仓库根目录的 `config.json`。`base_url` 是上游 URL 前缀，网关会在其后追加 `/v1/chat/completions`；例如 CCG 示例使用 `/provider` 前缀，最终请求路径为 `/provider/v1/chat/completions`。可用 `CPR_CONFIG_FILE` 指定其他路径；`CPR_FORWARD_PORT`、`CPR_ADMIN_PORT` 可覆盖端口，`CPR_KEYS_ENV` 可覆盖 master key 的环境变量名。路由监听默认仅绑定 `127.0.0.1`；管理口固定绑定回环地址。不要将管理口直接暴露到公网。
 

@@ -12,6 +12,7 @@
     {
       "name": "ocg-foxmail",
       "family": "ocg",
+      "alias": "foxmail",
       "base_url": "https://opencode.ai/zen/go/v1",
       "key_env": "OPENCODE_GO_KEY_FOXMAIL",
       "direct": true
@@ -19,6 +20,7 @@
     {
       "name": "ocg-gmail",
       "family": "ocg",
+      "alias": "gmail",
       "base_url": "https://opencode.ai/zen/go/v1",
       "key_env": "OPENCODE_GO_KEY_GMAIL",
       "direct": true
@@ -26,6 +28,7 @@
     {
       "name": "ccg-main",
       "family": "ccg",
+      "alias": "foxmail",
       "base_url": "https://api.commandcode.ai/provider",
       "key_env": "COMMANDCODE_API_KEY"
     }

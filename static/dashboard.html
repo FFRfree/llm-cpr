@@ -207,6 +207,10 @@ const num=(v)=>typeof v==='number'&&Number.isFinite(v);
 const clamp=(v)=>Math.max(0,Math.min(100,v));
 const state={sort:{key:'losses',dir:-1},expanded:null,openModels:false};
 
+/* 订阅家族全名（后台不缩写）；alias 由 config.json backends[].alias 提供 */
+const FAMILY_LABEL={ocg:'OpenCode Go',ccg:'CommandCode GOAT'};
+const familyLabel=(f)=>FAMILY_LABEL[f]||f;
+
 /* ---- 时间与倒计时 ---- */
 const rel=(ts)=>{ // ts: epoch ms → 「x分钟前」
   if(!num(ts))return '时间未知';
@@ -245,16 +249,25 @@ function monthlyOf(s){ // CCG: 月额度 $；OCG: 月度百分比
   return null;
 }
 
-function renderSummary(summary){
+function renderSummary(summary,status){
   const subs=(summary?.subscriptions||[]).map(x=>
-    `<div><b class="num">${x.requests}</b><span>${esc(x.subscription)} · ${x.errors} 错 · ${(x.total_tokens/1e6).toFixed(1)}M tok</span></div>`);
+    `<div><b class="num">${x.requests}</b><span>${esc(subLabel(status,x.subscription))} · ${x.errors} 错 · ${(x.total_tokens/1e6).toFixed(1)}M tok</span></div>`);
   $('#summary').innerHTML=
     `<div><b class="num">${summary?.requests??'—'}</b><span>总请求</span></div>`+
     `<div><b class="num">${summary?.sessions??'—'}</b><span>会话数</span></div>`+subs.join('');
 }
 
+/* 订阅显示名：内部名 → 「alias（家族全名）」，未知名字原样返回 */
+function subLabel(status,name){
+  const sub=(status?.subscriptions||[]).find(x=>x.name===name);
+  if(!sub)return name;
+  const alias=sub.alias||sub.name;
+  return alias===sub.name?alias:`${alias}（${familyLabel(sub.family)}）`;
+}
+
 function renderSubscriptions(status){
   const subs=status.subscriptions||[];
+  state.subs=subs; // 供明细行把内部名翻成「alias（家族）」
   $('#subscriptions').innerHTML=subs.map((x)=>{
     const s=x.snapshot||{};
     const monthProgress=num(s.monthProgress)?clamp(s.monthProgress)
@@ -274,9 +287,9 @@ function renderSubscriptions(status){
         resetText:s.periodEnd?countdown(toMs(s.periodEnd)):'',unit:mon?.unit||'%'}),
     ].join('');
     return `<article>
-      <div class="sub-head"><span class="name">${esc(x.name)}</span><span class="badge">${esc(x.family)}</span>${badges.join('')}<span class="remain">${remainHtml}</span></div>
+      <div class="sub-head"><span class="name">${esc(x.alias||x.name)}</span><span class="badge">${esc(familyLabel(x.family))}</span>${badges.join('')}<span class="remain">${remainHtml}</span></div>
       ${rows}
-      <div class="sub-foot">快照 ${s.fetchedAt?rel(s.fetchedAt):'尚无'}${num(s.ageMs)?` · ${Math.round(s.ageMs/1000)}s 前`:''}
+      <div class="sub-foot">快照 ${s.fetchedAt?rel(s.fetchedAt):'尚无'}${num(s.ageMs)?` · ${Math.round(s.ageMs/1000)}s 前`:''} · 内部名 <span class="mono">${esc(x.name)}</span>
         <details class="models"${state.openModels?' open':''}><summary>可用模型（${(x.models||[]).length}）</summary>
         <div class="chips">${(x.models||[]).map(m=>`<span>${esc(m)}</span>`).join('')}</div></details></div>
     </article>`;
@@ -285,7 +298,7 @@ function renderSubscriptions(status){
   const live=new Set(subs.map(x=>x.name));
   const maps=status.mappings||[];
   $('#mappings').innerHTML=maps.length
-    ?'钉住会话：'+maps.map(m=>`${esc(m.backend)} ${m.identities}${live.has(m.backend)?'':'（已下线，下次请求自动迁移）'}`).join(' · '):'';
+    ?'钉住会话：'+maps.map(m=>`${esc(subLabel(status,m.backend))} ${m.identities}${live.has(m.backend)?'':'（已下线，下次请求自动迁移）'}`).join(' · '):'';
 }
 
 /* ---- 会话表 ---- */
@@ -330,7 +343,7 @@ async function showDetail(id){
     if(state.expanded!==id)return;
     const lossTs=new Set((data.session?.loss_events||[]).map(e=>e.ts));
     const rows=(data.requests||[]).slice().reverse().map(r=>`<tr${lossTs.has(r.ts)?' style="color:var(--warning)"':''}>
-      <td class="num">${fmtClock(r.ts)}</td><td>${esc(r.subscription)}</td><td>${esc(r.model)}</td>
+      <td class="num">${fmtClock(r.ts)}</td><td>${esc(subLabel({subscriptions:state.subs||[]},r.subscription))}</td><td>${esc(r.model)}</td>
       <td class="num">${esc(r.status)}</td><td class="num">${r.prompt_tokens??'—'}</td>
       <td class="num">${r.cache_hit_tokens??'—'}</td><td class="num">${num(r.ms)?r.ms+'ms':'—'}</td>
       <td>${lossTs.has(r.ts)?'⚠ cache 丢失':''}</td></tr>`).join('');
@@ -349,7 +362,7 @@ async function refresh(){
       fetch('/api/audit/sessions').then(r=>r.json()),
       fetch('/api/audit/summary').then(r=>r.json()),
     ]);
-    renderSummary(summary?.summary);
+    renderSummary(summary?.summary, status);
     renderSubscriptions(status);
     renderSessions(sessions.sessions);
     const snap=status.snapshots||{};
