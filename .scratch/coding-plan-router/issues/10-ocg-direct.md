@@ -7,15 +7,18 @@
 **Status:** ready-for-agent
 
 **验收 checkbox:**
-- [ ] 夹具测试：真 `/usage` 返回形状（rolling/weekly/monthly percent+resetsAt ISO）解析正确；缺字段/HTTP 失败降级为余量未知
-- [ ] month_progress 30 天自算单测（固定 now/resets_at 断言）
-- [ ] 假上游 e2e：两个 ocg backend（假 OpenCode），同身份钉死、跨身份评分分流（月已用% 差异显著时）
-- [ ] 真上游冒烟：直连 foxmail 号非流式+流式各一笔经网关成功；快照 known=true 且与 ocg-proxy /api/route/status 同号数据对得上
-- [ ] 浏览器 UA 缺失场景在夹具中显式覆盖（防 Cloudflare 回归）
-- [ ] `node --test` 全绿；中文 commit；工作树干净
-- [ ] 本票 Comments 记录真冒烟结果与对账数据
+- [x] 夹具测试：真 `/usage` 返回形状（rolling/weekly/monthly percent+resetsAt ISO）解析正确；缺字段/HTTP 失败降级为余量未知
+- [x] month_progress 30 天自算单测（固定 now/resets_at 断言）
+- [x] 假上游 e2e：两个 ocg backend（假 OpenCode），同身份钉死、跨身份评分分流（月已用% 差异显著时）
+- [x] 真上游冒烟：直连 foxmail 号非流式+流式各一笔经网关成功；快照 known=true 且与 ocg-proxy /api/route/status 同号数据对得上
+- [x] 浏览器 UA 缺失场景在夹具中显式覆盖（防 Cloudflare 回归）
+- [x] `node --test` 全绿；中文 commit；工作树干净
+- [x] 本票 Comments 记录真冒烟结果与对账数据
 
 ## Comments
 
 - 事实底座：OCG 直连 `/usage` 已实测（2026-11-16，foxmail 号真 key）：返回 `{"usage":{"rolling":{"status":"ok","percent":0,"resetsAt":"..."},...}}`；UA 必须浏览器形。
 - 生产切换（backends 换直连）属生产配置变更，实施时须用户逐次点头；本票只落代码与真冒烟（临时端口+临时配置）。
+- 实现取舍：使用显式 `direct: true` 而非按 `base_url` 自动识别。这样同为 `family: ocg` 的直连条目与 legacy admin 桥接条目可共存/回滚，不会因改 URL 意外改变快照来源；未标记的 ocg 条目维持原 admin/status 路径。
+- 真上游冒烟（临时配置/随机回环端口，生产 backends 未改）：foxmail、gmail 两个直连快照均 `known=true`；monthly_percent 分别为 8%、42%，与只读 `ocg-proxy:8742/api/route/status` 同号数据分别为 8%、42%，差值均 0 个百分点。30 天周期自算 month_progress 分别约 28.26%、62.06%。网关非流式与流式请求各一笔均 HTTP 200；审计均记录到 `ocg-foxmail`（当次评分选中，gmail 快照也已对账）。
+- 路径兼容：当 backend base URL 已以 `/v1` 结尾时，转发追加 `/chat/completions` 而非重复 `/v1`；假上游 e2e 覆盖 `/zen/go/v1/chat/completions`。

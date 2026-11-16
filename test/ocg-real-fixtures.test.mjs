@@ -17,6 +17,51 @@ const ocgBackend = {
   account: 'ocg-account-sample',
 };
 
+test('direct OCG usage parses all windows, sends browser UA, and calculates 30-day month progress', async () => {
+  const now = Date.parse('2026-11-16T00:00:00.000Z');
+  const resetsAt = new Date(now + 15 * 24 * 60 * 60 * 1000).toISOString();
+  let requestedUrl;
+  let requestHeaders;
+  const snapshots = new UsageSnapshots({
+    backends: [{ name: 'ocg-foxmail', family: 'ocg', direct: true, base_url: 'https://opencode.ai/zen/go/v1', key_env: 'OCG_KEY' }],
+    env: { OCG_KEY: 'fixture-only' },
+    fetchImpl: async (url, options) => {
+      requestedUrl = url;
+      requestHeaders = options.headers;
+      return Response.json({ usage: {
+        rolling: { percent: 12, resetsAt },
+        weekly: { percent: 34, resetsAt },
+        monthly: { percent: 56, resetsAt },
+      } });
+    },
+    now: () => now,
+    logger: { warn: () => {} },
+  });
+  const out = await snapshots.refresh();
+  const value = out.snapshots['ocg-foxmail'];
+
+  assert.equal(requestedUrl, 'https://opencode.ai/zen/go/v1/usage');
+  assert.equal(requestHeaders.authorization, 'Bearer fixture-only');
+  assert.ok(requestHeaders['user-agent'].includes('Mozilla/'));
+  assert.equal(value.known, true);
+  assert.equal(value.monthlyPercent, 56);
+  assert.equal(value.monthProgress, 50);
+  assert.equal(value.fiveHour.used, 12);
+  assert.equal(value.weekly.used, 34);
+  assert.equal(value.periodEnd, resetsAt);
+});
+
+test('direct OCG missing usage data and HTTP failures degrade to unknown snapshots', async () => {
+  const direct = { name: 'ocg', family: 'ocg', direct: true, base_url: 'https://opencode.ai/zen/go/v1', key_env: 'KEY' };
+  const incomplete = new UsageSnapshots({ backends: [direct], env: { KEY: 'x' }, fetchImpl: async () => Response.json({ usage: { monthly: { percent: 3 } } }), logger: { warn() {} } });
+  await incomplete.refresh();
+  assert.equal(incomplete.peek().snapshots.ocg.known, false);
+  const failed = new UsageSnapshots({ backends: [direct], env: { KEY: 'x' }, fetchImpl: async () => new Response('', { status: 403 }), logger: { warn() {} } });
+  await failed.refresh();
+  assert.equal(failed.peek().snapshots.ocg.known, false);
+  assert.equal(failed.peek().snapshots.ocg.degraded, true);
+});
+
 test('real OCG route-status account shape parses as a known snapshot', async () => {
   let requestedUrl;
   let requestHeaders;

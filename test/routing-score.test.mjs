@@ -88,6 +88,54 @@ test('e2e chooses greater-debt CCG subscription on new identity', async (t) => {
   assert.deepEqual(seen, ['second']);
 });
 
+test('e2e routes directly to OCG backends by monthly debt and pins the selected account per identity', async (t) => {
+  const received = [];
+  const direct = (name, percent) => http.createServer(async (req, res) => {
+    if (req.method === 'GET' && req.url === '/zen/go/v1/usage') {
+      assert.equal(req.headers['user-agent']?.startsWith('Mozilla/'), true);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ usage: {
+        rolling: { percent: 10, resetsAt: '2026-11-17T00:00:00.000Z' },
+        weekly: { percent: 20, resetsAt: '2026-11-20T00:00:00.000Z' },
+        monthly: { percent, resetsAt: '2026-12-01T00:00:00.000Z' },
+      } }));
+      return;
+    }
+    if (req.method === 'POST') {
+      const chunks = []; for await (const chunk of req) chunks.push(chunk);
+      received.push({ name, path: req.url, session: req.headers['x-opencode-session'], body: JSON.parse(Buffer.concat(chunks).toString()) });
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ backend: name })); return;
+    }
+    res.writeHead(404).end();
+  });
+  const foxmail = direct('foxmail', 85); const gmail = direct('gmail', 15);
+  const foxUrl = await start(foxmail); const gmailUrl = await start(gmail);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-ocg-direct-'));
+  const env = { CPR_MASTER: 'master', CPR_SESSIONS_DB: path.join(dir, 'sessions.db'), FOX_KEY: 'fox-fixture', GMAIL_KEY: 'gmail-fixture' };
+  const config = {
+    master_key_env: 'CPR_MASTER',
+    models: [{ id: 'm', backends: { ocg: 'native-model' } }],
+    backends: [
+      { name: 'ocg-foxmail', family: 'ocg', direct: true, base_url: `${foxUrl}/zen/go/v1`, key_env: 'FOX_KEY', priority: 0 },
+      { name: 'ocg-gmail', family: 'ocg', direct: true, base_url: `${gmailUrl}/zen/go/v1`, key_env: 'GMAIL_KEY', priority: 1 },
+    ],
+  };
+  const gateway = await launchGateway(config, env);
+  t.after(async () => { await close(gateway.forwardServer); await close(gateway.adminServer); await close(foxmail); await close(gmail); fs.rmSync(dir, { recursive: true, force: true }); });
+
+  const send = (session) => fetch(`http://127.0.0.1:${gateway.forwardServer.address().port}/v1/chat/completions`, {
+    method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json', 'x-session-id': session },
+    body: JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'hello' }] }),
+  });
+  assert.equal((await send('sticky-session')).status, 200);
+  assert.equal((await send('sticky-session')).status, 200);
+  assert.equal((await send('new-session')).status, 200);
+  assert.deepEqual(received.map((entry) => entry.name), ['gmail', 'gmail', 'gmail']);
+  assert.ok(received.every((entry) => entry.path === '/zen/go/v1/chat/completions'));
+  assert.ok(received.every((entry) => entry.session === 'sticky-session' || entry.session === 'new-session'));
+  assert.ok(received.every((entry) => entry.body.model === 'native-model'));
+});
+
 test('e2e returns explicit 429 when all candidates exceed both windows', async (t) => {
   const upstream = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/alpha/billing/credits') return res.end(JSON.stringify({ monthlyCredits: 50, fiveHour: { used: 14, cap: 14 }, weekly: { used: 35, cap: 35 } }));
