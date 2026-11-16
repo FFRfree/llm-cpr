@@ -44,3 +44,5 @@ XDG 默认区分用户配置 `~/.config` 与持久数据 `~/.local/share`；`~/.
 - 2026-11-16：回滚材料为旧 unit `/root/.config/coding-plan-router/rollback/coding-plan-router.service.old`、旧 env 副本 `/root/.config/coding-plan-router/rollback/env-before-move` 和额外保留的 `/root/.config/coding-plan-router/rollback/env-in-source-before`。回滚旧代码只需切换 `current` 后重启；数据恢复需停服，恢复备份将丢失切换后新写入，二者不是同一操作。费用策略未改动；额度快照未知时仍沿用现有行为。
 
 - 参考：[XDG Base Directory](https://specifications.freedesktop.org/basedir/latest/)、[SQLite WAL](https://sqlite.org/wal.html)、[SQLite Backup API](https://www.sqlite.org/backup.html)。
+- 2026-11-16（后续整理，用户要求）：仓库里的配置改成示例文件 `config.example.json`（本机 `config.json`、`.env` 均进 `.gitignore`），与 `.env.example` 一致，避免仓库里放一份长得像生效配置的文件。类型文件后缀从 `.mts` 统一为 `.ts`：`package.json` 已是 `type: module`，Node ≥22.18 原生类型擦除即可运行，`.mts` 只是显式声明 ESM、并非必需；改名后 `node --test` 97 项通过、`npm run typecheck` 通过、发布副本假上游冒烟通过。
+- 2026-11-16：工作树已提交，树干净。`78009ba` 架构（provider/protocol 分层 + 可靠性加固 + `.ts` 后缀）；`3b310f0` 部署（示例配置改名、部署文档、迁移与冒烟脚本、本票记录）。生产仍在跑 `252f723` 的发布副本，未发布这两笔提交——需要另行授权才能把它们发上线。
