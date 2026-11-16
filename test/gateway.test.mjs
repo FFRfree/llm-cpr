@@ -62,11 +62,15 @@ test('HTTP gateway returns local models, proxies JSON and SSE, rejects bad keys,
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
   const config = baseConfig(`http://127.0.0.1:${upstream.address().port}`, 'ocg');
   config.models.push({ id: 'error', backends: { ocg: 'error-model' } });
-  const env = { CPR_TEST_MASTER: 'test-master', CPR_TEST_UPSTREAM: 'test-upstream' };
+  const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-gateway-db-'));
+  const env = { CPR_TEST_MASTER: 'test-master', CPR_TEST_UPSTREAM: 'test-upstream', CPR_SESSIONS_DB: path.join(dbDir, 'sessions.db') };
   const { forwardServer, adminServer } = createGatewayServers(config, { env });
   forwardServer.listen(0, '127.0.0.1'); adminServer.listen(0, '127.0.0.1');
   await Promise.all([once(forwardServer, 'listening'), once(adminServer, 'listening')]);
-  t.after(async () => { forwardServer.close(); adminServer.close(); upstream.close(); });
+  t.after(async () => {
+    await Promise.all([forwardServer, adminServer, upstream].map((server) => new Promise((resolve) => server.close(resolve))));
+    fs.rmSync(dbDir, { recursive: true, force: true });
+  });
   const url = `http://127.0.0.1:${forwardServer.address().port}`;
   const models = await fetch(`${url}/v1/models`, { headers: { authorization: 'Bearer test-master' } });
   assert.equal(models.status, 200);
