@@ -3,7 +3,7 @@
 // 必须在服务已停止时运行（脚本会拒绝在有其他连接持有写锁时继续）。
 //
 // 用法：
-//   node scripts/xdg-deploy/migrate-dbs.mjs \
+//   node scripts/xdg-deploy/migrate-dbs.ts \
 //     --sessions-db /root/workspace/services/coding-plan-router/sessions.db \
 //     --usage-db    /root/workspace/services/coding-plan-router/usage.db \
 //     --dest-dir    /root/.local/share/coding-plan-router \
@@ -16,7 +16,7 @@ import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
 const args = process.argv.slice(2);
-const argOf = (name) => {
+const argOf = (name: string): string | undefined => {
   const index = args.indexOf(`--${name}`);
   return index === -1 ? undefined : args[index + 1];
 };
@@ -37,40 +37,56 @@ if (path.dirname(sessionsDb) === path.resolve(destDir) || path.dirname(usageDb) 
 fs.mkdirSync(destDir, { recursive: true });
 fs.mkdirSync(backupDir, { recursive: true });
 
-const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const sha256 = (file: string): string => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
+type SqlRow = Record<string, null | number | bigint | string | Uint8Array>;
+type ProbeResult = { integrity: SqlRow[string] } & Record<string, unknown>;
+type Kind = 'sessions' | 'usage';
+interface PlanItem {
+  kind: Kind; src: string; before?: ProbeResult; after?: ProbeResult;
+  walBytes?: number; checkpoint?: SqlRow; sha256?: string; backupPath?: string; destPath?: string;
+}
+function row(db: DatabaseSync, sql: string): SqlRow {
+  const result = db.prepare(sql).get();
+  if (!result) throw new Error(`查询未返回结果：${sql}`);
+  return result;
+}
+function groupRows(db: DatabaseSync, sql: string, key: string): Record<string, SqlRow[string]> {
+  return Object.fromEntries(db.prepare(sql).all().map((r: SqlRow): [string, SqlRow[string]] => [String(r[key]), r.c]));
+}
 
 // 各库的关键断言：迁移前后必须完全一致。
 const PROBES = {
-  sessions: (db) => ({
-    session_routes: db.prepare('select count(*) c from session_routes').get().c,
-    identity_migrations: db.prepare('select count(*) c from identity_migrations').get().c,
-    by_backend: Object.fromEntries(db.prepare('select backend_name, count(*) c from session_routes group by 1').all().map((r) => [r.backend_name, r.c])),
+  sessions: (db: DatabaseSync): Record<string, unknown> => ({
+    session_routes: row(db, 'select count(*) c from session_routes').c,
+    identity_migrations: row(db, 'select count(*) c from identity_migrations').c,
+    by_backend: groupRows(db, 'select backend_name, count(*) c from session_routes group by 1', 'backend_name'),
   }),
-  usage: (db) => ({
-    requests: db.prepare('select count(*) c from requests').get().c,
-    max_id: db.prepare('select coalesce(max(id),0) m from requests').get().m,
-    max_ts: db.prepare('select coalesce(max(ts),0) m from requests').get().m,
-    by_subscription: Object.fromEntries(db.prepare('select subscription, count(*) c from requests group by 1').all().map((r) => [r.subscription, r.c])),
+  usage: (db: DatabaseSync): Record<string, unknown> => ({
+    requests: row(db, 'select count(*) c from requests').c,
+    max_id: row(db, 'select coalesce(max(id),0) m from requests').m,
+    max_ts: row(db, 'select coalesce(max(ts),0) m from requests').m,
+    by_subscription: groupRows(db, 'select subscription, count(*) c from requests group by 1', 'subscription'),
   }),
 };
 
-function probe(file, kind) {
+function probe(file: string, kind: Kind): ProbeResult {
   const db = new DatabaseSync(file, { readOnly: true });
   try {
-    const integrity = db.prepare('pragma integrity_check').get().integrity_check;
+    const integrity = row(db, 'pragma integrity_check').integrity_check;
     return { integrity, ...PROBES[kind](db) };
   } finally { db.close(); }
 }
 
-function checkpoint(file) {
+function checkpoint(file: string): SqlRow {
   const db = new DatabaseSync(file);
   try {
-    const result = db.prepare('pragma wal_checkpoint(TRUNCATE)').get();
+    const result = row(db, 'pragma wal_checkpoint(TRUNCATE)');
     return result; // { busy, log, checkpointed }
   } finally { db.close(); }
 }
 
-function copyDurably(from, to) {
+function copyDurably(from: string, to: string): void {
   if (fs.existsSync(to)) throw new Error(`目标已存在，拒绝覆盖：${to}`);
   fs.copyFileSync(from, to);
   const fd = fs.openSync(to, 'r+');
@@ -78,11 +94,11 @@ function copyDurably(from, to) {
   fs.chmodSync(to, 0o600);
 }
 
-const plan = [
+const plan: PlanItem[] = [
   { kind: 'sessions', src: sessionsDb },
   { kind: 'usage', src: usageDb },
 ];
-const report = { at: new Date().toISOString(), destDir, backupDir, databases: {} };
+const report: { at: string; destDir: string; backupDir: string; databases: Record<string, unknown>; ok?: boolean } = { at: new Date().toISOString(), destDir, backupDir, databases: {} };
 
 // 1) 源库预检 + WAL checkpoint
 for (const item of plan) {
@@ -105,6 +121,7 @@ for (const item of plan) {
 
 // 3) 校验：备份与目标都必须与源库逐项一致
 for (const item of plan) {
+  if (!item.destPath || !item.backupPath) throw new Error('复制路径未设置');
   item.after = probe(item.destPath, item.kind);
   const backupProbe = probe(item.backupPath, item.kind);
   if (item.after.integrity !== 'ok') throw new Error(`目标库完整性检查失败：${item.destPath}`);

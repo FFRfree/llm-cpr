@@ -2,11 +2,12 @@
 // 发布副本冒烟：用本机假上游验证一份运行副本能起、能转发、能钉会话、能记账、能出看板。
 // 不触碰真实订阅额度；全部读写落在临时目录。
 //
-// 用法： node scripts/xdg-deploy/smoke-release.mjs [releaseDir]
+// 用法： node scripts/xdg-deploy/smoke-release.ts [releaseDir]
 //   releaseDir 默认 /root/.local/lib/coding-plan-router/current
 // 退出码 0 = 全部通过。
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
 import net from 'node:net';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -14,27 +15,36 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 const releaseDir = path.resolve(process.argv[2] || '/root/.local/lib/coding-plan-router/current');
 const tmpRoot = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'cpr-release-smoke-'));
 const dataDir = path.join(tmpRoot, 'data');
 fs.mkdirSync(dataDir, { recursive: true });
 
-const freePort = async () => {
+const freePort = async (): Promise<number> => {
   const server = net.createServer();
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const { port } = address;
+  await new Promise<void>((resolve: () => void): void => { server.close((): void => resolve()); });
   return port;
 };
 
-const steps = [];
-const record = (name, detail = '') => { steps.push(`${name}${detail ? ` — ${detail}` : ''}`); };
+const steps: string[] = [];
+const record = (name: string, detail: string = ''): void => { steps.push(`${name}${detail ? ` — ${detail}` : ''}`); };
 
-const upstreamHits = [];
-const upstream = http.createServer(async (req, res) => {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+const upstreamHits: { url: string | undefined; headers: IncomingHttpHeaders; body: string }[] = [];
+const upstream = http.createServer(async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    if (!Buffer.isBuffer(chunk)) throw new TypeError('Unexpected request chunk');
+    chunks.push(chunk);
+  }
   const body = Buffer.concat(chunks).toString();
   upstreamHits.push({ url: req.url, headers: req.headers, body });
   if (req.url === '/usage') {
@@ -43,7 +53,8 @@ const upstream = http.createServer(async (req, res) => {
     return;
   }
   if (req.url === '/v1/chat/completions') {
-    if (JSON.parse(body).stream) {
+    const parsed: unknown = JSON.parse(body);
+    if (typeof parsed === 'object' && parsed !== null && 'stream' in parsed && parsed.stream) {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.end('data: {"choices":[{"delta":{"content":"hello"}}]}\n\ndata: [DONE]\n\n');
       return;
@@ -57,7 +68,9 @@ const upstream = http.createServer(async (req, res) => {
 });
 upstream.listen(0, '127.0.0.1');
 await once(upstream, 'listening');
-const upstreamPort = upstream.address().port;
+const upstreamAddress = upstream.address();
+assert.ok(upstreamAddress && typeof upstreamAddress !== 'string');
+const upstreamPort = upstreamAddress.port;
 
 const forwardPort = await freePort();
 const adminPort = await freePort();
@@ -71,7 +84,7 @@ fs.writeFileSync(configFile, JSON.stringify({
 }, null, 2));
 
 const sessionsDb = path.join(dataDir, 'sessions.db');
-const child = spawn(process.execPath, [path.join(releaseDir, 'lib', 'main.mjs')], {
+const child = spawn(process.execPath, [path.join(releaseDir, 'lib', 'main.ts')], {
   cwd: releaseDir,
   env: {
     ...process.env,
@@ -85,15 +98,15 @@ const child = spawn(process.execPath, [path.join(releaseDir, 'lib', 'main.mjs')]
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let childLog = '';
-child.stdout.on('data', (chunk) => { childLog += chunk; });
-child.stderr.on('data', (chunk) => { childLog += chunk; });
+child.stdout.on('data', (chunk: unknown): void => { if (typeof chunk === 'string' || Buffer.isBuffer(chunk)) childLog += chunk; else throw new TypeError('Unexpected child output'); });
+child.stderr.on('data', (chunk: unknown): void => { if (typeof chunk === 'string' || Buffer.isBuffer(chunk)) childLog += chunk; else throw new TypeError('Unexpected child output'); });
 
 const forwardUrl = `http://127.0.0.1:${forwardPort}`;
 const adminUrl = `http://127.0.0.1:${adminPort}`;
 
-const waitReady = async (url, timeoutMs = 10_000) => {
+const waitReady = async (url: string, timeoutMs: number = 10_000): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
-  let lastError;
+  let lastError: unknown;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`release process exited early (code ${child.exitCode}):\n${childLog}`);
     try {
@@ -101,13 +114,13 @@ const waitReady = async (url, timeoutMs = 10_000) => {
       if (response.ok) return;
       lastError = new Error(`admin not ready: HTTP ${response.status}`);
     } catch (error) { lastError = error; }
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 150); });
   }
-  throw new Error(`release did not become ready: ${lastError?.message}\n${childLog}`);
+  throw new Error(`release did not become ready: ${lastError instanceof Error ? lastError.message : undefined}\n${childLog}`);
 };
 
 try {
-  assert.ok(fs.existsSync(path.join(releaseDir, 'lib', 'main.mjs')), `missing lib/main.mjs in ${releaseDir}`);
+  assert.ok(fs.existsSync(path.join(releaseDir, 'lib', 'main.ts')), `missing lib/main.ts in ${releaseDir}`);
   assert.ok(fs.existsSync(path.join(releaseDir, 'static', 'dashboard.html')), `missing static/dashboard.html in ${releaseDir}`);
   record('发布副本结构', `${releaseDir}`);
 
@@ -116,7 +129,9 @@ try {
 
   const models = await fetch(`${forwardUrl}/v1/models`, { headers: { authorization: 'Bearer smoke-master' } });
   assert.equal(models.status, 200);
-  assert.deepEqual((await models.json()).data.map((model) => model.id), ['unified-model']);
+  const modelsBody: unknown = await models.json();
+  assert.ok(isRecord(modelsBody) && Array.isArray(modelsBody.data));
+  assert.deepEqual(modelsBody.data.map((model: unknown): unknown => isRecord(model) ? model.id : undefined), ['unified-model']);
   assert.equal((await fetch(`${forwardUrl}/v1/models`, { headers: { authorization: 'Bearer wrong' } })).status, 401);
   record('模型列表与鉴权', '/v1/models 200；错 key 401');
 
@@ -126,10 +141,17 @@ try {
     body: JSON.stringify({ model: 'unified-model', messages: [{ role: 'user', content: 'hi' }] }),
   });
   assert.equal(chat.status, 200);
-  assert.equal((await chat.json()).choices[0].message.content, 'ok');
-  const chatHit = upstreamHits.find((hit) => hit.url === '/v1/chat/completions');
+  const chatBody: unknown = await chat.json();
+  assert.ok(isRecord(chatBody) && Array.isArray(chatBody.choices));
+  const choice: unknown = chatBody.choices[0];
+  assert.ok(isRecord(choice) && isRecord(choice.message));
+  assert.equal(choice.message.content, 'ok');
+  const chatHit = upstreamHits.find((hit: { url: string | undefined; headers: IncomingHttpHeaders; body: string }): boolean => hit.url === '/v1/chat/completions');
+  assert.ok(chatHit);
   assert.equal(chatHit.headers.authorization, 'Bearer fake-upstream-key');
-  assert.equal(JSON.parse(chatHit.body).model, 'native-model');
+  const hitBody: unknown = JSON.parse(chatHit.body);
+  assert.ok(isRecord(hitBody));
+  assert.equal(hitBody.model, 'native-model');
   assert.equal(chatHit.headers['x-opencode-session'], 'smoke-session');
   record('聊天转发', '上行换 key、换模型名、保留 OCG session 头');
 
@@ -152,20 +174,27 @@ try {
 
   const routeStatus = await fetch(`${adminUrl}/api/route/status`);
   assert.equal(routeStatus.status, 200);
-  const routeStatusBody = await routeStatus.json();
+  const routeStatusBody: unknown = await routeStatus.json();
+  assert.ok(isRecord(routeStatusBody));
   assert.ok(Array.isArray(routeStatusBody.preference), 'route/status 应带 preference 排名');
   record('管理口 /api/route/status', `preference=${JSON.stringify(routeStatusBody.preference)}`);
 
   const ledger = await fetch(`${adminUrl}/api/audit/requests?limit=5`);
   assert.equal(ledger.status, 200);
-  const ledgerRows = (await ledger.json()).requests ?? [];
+  const ledgerBody: unknown = await ledger.json();
+  assert.ok(isRecord(ledgerBody));
+  const ledgerRows: unknown = ledgerBody.requests ?? [];
+  assert.ok(Array.isArray(ledgerRows));
   assert.ok(ledgerRows.length >= 3, `账本应有 >=3 行，实际 ${ledgerRows.length}`);
-  assert.ok(ledgerRows.every((row) => row.subscription === 'fake-backend'), '账本订阅名应为 fake-backend');
+  assert.ok(ledgerRows.every((row: unknown): boolean => isRecord(row) && row.subscription === 'fake-backend'), '账本订阅名应为 fake-backend');
   record('账本写入', `${ledgerRows.length} 行，订阅名 fake-backend`);
 
   const sessions = await fetch(`${adminUrl}/api/audit/sessions?limit=5`);
   assert.equal(sessions.status, 200);
-  const sessionRows = (await sessions.json()).sessions ?? [];
+  const sessionsBody: unknown = await sessions.json();
+  assert.ok(isRecord(sessionsBody));
+  const sessionRows: unknown = sessionsBody.sessions ?? [];
+  assert.ok(Array.isArray(sessionRows));
   assert.ok(sessionRows.length >= 2, '会话列表应有 >=2 个会话');
   record('会话聚合', `${sessionRows.length} 个会话`);
 
@@ -178,18 +207,18 @@ try {
 
   assert.ok(fs.existsSync(sessionsDb), '应使用显式指定的 sessions.db');
   assert.ok(fs.existsSync(path.join(dataDir, 'usage.db')), 'usage.db 应跟随 sessions.db 同目录');
-  const strayDbs = fs.readdirSync(releaseDir).filter((name) => name.endsWith('.db'));
+  const strayDbs = fs.readdirSync(releaseDir).filter((name: string): boolean => name.endsWith('.db'));
   assert.deepEqual(strayDbs, [], `发布目录不应出现数据库文件：${strayDbs.join(', ')}`);
   // 发布副本在 releases/ 下时，父目录也不能出现库文件；在临时 scratch 目录里跑就不查父目录（那里本就有别的测试残留）。
   if (path.basename(path.dirname(releaseDir)) === 'releases') {
-    const parentDbs = fs.readdirSync(path.dirname(releaseDir)).filter((n) => n.endsWith('.db'));
+    const parentDbs = fs.readdirSync(path.dirname(releaseDir)).filter((n: string): boolean => n.endsWith('.db'));
     assert.deepEqual(parentDbs, [], `发布父目录不应出现数据库文件：${parentDbs.join(', ')}`);
   }
   record('数据落位', `${dataDir}（sessions.db + usage.db），发布目录无库文件`);
 } catch (error) {
   child.kill('SIGKILL');
   upstream.close();
-  console.error(`✗ 冒烟失败：${error.message}`);
+  console.error(`✗ 冒烟失败：${error instanceof Error ? error.message : undefined}`);
   if (steps.length) console.error(`已通过：\n- ${steps.join('\n- ')}`);
   console.error(`临时目录保留以供排查：${tmpRoot}`);
   process.exitCode = 1;
@@ -197,7 +226,7 @@ try {
 }
 
 child.kill('SIGTERM');
-await once(child, 'exit').catch(() => {});
+await once(child, 'exit').catch((): void => {});
 upstream.close();
 fs.rmSync(tmpRoot, { recursive: true, force: true });
 console.log(`✓ 发布副本冒烟全部通过（${releaseDir}）`);
