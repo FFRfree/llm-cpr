@@ -11,20 +11,20 @@
 - 一个 OpenAI Chat Completions 兼容入口，提供 `/v1/chat/completions` 与配置白名单 `/v1/models`。
 - 多个 `ocg` / `ccg` 后端账号；每个模型可声明其在不同家族中的上游模型 ID。
 - 会话身份命中后钉死后端；新会话按“周期时间进度 − 已用进度”的欠账评分选择后端。
-- 配额类错误（403 / 429）可迁移到其他兼容后端；全员不可用或超限时失败关闭，不会自动烧额外额度。
+- 配额类错误（403 / 429）可迁移到其他兼容后端；已知窗口超限时不选该后端，额度未知时按优先级尝试，上游额外计费开关须自行关闭。
 - 本机管理看板与只读 API；SQLite 审计记录请求元数据及用量，不保存请求正文。
 
 ## 要求
 
-- Node.js 22 或更新版本（使用内置 `node:sqlite`，无第三方运行依赖）。
+- Node.js **≥ 22.18.0**（使用内置 `node:sqlite` 和原生 `.ts` 类型擦除；不需构建或 TypeScript 运行时，无第三方运行依赖）。
 - 对应 coding-plan 服务的有效订阅与 API 凭据。
-- 若使用 OCG，先运行可访问的 OpenCode Go 代理；该后端地址填代理的 OpenAI 兼容 API 地址，不要直接复制其他部署的账号凭据。
+- OpenCode Go 可配置为直连（`direct: true`）或通过兼容代理接入；两种方式的额度查询方式不同。
 
 ## 快速开始
 
-1. 克隆仓库并在仓库根目录创建 `config.json`。先从一份账号、一个模型开始，再扩展。
-2. 生成足够长的随机 master key；将其和后端凭据放在本机 `.env`，设置文件权限为仅当前用户可读（`chmod 600 .env`）。不要提交 `.env`。
-3. 根据订阅家族设置每个 backend 的 `family`（`ocg` 或 `ccg`）、`base_url`、`key_env`；账号名称只用于本地识别。OCG 的 `base_url` 指向 OCG 代理，CCG 指向其 OpenAI 兼容 Provider API。
+1. 克隆仓库后 `cp config.example.json config.json`，再按自己的账号改本机那份 `config.json`（已被 `.gitignore` 排除，不会误提交）。先从一份账号、一个模型开始，再扩展。
+2. 生成足够长的随机 master key；将其和后端凭据放在本机 `.env`，设置文件权限为仅当前用户可读（`chmod 600 .env`）。不要提交 `.env`。本仓库是开发环境示例；生产机的实际密钥放在 `/root/.config/coding-plan-router/.env`，部署布局见 [`docs/xdg-deployment.md`](docs/xdg-deployment.md)。
+3. 根据订阅家族设置每个 backend 的 `family`（`ocg` 或 `ccg`）、`base_url`、`key_env`；`name` 是持久会话映射和审计的稳定身份键，不应重命名；`account` 用于上游额度账号匹配，`alias` 只改显示。OCG 的 `base_url` 指向直连服务或兼容代理，CCG 指向其 OpenAI 兼容 Provider API。
 4. 在 `models` 中配置对客户端公开的统一 `id`，并在 `backends` 映射中填写每个家族的准确上游模型 ID。仅加入你已验证可用、且希望公开给客户端的模型。
 5. 启动并检查模型列表与管理看板。
 
@@ -69,7 +69,7 @@ CPR_UPSTREAM_KEY=replace-with-your-provider-api-key
 
 `backends[].alias` 是可选的看板显示名：后台各处（订阅卡标题、汇总、钉住会话、请求明细）优先显示它，家族一律用全名 `OpenCode Go` / `CommandCode GOAT`，卡片脚注保留内部名 `name` 便于对日志。不配 `alias` 时显示内部名。
 
-默认配置路径是仓库根目录的 `config.json`。`base_url` 是上游 URL 前缀，网关会在其后追加 `/v1/chat/completions`；例如 CCG 示例使用 `/provider` 前缀，最终请求路径为 `/provider/v1/chat/completions`。可用 `CPR_CONFIG_FILE` 指定其他路径；`CPR_FORWARD_PORT`、`CPR_ADMIN_PORT` 可覆盖端口，`CPR_KEYS_ENV` 可覆盖 master key 的环境变量名。路由监听默认仅绑定 `127.0.0.1`；管理口固定绑定回环地址。不要将管理口直接暴露到公网。
+开发环境默认配置路径是仓库根目录的 `config.json`。`base_url` 是上游 URL 前缀，网关会在其后追加 `/v1/chat/completions`；例如 CCG 示例使用 `/provider` 前缀，最终请求路径为 `/provider/v1/chat/completions`。可用 `CPR_CONFIG_FILE` 指定其他路径；`CPR_FORWARD_PORT`、`CPR_ADMIN_PORT` 可覆盖端口，`CPR_KEYS_ENV` 可覆盖 master key 的环境变量名。路由监听默认仅绑定 `127.0.0.1`；管理口固定绑定回环地址。不要将管理口直接暴露到公网。生产部署路径与数据库隔离方式见 [`docs/xdg-deployment.md`](docs/xdg-deployment.md)。
 
 开发启动：
 
@@ -92,7 +92,7 @@ curl -H "Authorization: Bearer $CPR_MASTER_KEY" \
 1. **会话钉死**：识别统一会话头（默认 `x-session-id`——OpenRouter/opencode/AWS AgentCore 的业界通用名，可在 `identity_header` 配置），已有映射优先复用原后端，避免缓存前缀因换账号失效。
 2. **欠账评分**：新身份在模型可用的后端中，按周期时间进度减已用进度选择；落后于日历进度的订阅优先获得新请求。窗口额度和快照可用性也会影响候选资格。
 3. **错误迁移**：遇到符合条件的 403 / 429 配额错误时，尝试将会话迁移到另一可用后端并更新映射；迁移有冷却保护。流式响应开始后不会静默重试。**长会话例外**：请求轮数达到 `routing.long_session_min_requests`（默认 10，0 关闭）的会话不做额度迁移——换后端会作废上游 prompt cache，此时原样透传错误（含 `retry-after`），由客户端稍后重试原后端。
-4. **全员满挡住**：没有健康且可用的后端时返回错误，不会自动消耗额外计费额度或绕过限制。
+4. **窗口满时挡住**：新会话的候选后端全部处于已知超限窗口时返回错误。快照未知或过期时可能仍向上游尝试；网关无法保证上游不会使用额外付费额度，应在订阅服务侧关闭额外计费。
 
 `routing.snapshot_interval_ms`（默认 300000，即 5 分钟）控制额度快照轮询间隔；管理口 `POST /api/snapshots/refresh` 可随时手动触发一轮刷新（看板「刷新快照」按钮走同一通道）。
 
@@ -113,15 +113,31 @@ curl -H "Authorization: Bearer $CPR_MASTER_KEY" \
 - `GET /api/audit/sessions`：会话汇总。
 - `GET /api/audit/summary`：整体汇总；传入 `identity` 时返回该会话汇总及请求。各订阅含性能字段：`avg_ttft_ms`（首字节平均延迟）与 `tps`（按 Σtokens/Σstream_ms 加权的吐字速度，仅流式请求计入）。
 
-管理口不提供写操作。需要远程查看时，请先通过 VPN/SSH 隧道，或按 [本机部署与 SSO 看板接入](docs/local-deployment.md) 配置可信认证代理。
+管理口仅支持刷新额度快照这一写操作，其他管理接口为只读。需要远程查看时，请先通过 VPN/SSH 隧道，或按 [本机部署与 SSO 看板接入](docs/local-deployment.md) 配置可信认证代理。
 
 ## 测试与开发
 
 ```sh
-node --test
+npm ci              # 只安装锁定的开发依赖：TypeScript / Node 类型
+npm run typecheck   # 项目本地 tsc --noEmit；strict + erasableSyntaxOnly
+npm test            # 等同 node --test
 ```
 
-测试包含路由选择、会话钉死与迁移、审计/看板 API，以及使用本地假上游的 HTTP 冒烟覆盖。测试不要连接生产账号或真实上游；编写集成测试时使用临时端口和假凭据，并验证请求体、认证头及账本行为。项目没有外部依赖安装步骤。
+生产仍用 `node lib/main.mjs`，不用编译或安装开发依赖；若用 npm 安装生产环境，可用 `npm ci --omit=dev`。`package-lock.json` 固定开发工具链，不依赖全局 `tsc`。
+
+测试只用公开配置、真实本机 HTTP、假凭据和可丢弃数据库，包含 main 入口、两家族会话头/额度端点、JSON/SSE 原字节透传、路由钉死与迁移、审计/看板，以及超时/取消/流式缓冲上限回归。不要连接生产账号、读取真实凭据或请求真实上游。`type-tests/` 只用于编译期正负类型契约，刻意放在 Node 测试自动发现目录之外。
+
+### 渐进类型化与模块职责
+
+- `lib/providers/opencode.ts` / `commandcode.ts` 是同一 `ProviderAdapter` 的两个真实实现：负责各家的会话头和 quota read。OCG 保留直连 `/usage`（浏览器 UA + 订阅 key）与代理 route-status（管理 key + `account` 匹配）；CCG 读取三个 `/alpha` 额度端点。`providers/index.ts` 集中注册家族，不把家族分支放进路由核。
+- `lib/protocols/chat-completions.ts` 是具体 Chat 实现：入口匹配、上游路径拼接、模型重映射、透明保留其他请求字段、JSON/SSE 用量观察。256 KiB 的有界旁路只供审计，不重写响应字节。`lib/translate.mjs` 保留原调用入口，转到同一实现。
+- `lib/contracts.ts` 类型覆盖后端身份/模型映射、会话身份、HTTP headers、额度窗口/快照，以及 provider/protocol 输入输出；第三方 JSON 从 `unknown` 检查后读取，不用 `any` 假装已验证。用量对象仍是开放字段集，token 数值与 cache 字段的校验继续由原审计层负责。
+- `server.mjs` 继续负责 HTTP 生命周期、超时、取消、选路、钉死、重试、迁移与审计；`snapshots.mjs` 继续负责轮询、去重、过期与降级状态，只将获取各家额度委托给 provider。没有改变持久化 schema、订阅 `name`、重试阈值或迁移策略。
+- 无会话头时，OCG 上游 session 使用路由已经解析的 fingerprint（无可指纹化消息时用 address），使上游缓存键与钉死/审计身份一致；有效统一头仍优先，旧 `x-opencode-session` 仍兼容，空统一头不覆盖有效旧头。CCG 不接收这两种会话头。
+
+类型检查目前严格覆盖 `.ts` 实现及 `translate.mjs` 兼容入口；旧的 server/config/selection/identity/audit/snapshots `.mjs` **尚未整体静态检查**，其行为靠回归测试保护。这不是全仓 TypeScript 迁移，也不代替运行时配置校验。
+
+未来 Responses/Messages 应作为 `lib/protocols/` 下独立的具体模块，先验证协议能力、状态归属、流事件和 usage 再接入路由；目前 `/v1/responses`、`/v1/messages` 仍返回 404，没有空适配器、跨协议转换或虚构能力声明。
 
 ## 安全与数据
 

@@ -6,8 +6,8 @@
 
 ## 当前状态（重要）
 
-**规划阶段，未写代码、未起服务、未改任何生产配置。** 设计与事实底座见
-`docs/design.md`（含「已验证 / 待拍板 / 待验证」标注）。动手前所有待拍板项须用户逐项确认。
+以当前代码、测试与服务状态为准；`docs/design.md` 是历史规划与事实底座，不代表当前实现。
+涉及生产配置或服务上线时须用户逐次明确同意。
 
 **定位与开源**：未来发布到 GitHub（规划期曾名 sub-router，2026-11-16 定名）。
 三层结构：上层 per-harness 接入（薄）→ 中层路由器（本仓核心）→ 下层多家族订阅后端。
@@ -20,8 +20,9 @@ docs/design.md    设计文档（规划稿 v0.2）
 
 ## 约定（与 ocg-proxy 同源的规矩）
 
-- 纯 Node 零第三方依赖（node:sqlite），Node ≥ 22。
-- `.env` 不进 git；真 key 只放 `.env`（chmod 600）。
+- 运行时零第三方依赖（node:sqlite 与原生类型擦除），Node ≥ 22.18；TypeScript 为开发依赖。
+- 仓库只放不含密钥的 `config.example.json` 与 `.env.example`；开发时复制成本机 `config.json` / `.env`（均被 `.gitignore` 排除），生产唯一生效的配置在 `/root/.config/coding-plan-router/`。
+- 生产运行副本在 `/root/.local/lib/coding-plan-router/current`，SQLite 在 `/root/.local/share/coding-plan-router/`；源码树不是生产运行目录，发布/回滚见 `docs/xdg-deployment.md`。
 - 管理口永远只绑回环；开发期用端口覆盖 + 假上游冒烟，不碰生产端口。
 - 审计写失败只丢行不挡转发；不落请求正文。
 - 正式改动单独中文 git commit，结束工作树应干净。
