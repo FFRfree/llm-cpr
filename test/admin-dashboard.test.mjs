@@ -43,7 +43,7 @@ test('admin API exposes subscription snapshots, audit queries and dashboard cont
   const detail = await fetch(`${root}/api/audit/sessions/session-1`).then((r) => r.json());
   assert.equal(detail.requests[0].cache_hit_tokens, 20);
   const html = await fetch(root).then((r) => r.text());
-  assert.match(html, /5h/);
+  assert.match(html, /5 小时/);
   assert.match(html, /weekly/);
   assert.match(html, /monthlyPercent/);
   assert.match(html, /loss_events/);
