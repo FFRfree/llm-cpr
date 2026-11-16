@@ -32,7 +32,7 @@
 +    api: http://127.0.0.1:8741/v1
 +    transport: chat_completions
 +    key_env: CPR_MASTER_KEY
-+    session_affinity_header: x-opencode-session
++    session_affinity_header: x-coding-plan-session
 +    discover_models: false
 +    models:
 +      - glm-5.3-flash
@@ -43,14 +43,14 @@
 +      - longcat-2.5-free
 ```
 
-若该 Hermes 版本的 provider schema 使用 `api` 字段作为 provider URL，请保持 `api` 与 `model.base_url` 两处都指向路由器；在实际改动前通过本机 schema/启动校验确认 `key_env`、`session_affinity_header` 的字段含义。此处没有写入真实 master key：只有环境变量名。`session_affinity_header` 用于恢复 `x-opencode-session` 会话钉死行为。
+若该 Hermes 版本的 provider schema 使用 `api` 字段作为 provider URL，请保持 `api` 与 `model.base_url` 两处都指向路由器；在实际改动前通过本机 schema/启动校验确认 `key_env`、`session_affinity_header` 的字段含义。此处没有写入真实 master key：只有环境变量名。`session_affinity_header` 用于把 Hermes 会话 id 装进统一会话头 `x-coding-plan-session`（头名与 opencode 解耦；网关会按后端家族翻译成下游要求的头）。
 
 ## 切换前检查
 
 1. 从本机安全配置渠道给 Hermes 运行环境注入 `CPR_MASTER_KEY`，并确认值与路由器的 master key 完全一致；不要写进 YAML、文档或 shell 历史。
 2. 检查路由器绑定 `127.0.0.1:8741`，管理口仍仅回环绑定 `127.0.0.1:8740`。
 3. 用受控请求验证 `GET http://127.0.0.1:8741/v1/models`：返回模型必须覆盖默认模型及计划使用的白名单；仓库当前模型配置未覆盖上述清单时，先另行完成并验收路由器模型配置。
-4. 确认 Hermes 发出的请求使用 `Authorization: Bearer <CPR_MASTER_KEY>`，并带 `x-opencode-session`；禁止在日志/工单里粘贴 header 值。
+4. 确认 Hermes 发出的请求使用 `Authorization: Bearer <CPR_MASTER_KEY>`，并带 `x-coding-plan-session`；禁止在日志/工单里粘贴 header 值。
 5. 备份当前 Hermes 配置文件权限受控；记录切换前 model/provider 区块。备份不得提交仓库。
 6. 经用户明确批准后再编辑生产配置并重启/重新加载 Hermes。未经批准不得执行这些步骤。
 
@@ -58,7 +58,7 @@
 
 - Hermes `/model` 可见并可选择路由器白名单模型。
 - 一次非生产风险可控的普通对话返回成功，流式响应完整。
-- 同一会话多轮请求的 `x-opencode-session` 保持一致，路由器映射保持钉死。
+- 同一会话多轮请求的 `x-coding-plan-session` 保持一致，路由器映射保持钉死。
 - 路由器账本出现对应请求，管理看板显示订阅/会话/用量数据。
 - 若任一项不通过，立即按下方步骤回滚，不在生产环境临时扩大白名单或关闭认证。
 

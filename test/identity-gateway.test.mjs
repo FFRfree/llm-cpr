@@ -10,7 +10,7 @@ import { createGatewayServers } from '../lib/server.mjs';
 async function fakeBackend(name, seen) {
   const server = http.createServer(async (req, res) => {
     for await (const _chunk of req) { /* drain request */ }
-    if (req.method === 'POST') seen.push({ name, session: req.headers['x-opencode-session'] });
+    if (req.method === 'POST') seen.push({ name, session: req.headers['x-coding-plan-session'] });
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ backend: name }));
   });
@@ -53,7 +53,7 @@ test('gateway pins session and conversation identities to a persisted backend', 
   try {
     const convo = { model: 'model', messages: [{ role: 'system', content: 'rules' }, { role: 'user', content: 'hello' }] };
     for (let i = 0; i < 2; i++) {
-      const response = await request(gateway.url, { model: 'model' }, { 'x-opencode-session': 'shared-session' });
+      const response = await request(gateway.url, { model: 'model' }, { 'x-coding-plan-session': 'shared-session' });
       assert.equal((await response.json()).backend, 'second');
     }
     for (let i = 0; i < 2; i++) {
@@ -68,7 +68,7 @@ test('gateway pins session and conversation identities to a persisted backend', 
 
   gateway = await start(config([backend('first', first.url), backend('second', second.url)]), env);
   try {
-    const response = await request(gateway.url, { model: 'model' }, { 'x-opencode-session': 'shared-session' });
+    const response = await request(gateway.url, { model: 'model' }, { 'x-coding-plan-session': 'shared-session' });
     assert.equal((await response.json()).backend, 'second');
     const fingerprintResponse = await request(gateway.url, { model: 'model', messages: [{ role: 'system', content: 'rules' }, { role: 'user', content: 'hello' }] });
     assert.equal((await fingerprintResponse.json()).backend, 'second');

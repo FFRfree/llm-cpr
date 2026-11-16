@@ -29,7 +29,7 @@ const fixture = async (t, { body, logger = { warn() {}, log() {} }, auditPath } 
   gateway.forwardServer.listen(0, '127.0.0.1');
   await once(gateway.forwardServer, 'listening');
   t.after(async () => { await close(gateway.forwardServer); await close(upstream); gateway.audit?.close(); fs.rmSync(dir, { recursive: true, force: true }); });
-  const send = (payload = body ?? { model: 'unified', messages: [{ role: 'user', content: 'TOP_SECRET_PROMPT' }] }) => fetch(`http://127.0.0.1:${gateway.forwardServer.address().port}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json', 'x-opencode-session': 'session-a' }, body: JSON.stringify(payload) });
+  const send = (payload = body ?? { model: 'unified', messages: [{ role: 'user', content: 'TOP_SECRET_PROMPT' }] }) => fetch(`http://127.0.0.1:${gateway.forwardServer.address().port}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json', 'x-coding-plan-session': 'session-a' }, body: JSON.stringify(payload) });
   return { gateway, env, dir, send, logger };
 };
 

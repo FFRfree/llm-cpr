@@ -31,7 +31,7 @@ test('configuration loads backends, model whitelist and environment port overrid
 
 test('translation replaces model and auth while preserving OCG session header', () => {
   const config = baseConfig('http://upstream', 'ocg');
-  const result = translateRequest({ config, body: { model: 'unified-model' }, headers: { authorization: 'Bearer master', 'x-opencode-session': 'session' }, backend: config.backends[0], upstreamKey: 'upstream-key' });
+  const result = translateRequest({ config, body: { model: 'unified-model' }, headers: { authorization: 'Bearer master', 'x-coding-plan-session': 'session' }, backend: config.backends[0], upstreamKey: 'upstream-key' });
   assert.deepEqual(result.body, { model: 'native-model' });
   assert.equal(result.headers.authorization, 'Bearer upstream-key');
   assert.equal(result.headers['x-opencode-session'], 'session');
@@ -39,8 +39,17 @@ test('translation replaces model and auth while preserving OCG session header', 
 
 test('translation strips the unified session header for CCG', () => {
   const config = baseConfig('http://upstream', 'ccg');
-  const result = translateRequest({ config, body: { model: 'unified-model' }, headers: { authorization: 'Bearer master', 'x-opencode-session': 'session' }, backend: config.backends[0], upstreamKey: 'upstream-key' });
+  const result = translateRequest({ config, body: { model: 'unified-model' }, headers: { authorization: 'Bearer master', 'x-coding-plan-session': 'session' }, backend: config.backends[0], upstreamKey: 'upstream-key' });
   assert.equal(result.headers['x-opencode-session'], undefined);
+});
+
+test('translation keeps legacy x-opencode-session clients working: passthrough on OCG, stripped on CCG', () => {
+  const ocg = baseConfig('http://upstream', 'ocg');
+  const kept = translateRequest({ config: ocg, body: { model: 'unified-model' }, headers: { authorization: 'Bearer master', 'x-opencode-session': 'legacy' }, backend: ocg.backends[0], upstreamKey: 'upstream-key' });
+  assert.equal(kept.headers['x-opencode-session'], 'legacy');
+  const ccg = baseConfig('http://upstream', 'ccg');
+  const stripped = translateRequest({ config: ccg, body: { model: 'unified-model' }, headers: { authorization: 'Bearer master', 'x-opencode-session': 'legacy' }, backend: ccg.backends[0], upstreamKey: 'upstream-key' });
+  assert.equal(stripped.headers['x-opencode-session'], undefined);
 });
 
 test('HTTP gateway returns local models, proxies JSON and SSE, rejects bad keys, and passes upstream errors through', async (t) => {
@@ -76,7 +85,7 @@ test('HTTP gateway returns local models, proxies JSON and SSE, rejects bad keys,
   assert.equal(models.status, 200);
   assert.deepEqual((await models.json()).data.map((model) => model.id), ['unified-model', 'error']);
   assert.equal((await fetch(`${url}/v1/models`, { headers: { authorization: 'Bearer wrong' } })).status, 401);
-  const jsonResponse = await fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer test-master', 'content-type': 'application/json', 'x-opencode-session': 'ocg-session' }, body: JSON.stringify({ model: 'unified-model', messages: [{ role: 'user', content: 'hi' }] }) });
+  const jsonResponse = await fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer test-master', 'content-type': 'application/json', 'x-coding-plan-session': 'ocg-session' }, body: JSON.stringify({ model: 'unified-model', messages: [{ role: 'user', content: 'hi' }] }) });
   assert.equal(jsonResponse.status, 200); assert.equal((await jsonResponse.json()).choices[0].message.content, 'ok');
   const chatRequest = received.find((entry) => entry.url === '/v1/chat/completions');
   assert.equal(chatRequest.headers.authorization, 'Bearer test-upstream');

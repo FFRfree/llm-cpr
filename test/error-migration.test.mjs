@@ -14,7 +14,7 @@ const close = (server) => new Promise((resolve) => {
   server.closeAllConnections();
   server.close(resolve);
 });
-const chat = (url, session = 'identity', body = { model: 'm' }) => fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json', 'x-opencode-session': session }, body: JSON.stringify(body) });
+const chat = (url, session = 'identity', body = { model: 'm' }) => fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json', 'x-coding-plan-session': session }, body: JSON.stringify(body) });
 
 async function setup(t, handlers) {
   const seen = [];
