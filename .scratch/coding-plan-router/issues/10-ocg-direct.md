@@ -1,0 +1,21 @@
+# 10 — OCG 直连后端（多号直连，摆脱 ocg-proxy 桥接）
+
+**What to build:** 把 ocg 家族从「家族级 backend 转交 ocg-proxy」改造成「每号一个 backend 直连 opencode.ai」。配置侧：`backends` 支持多个 ocg 家族条目（`ocg-foxmail` / `ocg-gmail`，各自 `key_env` 指自己的账号 key，`base_url: https://opencode.ai/zen/go/v1`）。快照侧：ocg 家族余量改打直连 `GET {base_url}/usage`——账号 key 鉴权 + **浏览器 UA**（默认 UA 被 Cloudflare 1010 拦，ocg-proxy lib/usage.mjs 有现成 UA 常量），解析 `usage.{rolling,weekly,monthly}.{percent,resetsAt}`（ISO 字符串，Date.parse）；`month_progress` 本层自算：`1 − (monthly_resets_at − now)/monthlyPeriodMs`（30 天，参照 ocg-proxy lib/routing.mjs:41）。翻译侧：ocg 家族统一头 → `x-opencode-session` 重写沿用现实现，钉死映射沿用本层 sqlite（身份→backend 名已按 backend 粒度，多号自然分流）。过渡兼容：`admin_url`/`admin_key_env` 的旧桥接解析保留不删（回滚路径），但不再作为 ocg 家族默认路径——直连条目与桥接条目可共存（桥接条目 family 仍 ocg 会参与评分，由配置取舍决定用哪边）。
+
+**Blocked by:** 无（01-09 已完成；ocg /usage 接口已用真 key 实测通）
+
+**Status:** ready-for-agent
+
+**验收 checkbox:**
+- [ ] 夹具测试：真 `/usage` 返回形状（rolling/weekly/monthly percent+resetsAt ISO）解析正确；缺字段/HTTP 失败降级为余量未知
+- [ ] month_progress 30 天自算单测（固定 now/resets_at 断言）
+- [ ] 假上游 e2e：两个 ocg backend（假 OpenCode），同身份钉死、跨身份评分分流（月已用% 差异显著时）
+- [ ] 真上游冒烟：直连 foxmail 号非流式+流式各一笔经网关成功；快照 known=true 且与 ocg-proxy /api/route/status 同号数据对得上
+- [ ] 浏览器 UA 缺失场景在夹具中显式覆盖（防 Cloudflare 回归）
+- [ ] `node --test` 全绿；中文 commit；工作树干净
+- [ ] 本票 Comments 记录真冒烟结果与对账数据
+
+## Comments
+
+- 事实底座：OCG 直连 `/usage` 已实测（2026-11-16，foxmail 号真 key）：返回 `{"usage":{"rolling":{"status":"ok","percent":0,"resetsAt":"..."},...}}`；UA 必须浏览器形。
+- 生产切换（backends 换直连）属生产配置变更，实施时须用户逐次点头；本票只落代码与真冒烟（临时端口+临时配置）。
