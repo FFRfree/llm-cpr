@@ -1,0 +1,15 @@
+{
+  "accounts": [
+    {
+      "name": "ocg-account-sample",
+      "monthly_percent": 8,
+      "month_progress": 27.68,
+      "rolling_percent": 0,
+      "rolling_resets_at": 1794842986514,
+      "weekly_percent": 0,
+      "weekly_resets_at": 1795392000000,
+      "monthly_resets_at": 1796699499000,
+      "exhausted": false
+    }
+  ]
+}
