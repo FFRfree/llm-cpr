@@ -95,6 +95,12 @@ curl -H "Authorization: Bearer $CPR_MASTER_KEY" \
 
 默认看板：`http://127.0.0.1:8740/`（等同 `/dashboard`）。管理接口仅供本机/受控反向代理访问，不带公网访问认证层；不要直接公开管理端口。
 
+本机实际部署：看板走专用域名 **`https://hermes-router.ffrfree.xyz/`**（nginx 站点
+`/etc/nginx/sites-available/hermes-router.ffrfree.xyz` → Authelia SSO `auth_request` →
+`127.0.0.1:8740`，监听 8443 回源口；DNS 由 `*.ffrfree.xyz` 通配 + Cloudflare Origin Rule
+`hermes-*` → 8443 覆盖，无需单独解析记录）。旧的临时反代域名
+`hermes-proxy-8740.ffrfree.xyz` 已于 2026-11-16 移出白名单，不再使用。
+
 - `GET /api/route/status`：后端状态、额度快照与身份映射概况。
 - `GET /api/snapshots`：额度快照。
 - `GET /api/audit/requests`：请求审计列表，可用 `limit`、`identity` 查询参数筛选。
