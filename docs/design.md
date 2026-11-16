@@ -30,9 +30,14 @@ agent-agnostic，未来发布到 GitHub（开源约束见 §9）。
 中层  路由器（本仓核心，纯 Node 零依赖）
       会话钉死 → 月度欠账评分 → 模型名/凭据/会话头翻译 → 审计账本 → 看板
 下层  订阅后端（多账号、多家族，可扩展）
-      ├─ ocg  ×N → 转交 ocg-proxy（已有，账号级评分/钉死/账本）
+      ├─ ocg  ×N → 直连 opencode.ai（每号一个 backend：自己的 key + 统一会话头家族翻译 + /usage 余量）
+      │             【过渡期】当前生产先经 ocg-proxy 桥接（见 §3 迁移路径），终态移除 ocg-proxy
       ├─ ccg  ×N → 直连 api.commandcode.ai（本层管理多账号钉死）
       └─ codex ×N（未来）→ OAuth 订阅后端，参照 hindsight-codex-proxy 的翻译模式
+
+> 【设计修正 2026-11-16（用户拍板）】早期稿写的是「ocg ×N 转交 ocg-proxy」，那是过渡形态。
+> 终态：coding-plan-router 直接承担多个 OCG + 多个 CCG 订阅的路由，**不依赖 ocg-proxy**；
+> ocg-proxy 只是当前生产的临时桥，等直连后端落地并验收后退役（迁移路径见 §3 末尾）。
 ```
 
 - 分层规则：**上层只做"把各家 harness 的会话约定接到统一会话头"**，不带任何路由逻辑；
@@ -61,8 +66,11 @@ agent-agnostic，未来发布到 GitHub（开源约束见 §9）。
 
 | 事实 | 来源 |
 |---|---|
-| 已有生产代理 `services/ocg-proxy`（端口 8731 转发 / 8742 管理，两号 fill_first，月度欠账评分，会话钉死，usage.db 账本）——**设计文档拍板过它不做通用多账号网关，路由核不动** | ocg-proxy docs/design.md |
-| 官方每号 `/usage` 只有三窗口已用**百分比**+重置时间，无绝对美元 | ocg-proxy design.md |
+| 已有生产代理 `services/ocg-proxy`（端口 8731 转发 / 8742 管理，两号，会话钉死，usage.db 账本）——**定位修正：它只是过渡桥，终态退役**（见 §1b 修正） | 本文档 §1b |
+| **OCG 直连余量接口（2026-11-16 用真 key 实测）**：`GET {base_url}/usage`（base_url 即 `https://opencode.ai/zen/go/v1`）+ 账号 key + **浏览器 UA**（默认 UA 被 Cloudflare 1010 拦），返回 `usage.{rolling,weekly,monthly}.{percent,resetsAt}`，只有百分比无绝对美元 | ocg-proxy lib/usage.mjs + 主会话 curl 实测 |
+| month_progress 不是上游给的，是 ocg-proxy 自己算的：`1 − (monthly_resets_at − now)/monthlyPeriodMs`（30 天周期），评分 = `month_progress×100 − monthly_percent` | ocg-proxy lib/routing.mjs:41 |
+| ocg-proxy 管理口有 `/api/route/status`、`/api/audit/*` 可编程查询（过渡期快照仍在用） | ocg-proxy server.mjs |
+| ocg 账本的 allowance_usd（上游 usage.opencode 块）可把 OCG 花费换算成美元 | llm-api-integration skill |
 | ocg-proxy 管理口有 `/api/route/status`、`/api/audit/*` 可编程查询 | ocg-proxy server.mjs |
 | ocg 账本的 allowance_usd（上游 usage.opencode 块）可把 OCG 花费换算成美元 | llm-api-integration skill |
 
@@ -80,10 +88,10 @@ agent-agnostic，未来发布到 GitHub（开源约束见 §9）。
 
 ```
 hermes ─┐
-pi ─────┼─→ Sub-Router (新, 纯 Node 零依赖) ─→ 评分/钉死/翻译 ─┬→ ocg-proxy(8731, 不动) → OCG 账号池
-oh-my-pi┤                                                    └→ api.commandcode.ai/provider/v1 → CCG 账号(先 1 个)
-hindsight┘                                                            │
-                      管理口(回环): /api/* + 看板 ←──── usage.db 账本 + 额度快照轮询(ccg /alpha + ocg admin API)
+pi ─────┼─→ coding-plan-router (纯 Node 零依赖) ─→ 评分/钉死/翻译 ─┬→ [过渡期] ocg-proxy(8731) → OCG 账号池
+oh-my-pi┤                                                          │  [终态]   opencode.ai 直连 → OCG 每号一个 backend
+hindsight┘                                                         └→ api.commandcode.ai/provider/v1 → CCG 账号(先 1 个)
+                      管理口(回环): /api/* + 看板 ←──── usage.db 账本 + 额度快照轮询(ccg /alpha + ocg 直连 /usage 或过渡期 8742 admin)
 ```
 
 - 对客户端：**一个 OpenAI 兼容端点**（`POST /v1/chat/completions` 必须、`GET /v1/models`
@@ -91,6 +99,18 @@ hindsight┘                                                            │
 - 对上游：改写三件套 = 模型名翻译 + Authorization 替换 + 选 CCG 时剥会话头；
   选 OCG 时网关把统一头 `x-session-id` **重写**为下游要求的 `x-opencode-session`（一个会话身份两层各用各的映射，opencode 耦合被封在网关内部）。
 - 流式错误边界：**首字节前**可换订阅重试；SSE 已开始只报错（不做无声重试）。
+
+### OCG 直连迁移路径（ocg-proxy 退役三步走，每步独立验收）
+
+1. **直连后端落地**（工单 10）：backends 配置从 `ocg-main`（一个家族级 backend 指桥）
+   换成 `ocg-foxmail` / `ocg-gmail`（每号一个 backend，各配自己的 `key_env` 与
+   `base_url: https://opencode.ai/zen/go/v1`）；ocg 家族快照改打直连 `/usage`
+   （浏览器 UA、month_progress 按 30 天周期自算）；会话头家族翻译沿用现实现
+   （统一头 → `x-opencode-session`，钉死映射本来就在本层 sqlite）。
+2. **平行验收**：网关切直连配置跑真流量，与 ocg-proxy 的账号选择/余量快照对账
+   （两边评分应同向），看板三卡（foxmail/gmail/ccg）齐全。
+3. **退役**：确认无回归后停用 ocg-proxy（其审计历史数据归档不删），Hermes 配置无感
+   （入口始终是 8741）。
 
 ## 4. 路由核（翻版 ocg-proxy 三条规则，推广到订阅级）【待拍板】
 
