@@ -106,6 +106,14 @@ hindsight┘                                                            │
 **已拍板（2026-11-16）**：
 - [x] 双双撞满后的兜底：**直接报错挡住**，不自动烧 CCG 充值额度 / OCG Extra usage，不做开关。
 - [x] 评分口径：**百分比归一**（`月时间进度% − 月已花%`，OCG 侧本就只有百分比）。
+- [x] Hermes 接入路线：**第一阶段纯配置**（custom provider 条目 + `session_affinity_header`，
+  不写插件——已源码验证 key_env/session_affinity_header 均为一等公民字段）；
+  **未来要兼容更多请求协议时再升级 plugin 方式**（如混入 anthropic_messages 线、
+  需 per-model 选线时，走 `$HERMES_HOME/plugins/model-providers/` 用户插件，可覆盖内置）。
+- [x] 会话头统一名：**`x-session-id`**（业界通用——OpenRouter sticky routing、opencode
+  对非 opencode provider 的缓存亲和 PR、AWS AgentCore stickiness 均用此名）；
+  两侧都做成配置项（Hermes `session_affinity_header` / 网关 `identity_header`），
+  opencode 专属头名被封在网关内部的家族翻译里，不外泄。
 
 ## 5. 会话身份与各客户端接入
 
