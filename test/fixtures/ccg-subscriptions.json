@@ -1,0 +1,22 @@
+{
+  "success": true,
+  "data": {
+    "id": "<redacted>",
+    "status": "active",
+    "userId": "<redacted>",
+    "orgId": null,
+    "createdAt": "2026-11-16T06:17:21.000Z",
+    "priceId": "price_1U0sTYDSZgxV3MJKUKHcvFxc",
+    "metadata": "<redacted>",
+    "quantity": 1,
+    "cancelAtPeriodEnd": false,
+    "currentPeriodStart": "2026-11-16T06:17:21.000Z",
+    "currentPeriodEnd": "2026-12-16T06:17:21.000Z",
+    "endedAt": null,
+    "cancelAt": null,
+    "canceledAt": null,
+    "planId": "individual-goat",
+    "pendingPhase": null,
+    "renewalPending": null
+  }
+}
