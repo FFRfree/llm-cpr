@@ -1,0 +1,16 @@
+{
+  "master_key_env": "CPR_MASTER_KEY",
+  "listen": { "host": "127.0.0.1", "port": 8741 },
+  "admin": { "port": 8740 },
+  "backends": [
+    {
+      "name": "primary",
+      "family": "ocg",
+      "base_url": "http://127.0.0.1:8731",
+      "key_env": "CPR_UPSTREAM_KEY"
+    }
+  ],
+  "models": [
+    { "id": "glm-4.6", "backends": { "ocg": "glm-4.6" } }
+  ]
+}
