@@ -26,3 +26,13 @@ docs/design.md    设计文档（规划稿 v0.2）
 - 审计写失败只丢行不挡转发；不落请求正文。
 - 正式改动单独中文 git commit，结束工作树应干净。
 - Hermes config.yaml / systemd 等生产改动须用户逐次明确同意。
+
+## Agent skills
+
+### Issue tracker
+
+工单以本地 markdown 存放在 `.scratch/<feature-slug>/`（暂无 remote；发 GitHub 后可切换）。See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+单上下文：根目录 `GLOSSARY.md` + `docs/adr/`；现有领域叙事在 `docs/design.md`。See `docs/agents/domain.md`.
