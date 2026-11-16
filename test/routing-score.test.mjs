@@ -61,7 +61,10 @@ test('OCG status provides monthly progress and percent-based window state', asyn
   assert.equal(result.monthlyPercent, 45);
   assert.equal(result.monthProgress, 60);
   assert.equal(result.fiveHour.exceeded, true);
+  assert.equal(result.fiveHour.used, 100);
+  assert.equal(result.fiveHour.cap, 100);
   assert.equal(result.weekly.exceeded, false);
+  assert.equal(result.weekly.used, 20);
 });
 
 test('e2e chooses greater-debt CCG subscription on new identity', async (t) => {
