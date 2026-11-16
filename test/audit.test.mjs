@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createGatewayServers } from '../lib/server.mjs';
 import { UsageAudit } from '../lib/audit.mjs';
 
@@ -18,8 +19,15 @@ const fixture = async (t, { body, logger = { warn() {}, log() {} }, auditPath } 
     for await (const chunk of req) chunks.push(chunk);
     const request = JSON.parse(Buffer.concat(chunks).toString());
     const result = { id: 'response', usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120, prompt_tokens_details: { cached_tokens: 50 } } };
-    res.writeHead(200, { 'content-type': request.stream ? 'text/event-stream' : 'application/json' });
-    res.end(request.stream ? `data: ${JSON.stringify(result)}\n\ndata: [DONE]\n\n` : JSON.stringify(result));
+    if (request.stream) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify(result)}\n\n`);
+      await delay(30); // 流式夹具：拉开首字节与结束的时刻，保证 stream_ms 可测
+      res.end('data: [DONE]\n\n');
+    } else {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(result));
+    }
   });
   const baseUrl = await listen(upstream);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-audit-'));
@@ -79,6 +87,47 @@ test('streaming responses and concurrent requests each produce one audit row', a
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM requests').get().n, 6);
   assert.ok(db.prepare('SELECT COUNT(*) AS n FROM requests WHERE usage_json IS NOT NULL').get().n === 6);
   db.close();
+});
+
+test('ttft/stream timings are recorded for streaming, ttft only for non-streaming', async (t) => {
+  const { env, gateway, send } = await fixture(t);
+  await (await send({ model: 'unified', stream: true })).arrayBuffer();
+  await (await send()).arrayBuffer();
+  const db = new DatabaseSync(env.CPR_USAGE_DB);
+  const [streamRow, plainRow] = db.prepare('SELECT * FROM requests ORDER BY ts, id').all();
+  assert.equal(typeof streamRow.ttft_ms, 'number');
+  assert.ok(streamRow.ttft_ms >= 0);
+  assert.equal(typeof streamRow.stream_ms, 'number');
+  assert.ok(streamRow.stream_ms >= 20); // 夹具刻意拉开 30ms
+  assert.equal(typeof plainRow.ttft_ms, 'number');
+  assert.equal(plainRow.stream_ms, null); // 非流式没有流时长概念
+  db.close();
+  const summary = gateway.audit.summary();
+  const perf = summary.subscriptions[0];
+  assert.equal(typeof perf.avg_ttft_ms, 'number');
+  assert.ok(perf.tps > 0); // Σtokens / Σstream_ms
+});
+
+test('existing ledgers gain ttft/stream columns via migration without losing rows', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-audit-migrate-'));
+  const file = path.join(dir, 'usage.db');
+  const legacy = new DatabaseSync(file);
+  legacy.exec(`CREATE TABLE requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, identity TEXT, identity_kind TEXT NOT NULL,
+    subscription TEXT, account TEXT, model TEXT, translated_model TEXT, path TEXT, status INTEGER, ms INTEGER,
+    prompt_tokens INTEGER, completion_tokens INTEGER, cache_hit_tokens INTEGER, cache_miss_tokens INTEGER,
+    cache_write_tokens INTEGER, total_tokens INTEGER, cache_observed INTEGER NOT NULL DEFAULT 0,
+    cache_outcome TEXT, usage_json TEXT)`);
+  legacy.prepare(`INSERT INTO requests(ts,identity_kind,subscription,status,cache_observed) VALUES(1,'session','sub',200,0)`).run();
+  legacy.close();
+  const audit = new UsageAudit({ dbFile: file });
+  const columns = audit.db.prepare('PRAGMA table_info(requests)').all().map((entry) => entry.name);
+  assert.ok(columns.includes('ttft_ms') && columns.includes('stream_ms'));
+  assert.equal(audit.db.prepare('SELECT COUNT(*) AS n FROM requests').get().n, 1);
+  audit.record({ ts: 2, identity_kind: 'session', subscription: 'sub', ttft_ms: 900, stream_ms: 500 },
+    { completion_tokens: 10 });
+  assert.equal(audit.db.prepare('SELECT COUNT(*) AS n FROM requests WHERE ttft_ms=900 AND stream_ms=500').get().n, 1);
+  audit.close(); fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('audit write failure logs degraded marker and does not block successful forwarding', async (t) => {

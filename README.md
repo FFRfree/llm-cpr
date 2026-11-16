@@ -108,7 +108,7 @@ curl -H "Authorization: Bearer $CPR_MASTER_KEY" \
 - `GET /api/snapshots`：额度快照。
 - `GET /api/audit/requests`：请求审计列表，可用 `limit`、`identity` 查询参数筛选。
 - `GET /api/audit/sessions`：会话汇总。
-- `GET /api/audit/summary`：整体汇总；传入 `identity` 时返回该会话汇总及请求。
+- `GET /api/audit/summary`：整体汇总；传入 `identity` 时返回该会话汇总及请求。各订阅含性能字段：`avg_ttft_ms`（首字节平均延迟）与 `tps`（按 Σtokens/Σstream_ms 加权的吐字速度，仅流式请求计入）。
 
 管理口不提供写操作。需要远程查看时，请先通过 VPN/SSH 隧道，或按 [本机部署与 SSO 看板接入](docs/local-deployment.md) 配置可信认证代理。
 

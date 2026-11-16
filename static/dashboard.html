@@ -154,7 +154,7 @@ tr.detail-row th{color:var(--muted)}
   .idcell .copy{vertical-align:baseline}
   tr.detail-row td{padding:10px 12px;overflow-x:auto}
   tr.detail-row td::before{content:none}
-  tr.detail-row table{min-width:480px}
+  tr.detail-row table{min-width:600px}
 }
 @media(max-width:720px) and (prefers-reduced-motion:no-preference){
   #sessions-table tr.data{transition:background .15s ease}
@@ -250,6 +250,7 @@ function monthlyOf(s){ // CCG: 月额度 $；OCG: 月度百分比
 }
 
 function renderSummary(summary,status){
+  state.summary=summary; // 订阅卡脚注要取各订阅的 TTFT/TPS
   const subs=(summary?.subscriptions||[]).map(x=>
     `<div><b class="num">${x.requests}</b><span>${esc(subLabel(status,x.subscription))} · ${x.errors} 错 · ${(x.total_tokens/1e6).toFixed(1)}M tok</span></div>`);
   $('#summary').innerHTML=
@@ -286,10 +287,14 @@ function renderSubscriptions(status){
       windowRow({label:'每月',used:mon?.used,cap:mon?.cap,timePct:monthProgress,
         resetText:s.periodEnd?countdown(toMs(s.periodEnd)):'',unit:mon?.unit||'%'}),
     ].join('');
+    const perf=(state.summary?.subscriptions||[]).find((p)=>p.subscription===x.name);
+    const speed=[];
+    if(num(perf?.avg_ttft_ms))speed.push(`TTFT ${(perf.avg_ttft_ms/1000).toFixed(2)}s`);
+    if(num(perf?.tps))speed.push(`TPS ${perf.tps.toFixed(0)} tok/s`);
     return `<article>
       <div class="sub-head"><span class="name">${esc(x.alias||x.name)}</span><span class="badge">${esc(familyLabel(x.family))}</span>${badges.join('')}<span class="remain">${remainHtml}</span></div>
       ${rows}
-      <div class="sub-foot">快照 ${s.fetchedAt?rel(s.fetchedAt):'尚无'}${num(s.ageMs)?` · ${Math.round(s.ageMs/1000)}s 前`:''} · 内部名 <span class="mono">${esc(x.name)}</span>
+      <div class="sub-foot">${speed.length?`${speed.join(' · ')} · `:''}快照 ${s.fetchedAt?rel(s.fetchedAt):'尚无'}${num(s.ageMs)?` · ${Math.round(s.ageMs/1000)}s 前`:''} · 内部名 <span class="mono">${esc(x.name)}</span>
         <details class="models"${state.openModels?' open':''}><summary>可用模型（${(x.models||[]).length}）</summary>
         <div class="chips">${(x.models||[]).map(m=>`<span>${esc(m)}</span>`).join('')}</div></details></div>
     </article>`;
@@ -342,12 +347,17 @@ async function showDetail(id){
     const data=await fetch(`/api/audit/sessions/${encodeURIComponent(id)}`).then(r=>r.json());
     if(state.expanded!==id)return;
     const lossTs=new Set((data.session?.loss_events||[]).map(e=>e.ts));
-    const rows=(data.requests||[]).slice().reverse().map(r=>`<tr${lossTs.has(r.ts)?' style="color:var(--warning)"':''}>
+    const rows=(data.requests||[]).slice().reverse().map(r=>{
+      const tps=num(r.stream_ms)&&r.stream_ms>0&&num(r.completion_tokens)?(r.completion_tokens*1000/r.stream_ms).toFixed(0):'—';
+      return `<tr${lossTs.has(r.ts)?' style="color:var(--warning)"':''}>
       <td class="num">${fmtClock(r.ts)}</td><td>${esc(subLabel({subscriptions:state.subs||[]},r.subscription))}</td><td>${esc(r.model)}</td>
       <td class="num">${esc(r.status)}</td><td class="num">${r.prompt_tokens??'—'}</td>
-      <td class="num">${r.cache_hit_tokens??'—'}</td><td class="num">${num(r.ms)?r.ms+'ms':'—'}</td>
-      <td>${lossTs.has(r.ts)?'⚠ cache 丢失':''}</td></tr>`).join('');
-    cell.innerHTML=`<table><thead><tr><th>时间</th><th>订阅</th><th>模型</th><th>状态</th><th>prompt</th><th>cache hit</th><th>耗时</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="8" class="empty">无请求记录</td></tr>'}</tbody></table>`;
+      <td class="num">${r.cache_hit_tokens??'—'}</td>
+      <td class="num">${num(r.ttft_ms)?(r.ttft_ms/1000).toFixed(2)+'s':'—'}</td>
+      <td class="num">${tps}</td>
+      <td class="num">${num(r.ms)?r.ms+'ms':'—'}</td>
+      <td>${lossTs.has(r.ts)?'⚠ cache 丢失':''}</td></tr>`;}).join('');
+    cell.innerHTML=`<table><thead><tr><th>时间</th><th>订阅</th><th>模型</th><th>状态</th><th>prompt</th><th>cache hit</th><th>TTFT</th><th>tok/s</th><th>耗时</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="10" class="empty">无请求记录</td></tr>'}</tbody></table>`;
   }catch(e){cell.textContent=`明细加载失败：${e.message}`;}
 }
 
