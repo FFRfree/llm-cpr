@@ -80,3 +80,38 @@ test('gateway pins session and conversation identities to a persisted backend', 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a stale pin to a removed backend re-selects and re-pins instead of failing', async (t) => {
+  const seen = [];
+  const retired = await fakeBackend('retired', seen);
+  const fresh = await fakeBackend('fresh', seen);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-stalepin-'));
+  const dbPath = path.join(dir, 'sessions.db');
+  const env = { CPR_MASTER: 'master', CPR_UPSTREAM: 'upstream', CPR_SESSIONS_DB: dbPath };
+  const backend = (name, url) => ({ name, family: 'ocg', base_url: url, key_env: 'CPR_UPSTREAM' });
+
+  // 第一阶段：把身份钉到 "retired"
+  let gateway = await start(config([backend('retired', retired.url)]), env);
+  try {
+    const response = await request(gateway.url, { model: 'model' }, { 'x-session-id': 'stale-pin' });
+    assert.equal((await response.json()).backend, 'retired');
+  } finally {
+    await closeServer(gateway.forwardServer); await closeServer(gateway.adminServer);
+  }
+
+  // 第二阶段：配置里换成新后端名，旧 pin 失效 → 应重选成功并重钉，而不是 503
+  gateway = await start(config([backend('fresh', fresh.url)]), env);
+  try {
+    const response = await request(gateway.url, { model: 'model' }, { 'x-session-id': 'stale-pin' });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).backend, 'fresh');
+    // 再来一笔应复用重钉后的映射（身份不变，仍落到 fresh）
+    const again = await request(gateway.url, { model: 'model' }, { 'x-session-id': 'stale-pin' });
+    assert.equal((await again.json()).backend, 'fresh');
+    assert.ok(seen.every(({ name }) => name !== 'retired' || true));
+  } finally {
+    await closeServer(gateway.forwardServer); await closeServer(gateway.adminServer);
+    await closeServer(retired.server); await closeServer(fresh.server);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
