@@ -23,5 +23,5 @@
       }
     }
   ],
-  "identity_header": "x-coding-plan-session"
+  "identity_header": "x-session-id"
 }

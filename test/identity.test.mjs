@@ -8,13 +8,17 @@ import { resolveIdentity, createIdentityStore } from '../lib/identity.mjs';
 const request = (headers = {}, body = {}, remoteAddress = '127.0.0.1') => ({ headers, body, remoteAddress });
 
 test('identity resolution prefers session header, then chat fingerprint, then address', () => {
-  const withHeader = resolveIdentity(request({ 'x-coding-plan-session': 'session-1' }, { messages: [{ role: 'user', content: 'hi' }] }));
+  const withHeader = resolveIdentity(request({ 'x-session-id': 'session-1' }, { messages: [{ role: 'user', content: 'hi' }] }));
   assert.equal(withHeader.kind, 'session');
+  const legacyHeader = resolveIdentity(request({ 'x-opencode-session': 'legacy-1' }, { messages: [{ role: 'user', content: 'hi' }] }));
+  assert.deepEqual(legacyHeader, { kind: 'session', key: 'legacy-1' });
+  const customHeader = resolveIdentity({ ...request({ 'x-my-gateway-session': 'custom-1' }, { messages: [{ role: 'user', content: 'hi' }] }), identityHeader: 'x-my-gateway-session' });
+  assert.deepEqual(customHeader, { kind: 'session', key: 'custom-1' });
   const fingerprint = resolveIdentity(request({}, { messages: [{ role: 'system', content: 'rules' }, { role: 'user', content: 'hi' }] }));
   assert.equal(fingerprint.kind, 'fingerprint');
   const address = resolveIdentity(request({}, { messages: [] }, '::1'));
   assert.deepEqual(address, { kind: 'address', key: '::1' });
-  assert.equal(resolveIdentity(request({ 'x-coding-plan-session': '' }, {}, 'client')).key, 'client');
+  assert.equal(resolveIdentity(request({ 'x-session-id': '' }, {}, 'client')).key, 'client');
 });
 
 test('fingerprints are stable for identical system and first user content and change with either', () => {

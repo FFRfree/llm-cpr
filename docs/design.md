@@ -89,12 +89,12 @@ hindsight┘                                                            │
 - 对客户端：**一个 OpenAI 兼容端点**（`POST /v1/chat/completions` 必须、`GET /v1/models`
   可选本地返回白名单）；管理口只绑回环，对外挂 SSO 与 ocg-proxy 同法。
 - 对上游：改写三件套 = 模型名翻译 + Authorization 替换 + 选 CCG 时剥会话头；
-  选 OCG 时网关把统一头 `x-coding-plan-session` **重写**为下游要求的 `x-opencode-session`（一个会话身份两层各用各的映射，opencode 耦合被封在网关内部）。
+  选 OCG 时网关把统一头 `x-session-id` **重写**为下游要求的 `x-opencode-session`（一个会话身份两层各用各的映射，opencode 耦合被封在网关内部）。
 - 流式错误边界：**首字节前**可换订阅重试；SSE 已开始只报错（不做无声重试）。
 
 ## 4. 路由核（翻版 ocg-proxy 三条规则，推广到订阅级）【待拍板】
 
-1. **路由身份**：统一会话头（默认 `x-coding-plan-session`）→ 对话指纹（复用 ocg-proxy fingerprint.mjs）→ 客户端地址。
+1. **路由身份**：统一会话头（默认 `x-session-id`）→ 对话指纹（复用 ocg-proxy fingerprint.mjs）→ 客户端地址。
    身份命中映射即钉死订阅，永不自动换（缓存优先）；换订阅 = 上游前缀缓存全烧。
 2. **新身份评分**：月度欠账 `月时间进度% − 月已花%`，谁落后日历喂谁。
    - CCG：美元口径直读（剩余/已花/周期起止来自 /alpha）；
@@ -111,7 +111,7 @@ hindsight┘                                                            │
 
 | 客户端 | 会话头 | 接入方式 | 状态 |
 |---|---|---|---|
-| hermes | `x-coding-plan-session`（config 里 `session_affinity_header` 声明，头名中立不耦合 opencode） | custom provider 条目指路由器 | 已验证可行性，配置级 |
+| hermes | `x-session-id`（config 里 `session_affinity_header` 声明；业界通用名——OpenRouter sticky routing、opencode 对非 opencode provider 的缓存亲和 PR、AWS AgentCore 均用此名；头名中立不耦合 opencode） | custom provider 条目指路由器 | 已验证可行性，配置级 |
 | pi-coding-agent | 待验证（pi 对 opencode 目标原生带头；对自定义 OpenAI 兼容 provider 是否支持自定义头待查） | provider 配置指路由器 | 待验证 |
 | oh-my-pi | 同 pi | 同 pi | 待验证 |
 | hindsight | 无头 → 指纹身份兜底（后台一次性调用，指纹够用） | OpenAI 兼容 base_url 指路由器 | 方案级可行 |
