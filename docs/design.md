@@ -1,4 +1,4 @@
-# Sub-Router 设计文档（规划稿 v0.1，2026-11-16）
+# Coding-Plan-Router 设计文档（规划稿 v0.2，2026-11-16）
 
 > 状态：**规划中，未动手**。本文记录需求、架构与所有已查证的事实底座；
 > 每条带「已验证 / 待拍板 / 待验证」标注。实施前须用户逐项拍板。
@@ -16,6 +16,30 @@
    - **审计**：每笔请求入档（谁、哪个订阅/账号、什么模型、token 用量、cache 命中），
      按 session 纬度检查 cache miss；
    - **看板**：每个订阅各维度限额（5h/周/月）与时间进度的柱状图。
+
+## 1b. 定位与三层结构（2026-11-16 定调，未来开源到 GitHub）
+
+名字 **coding-plan-router**：本质是「对一堆 coding-plan 订阅做负载均衡的 LLM 路由器」，
+agent-agnostic，未来发布到 GitHub（开源约束见 §9）。
+
+```
+上层  接入层（per-harness 适配，薄）
+      ├─ hermes     custom provider / model-provider 插件
+      ├─ pi / omp   provider 配置（自定义会话头能力待验证，M4）
+      └─ hindsight  直连 OpenAI 兼容 API（无头 → 指纹身份）
+中层  路由器（本仓核心，纯 Node 零依赖）
+      会话钉死 → 月度欠账评分 → 模型名/凭据/会话头翻译 → 审计账本 → 看板
+下层  订阅后端（多账号、多家族，可扩展）
+      ├─ ocg  ×N → 转交 ocg-proxy（已有，账号级评分/钉死/账本）
+      ├─ ccg  ×N → 直连 api.commandcode.ai（本层管理多账号钉死）
+      └─ codex ×N（未来）→ OAuth 订阅后端，参照 hindsight-codex-proxy 的翻译模式
+```
+
+- 分层规则：**上层只做"把各家 harness 的会话约定接到统一会话头"**，不带任何路由逻辑；
+  **下层只做"把统一请求翻译成该家族的方言 + 报告用量"**，不做选择；选择只在中间层。
+- 家族扩展点：新增订阅家族 = 新增一个下层适配模块（base_url、凭据、余量数据源、
+  模型名翻译表），路由核零改动。
+- 模型白名单 = 各家族"有倍率"模型的并集，统一命名，放中层配置。
 
 ## 2. 事实底座（全部现查验证过，2026-11-16）
 
@@ -121,7 +145,10 @@ hindsight┘                                                            │
 
 ## 9. 资源与约定
 
-- 代码目录：`/root/workspace/services/sub-router/`（本仓）；纯 Node 零第三方依赖，Node ≥ 22。
+- 代码目录：`/root/workspace/services/coding-plan-router/`（本仓）；纯 Node 零第三方依赖，Node ≥ 22。
+- **开源意图**：未来发 GitHub。仓内保持通用（README 面向外部用户、目录/端口/家族可配），
+  个人路径、真实 key、私有域名一律只放 `.env` / 本机 systemd，不进 git；看板 SSO 挂接
+  作为本机部署的可选文档章节。
 - 端口：转发 **8741**、管理 **8743**（8742 被 ocg-proxy 占用）【待拍板确认】。
 - 凭据：CCG key 放本仓 `.env`（chmod 600，不进 git）；OCG 凭据仍在 ocg-proxy，不复制。
 - 开发期端口覆盖 + 假上游 e2e 冒烟，**不碰生产 8731**；正式改动单独中文 git commit。
