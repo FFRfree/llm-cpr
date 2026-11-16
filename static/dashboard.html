@@ -68,6 +68,7 @@ button:disabled{opacity:.4;cursor:default}
 .badge{padding:1px 7px;border:1px solid var(--border);font-size:10px;letter-spacing:.5px;
   text-transform:uppercase;color:var(--text-2)}
 .badge.warn{color:var(--warning);border-color:var(--warning)}
+.badge.pref{color:var(--success);border-color:var(--success);font-weight:700}
 .badge.err{color:var(--danger);border-color:var(--danger)}
 .sub-head .remain{margin-left:auto;font-size:12px;color:var(--text-2)}
 .sub-head .remain b{color:var(--success)}
@@ -291,10 +292,15 @@ function renderSubscriptions(status){
     const speed=[];
     if(num(perf?.avg_ttft_ms))speed.push(`TTFT ${(perf.avg_ttft_ms/1000).toFixed(2)}s`);
     if(num(perf?.tps))speed.push(`TPS ${perf.tps.toFixed(0)} tok/s`);
+    // 「当前优先」= 新会话会被路由核挑中的订阅（与后端 rankBackends 同源），脚注附优先序与欠账评分
+    const prefRank=(status.preference||[]).findIndex((p)=>p.name===x.name);
+    const prefBadge=prefRank===0?'<span class="badge pref">当前优先</span>':'';
+    const prefFoot=prefRank>=0&&num(status.preference[prefRank].score)
+      ?` · 优先序 #${prefRank+1}（月欠账评分 ${status.preference[prefRank].score.toFixed(1)}）`:prefRank>0?` · 优先序 #${prefRank+1}`:'';
     return `<article>
-      <div class="sub-head"><span class="name">${esc(x.alias||x.name)}</span><span class="badge">${esc(familyLabel(x.family))}</span>${badges.join('')}<span class="remain">${remainHtml}</span></div>
+      <div class="sub-head"><span class="name">${esc(x.alias||x.name)}</span><span class="badge">${esc(familyLabel(x.family))}</span>${prefBadge}${badges.join('')}<span class="remain">${remainHtml}</span></div>
       ${rows}
-      <div class="sub-foot">${speed.length?`${speed.join(' · ')} · `:''}快照 ${s.fetchedAt?rel(s.fetchedAt):'尚无'}${num(s.ageMs)?` · ${Math.round(s.ageMs/1000)}s 前`:''} · 内部名 <span class="mono">${esc(x.name)}</span>
+      <div class="sub-foot">${speed.length?`${speed.join(' · ')} · `:''}快照 ${s.fetchedAt?rel(s.fetchedAt):'尚无'}${num(s.ageMs)?` · ${Math.round(s.ageMs/1000)}s 前`:''}${prefFoot} · 内部名 <span class="mono">${esc(x.name)}</span>
         <details class="models"${state.openModels?' open':''}><summary>可用模型（${(x.models||[]).length}）</summary>
         <div class="chips">${(x.models||[]).map(m=>`<span>${esc(m)}</span>`).join('')}</div></details></div>
     </article>`;

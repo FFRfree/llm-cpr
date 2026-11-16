@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
 import { createGatewayServers } from '../lib/server.mjs';
-import { selectBackend, monthlyDebtScore } from '../lib/selection.mjs';
+import { selectBackend, rankBackends, monthlyDebtScore } from '../lib/selection.mjs';
 import { UsageSnapshots } from '../lib/snapshots.mjs';
 
 const start = async (server) => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return `http://127.0.0.1:${server.address().port}`; };
@@ -35,6 +35,19 @@ test('selector filters unsupported models and full windows; exhaustions last and
   const limited = Object.fromEntries(backends.map(({ name }) => [name, { fiveHour: { exceeded: true }, weekly: { exceeded: true } }]));
   assert.throws(() => selectBackend({ backends, snapshots: limited, model: { ccg: 'native' } }), /all eligible subscriptions are window-limited/);
   assert.throws(() => selectBackend({ backends, snapshots, model: { ocg: 'not-configured' } }), (error) => error.statusCode === 400);
+});
+
+test('rankBackends exposes the full candidate order selectBackend picks from', () => {
+  const backends = [{ name: 'first', family: 'ccg', priority: 0 }, { name: 'behind', family: 'ccg', priority: 1 }, { name: 'exhausted', family: 'ccg', priority: 2 }];
+  const period = { periodStart: '2026-11-01T00:00:00Z', periodEnd: '2026-12-01T00:00:00Z', known: true };
+  const snapshots = { first: { ...period, monthlyPercent: 20 }, behind: { ...period, monthlyPercent: 10 }, exhausted: { ...period, monthlyPercent: 100 } };
+  const now = Date.parse('2026-11-16T00:00:00Z');
+  const ranked = rankBackends({ backends, snapshots, model: { ccg: 'native' }, now });
+  assert.deepEqual(ranked.map((b) => b.name), ['behind', 'first']); // 月耗尽的 exhausted 有可用候选时不进池（既有行为）
+  assert.equal(selectBackend({ backends, snapshots, model: { ccg: 'native' }, now }).name, ranked[0].name);
+  const limited = Object.fromEntries(backends.map(({ name }) => [name, { fiveHour: { exceeded: true }, weekly: { exceeded: true } }]));
+  assert.deepEqual(rankBackends({ backends, snapshots: limited, model: { ccg: 'native' } }), []);
+  assert.throws(() => rankBackends({ backends, snapshots, model: { ocg: 'no' } }), (error) => error.statusCode === 400);
 });
 
 test('CCG snapshot polls credits, usage, subscriptions and marks failed alpha queries unknown', async () => {
