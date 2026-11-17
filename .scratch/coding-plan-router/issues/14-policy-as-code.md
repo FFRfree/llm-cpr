@@ -26,7 +26,7 @@
 
 **不做：**Auto 模式逻辑本身（只留契约口）、config.json 兼容读取、看板改造（管理 API 响应形状不变即免改）、生产部署（单独授权）。
 
-**部署备忘（另行授权后执行）：**systemd 加 `CPR_POLICY_FILE=/root/.config/coding-plan-router/policy.ts`；建软链 `/root/.config/coding-plan-router/policy.ts → /root/workspace/services/coding-plan-router/policies/mine.ts`；release 仍 `git archive lib static package.json`（policies/ 不进 release，真身在仓库）。
+**部署备忘（另行授权后执行）：**systemd 加 `CPR_POLICY_FILE=/root/.config/coding-plan-router/policy.ts`；建软链 `/root/.config/coding-plan-router/policy.ts → /root/ffr-projects/coding-plan-router/policies/mine.ts`；release 仍 `git archive lib static package.json`（policies/ 不进 release，真身在仓库）。
 
 ## 验收
 

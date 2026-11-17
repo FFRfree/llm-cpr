@@ -172,7 +172,7 @@ hindsight┘                                                         └→ api.
 
 ## 9. 资源与约定
 
-- 代码目录：`/root/workspace/services/coding-plan-router/`（本仓）；纯 Node 零第三方依赖，Node ≥ 22。
+- 代码目录：`/root/ffr-projects/coding-plan-router/`（本仓）；纯 Node 零第三方依赖，Node ≥ 22。
 - **开源意图**：未来发 GitHub。仓内保持通用（README 面向外部用户、目录/端口/家族可配），
   个人路径、真实 key、私有域名一律只放 `.env` / 本机 systemd，不进 git；看板 SSO 挂接
   作为本机部署的可选文档章节。

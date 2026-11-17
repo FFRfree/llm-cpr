@@ -7,7 +7,7 @@
 
 | 角色 | 路径 | 说明 |
 | --- | --- | --- |
-| 开发源码 + Git | `/root/workspace/services/coding-plan-router/` | 只在这里改代码；不是运行目录 |
+| 开发源码 + Git | `/root/ffr-projects/coding-plan-router/` | 只在这里改代码；不是运行目录 |
 | 正式运行代码 | `/root/.local/lib/coding-plan-router/releases/<日期>-<短sha>/` | 从 `git archive` 出的发布副本，带 `RELEASE.txt` |
 | 当前生效版本 | `/root/.local/lib/coding-plan-router/current` | 软链指向某个 release 目录 |
 | 运行配置 | `/root/.config/coding-plan-router/config.json` | 不含密钥，chmod 600 |
@@ -34,7 +34,7 @@ Environment=CPR_USAGE_DB=/root/.local/share/coding-plan-router/usage.db
 ## 发布一份新版本（不停服也能做）
 
 ```bash
-cd /root/workspace/services/coding-plan-router
+cd /root/ffr-projects/coding-plan-router
 git status --short            # 确认要发布的提交，别把未提交改动带进去
 SHA=$(git rev-parse --short HEAD)
 REL=/root/.local/lib/coding-plan-router/releases/$(date -u +%Y%m%d)-$SHA
@@ -58,8 +58,8 @@ ln -sfn "$REL" /root/.local/lib/coding-plan-router/current   # 切换生效版�
 systemctl stop coding-plan-router
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 node scripts/xdg-deploy/migrate-dbs.ts \
-  --sessions-db /root/workspace/services/coding-plan-router/sessions.db \
-  --usage-db    /root/workspace/services/coding-plan-router/usage.db \
+  --sessions-db /root/ffr-projects/coding-plan-router/sessions.db \
+  --usage-db    /root/ffr-projects/coding-plan-router/usage.db \
   --dest-dir    /root/.local/share/coding-plan-router \
   --backup-dir  /root/.local/share/coding-plan-router/backups/$TS
 ```
@@ -87,7 +87,7 @@ curl -s http://127.0.0.1:8740/api/route/status | head -c 300
 curl -s 'http://127.0.0.1:8740/api/audit/requests?limit=1'
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8740/          # 看板
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8741/v1/models # 无 key 应 401
-ls /root/workspace/services/coding-plan-router/*.db*                    # 不应出现新库/新 WAL
+ls /root/ffr-projects/coding-plan-router/*.db*                    # 不应出现新库/新 WAL
 ```
 
 必须同时确认：进程打开的 fd 指向 `~/.local/share/coding-plan-router/`、会话钉死条数与账本行数不少于迁移前、源码目录没有新生成空库。只看 `systemctl is-active` 不够——空库也能 active。
@@ -105,8 +105,8 @@ systemctl restart coding-plan-router
 
 ```bash
 install -m 644 /root/.config/coding-plan-router/rollback/coding-plan-router.service.old /etc/systemd/system/coding-plan-router.service
-cp /root/.config/coding-plan-router/rollback/env-before-move /root/workspace/services/coding-plan-router/.env
-chmod 600 /root/workspace/services/coding-plan-router/.env
+cp /root/.config/coding-plan-router/rollback/env-before-move /root/ffr-projects/coding-plan-router/.env
+chmod 600 /root/ffr-projects/coding-plan-router/.env
 systemctl daemon-reload && systemctl restart coding-plan-router
 ```
 

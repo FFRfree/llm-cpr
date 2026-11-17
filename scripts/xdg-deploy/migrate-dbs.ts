@@ -4,8 +4,8 @@
 //
 // 用法：
 //   node scripts/xdg-deploy/migrate-dbs.ts \
-//     --sessions-db /root/workspace/services/coding-plan-router/sessions.db \
-//     --usage-db    /root/workspace/services/coding-plan-router/usage.db \
+//     --sessions-db /root/ffr-projects/coding-plan-router/sessions.db \
+//     --usage-db    /root/ffr-projects/coding-plan-router/usage.db \
 //     --dest-dir    /root/.local/share/coding-plan-router \
 //     --backup-dir  /root/.local/share/coding-plan-router/backups/<ts>
 //

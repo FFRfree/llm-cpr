@@ -6,7 +6,7 @@
 
 ## 目标布局
 
-- 开发源码与 Git：`/root/workspace/services/coding-plan-router/`。
+- 开发源码与 Git：`/root/ffr-projects/coding-plan-router/`。
 - 正式运行代码：`/root/.local/lib/coding-plan-router/`（内部版本/回滚方式采用足够轻量的设计）。
 - 实际运行配置及密钥：`/root/.config/coding-plan-router/config.json`、`/root/.config/coding-plan-router/.env`。
 - 持久数据：`/root/.local/share/coding-plan-router/sessions.db`、`/root/.local/share/coding-plan-router/usage.db`，SQLite 的 `-wal`/`-shm` 随数据库在同目录运行。
