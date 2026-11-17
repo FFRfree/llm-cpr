@@ -33,6 +33,14 @@ const launchGateway = async (config: GatewayConfig, env: Environment, logger: Lo
 };
 const chat = (gateway: Gateway, body: ChatBody = { model: 'm' }): Promise<Response> => fetch(`http://127.0.0.1:${(gateway.forwardServer.address() as AddressInfo).port}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
+// e2e 夹具的日期必须相对真实时间生成：网关按真实时钟运行，写死的 resetsAt/periodEnd 一旦过期，
+// 快照会被标为「过期/未知」、排序降级为 priority 兜底，测试就在到期当天集体爆掉
+// （2026-11-17 rolling 过期导致 OCG 直连 e2e 失败即为此类）。纯函数测试自己冻结 now，不受影响。
+const DAY = 86_400_000;
+const isoFromNow = (offsetMs: number): string => new Date(Date.now() + offsetMs).toISOString();
+// 以 now 为中心的对称周期：月进度恒为 50%，断言只依赖「欠账差」，与真实日期无关
+const billingPeriod = (): { periodStart: string; periodEnd: string } => ({ periodStart: isoFromNow(-15 * DAY), periodEnd: isoFromNow(15 * DAY) });
+
 test('monthly score uses normalized spend against calendar progress', () => {
   const common = { periodStart: '2026-11-01T00:00:00Z', periodEnd: '2026-12-01T00:00:00Z' };
   assert.equal(monthlyDebtScore({ ...common, monthlyPercent: 50 }, Date.parse('2026-11-16T00:00:00Z')), 0);
@@ -76,7 +84,7 @@ test('CCG snapshot polls credits, usage, subscriptions and marks failed alpha qu
     paths.push(new URL(url).pathname);
     if (url.endsWith('/credits')) return Response.json({ monthlyCredits: 60, fiveHour: { used: 2, cap: 14 }, weekly: { used: 3, cap: 35 } });
     if (url.endsWith('/summary')) return Response.json({ totalCost: 10 });
-    return Response.json({ periodStart: '2026-11-01T00:00:00Z', periodEnd: '2026-12-01T00:00:00Z' });
+    return Response.json(billingPeriod());
   }, logger: { warn() {} }});
   await snapshots.refresh();
   assert.equal(paths.length, 3);
@@ -108,7 +116,7 @@ test('e2e chooses greater-debt CCG subscription on new identity', async (t: Test
   const fake = (spent: number, name: string): Server => http.createServer(async (req: IncomingMessage, res: ServerResponse): Promise<unknown> => {
     if (req.method === 'GET' && req.url === '/alpha/billing/credits') return res.end(JSON.stringify({ monthlyCredits: 70 - spent, fiveHour: { used: 1, cap: 14 }, weekly: { used: 1, cap: 35 } }));
     if (req.method === 'GET' && req.url === '/alpha/usage/summary') return res.end(JSON.stringify({ totalCost: spent }));
-    if (req.method === 'GET' && req.url === '/alpha/billing/subscriptions') return res.end(JSON.stringify({ periodStart: '2026-11-01T00:00:00Z', periodEnd: '2026-12-01T00:00:00Z' }));
+    if (req.method === 'GET' && req.url === '/alpha/billing/subscriptions') return res.end(JSON.stringify(billingPeriod()));
     if (req.method === 'POST') { seen.push(name); for await (const _chunk of req) {} res.end(JSON.stringify({ backend: name })); return; }
     res.writeHead(404).end();
   });
@@ -131,9 +139,9 @@ test('e2e routes directly to OCG backends by monthly debt and pins the selected 
       assert.equal(req.headers['user-agent']?.startsWith('Mozilla/'), true);
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ usage: {
-        rolling: { percent: 10, resetsAt: '2026-11-17T00:00:00.000Z' },
-        weekly: { percent: 20, resetsAt: '2026-11-20T00:00:00.000Z' },
-        monthly: { percent, resetsAt: '2026-12-01T00:00:00.000Z' },
+        rolling: { percent: 10, resetsAt: isoFromNow(6 * 3_600_000) },
+        weekly: { percent: 20, resetsAt: isoFromNow(3 * DAY) },
+        monthly: { percent, resetsAt: isoFromNow(30 * DAY) },
       } }));
       return;
     }
@@ -177,7 +185,7 @@ test('e2e returns explicit 429 when all candidates exceed both windows', async (
   const upstream = http.createServer(async (req: IncomingMessage, res: ServerResponse): Promise<unknown> => {
     if (req.method === 'GET' && req.url === '/alpha/billing/credits') return res.end(JSON.stringify({ monthlyCredits: 50, fiveHour: { used: 14, cap: 14 }, weekly: { used: 35, cap: 35 } }));
     if (req.method === 'GET' && req.url === '/alpha/usage/summary') return res.end(JSON.stringify({ totalCost: 20 }));
-    if (req.method === 'GET' && req.url === '/alpha/billing/subscriptions') return res.end(JSON.stringify({ periodStart: '2026-11-01T00:00:00Z', periodEnd: '2026-12-01T00:00:00Z' }));
+    if (req.method === 'GET' && req.url === '/alpha/billing/subscriptions') return res.end(JSON.stringify(billingPeriod()));
     res.writeHead(200).end('should not forward');
   });
   const base = await start(upstream);

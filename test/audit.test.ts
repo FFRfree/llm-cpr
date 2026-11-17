@@ -149,6 +149,29 @@ test('existing ledgers gain ttft/stream columns via migration without losing row
   audit.close(); fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('existing ledgers gain the dashboard query indexes via migration without losing rows', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-audit-idx-migrate-'));
+  const file = path.join(dir, 'usage.db');
+  const legacy = new DatabaseSync(file);
+  // 老库：无任何索引的旧 schema
+  legacy.exec(`CREATE TABLE requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, identity TEXT, identity_kind TEXT NOT NULL,
+    subscription TEXT, account TEXT, model TEXT, translated_model TEXT, path TEXT, status INTEGER, ms INTEGER,
+    prompt_tokens INTEGER, completion_tokens INTEGER, cache_hit_tokens INTEGER, cache_miss_tokens INTEGER,
+    cache_write_tokens INTEGER, total_tokens INTEGER, cache_observed INTEGER NOT NULL DEFAULT 0,
+    cache_outcome TEXT, usage_json TEXT)`);
+  legacy.prepare(`INSERT INTO requests(ts,identity,identity_kind,subscription,status,cache_observed) VALUES(1,'s1','session','sub',200,0)`).run();
+  legacy.close();
+  const audit = new UsageAudit({ dbFile: file });
+  const db = audit.db as DatabaseSync;
+  const indexes = (db.prepare('PRAGMA index_list(requests)').all() as Array<{ name: string }>).map((entry) => entry.name);
+  assert.ok(indexes.includes('idx_requests_identity_ts'));
+  assert.ok(indexes.includes('idx_requests_sess_group'));
+  assert.ok(indexes.includes('idx_requests_sub_agg'));
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM requests').get() as { n: number }).n, 1); // 老行保留
+  audit.close(); fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('summary filters subscriptions to currently configured names when given', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-summary-filter-'));
   const audit = new UsageAudit({ dbFile: path.join(dir, 'usage.db') });

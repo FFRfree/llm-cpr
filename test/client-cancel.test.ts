@@ -20,7 +20,7 @@ function slowStreamUpstream(): { server: http.Server; state: { sawAbort: boolean
     // 非聊天路径（如 ocg 快照刷新的 GET /usage）回 JSON，别让 SSE 流拖住快照刷新
     if (!(req.url as string).includes('chat/completions')) {
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end('{"usage":{"rolling":{"percent":10,"resetsAt":"2026-01-01T00:00:00Z"},"weekly":{"percent":10,"resetsAt":"2026-01-01T00:00:00Z"},"monthly":{"percent":10,"resetsAt":"2026-01-01T00:00:00Z"}}}');
+      return res.end(JSON.stringify({ usage: { rolling: { percent: 10, resetsAt: new Date(Date.now() + 7 * 86_400_000).toISOString() }, weekly: { percent: 10, resetsAt: new Date(Date.now() + 7 * 86_400_000).toISOString() }, monthly: { percent: 10, resetsAt: new Date(Date.now() + 30 * 86_400_000).toISOString() } } }));
     }
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     res.write('data: {"choices":[{"delta":{"content":"1"}}]}\n\n');

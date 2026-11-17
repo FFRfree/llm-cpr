@@ -86,6 +86,9 @@ export class UsageAudit {
       for (const [name, ddl] of [['ttft_ms', 'INTEGER'], ['stream_ms', 'INTEGER']] as const) {
         if (!columns.has(name)) this.db.exec(`ALTER TABLE requests ADD COLUMN ${name} ${ddl}`);
       }
+      // 看板查询索引：必须在列迁移之后建（sub_agg 依赖 ttft_ms/stream_ms），老库新库统一走这里
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_requests_sess_group ON requests(identity, identity_kind, ts)');
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_requests_sub_agg ON requests(subscription, status, total_tokens, completion_tokens, stream_ms, ttft_ms)');
       this.insert = this.db.prepare(`INSERT INTO requests(ts,identity,identity_kind,subscription,account,model,translated_model,path,status,ms,prompt_tokens,completion_tokens,cache_hit_tokens,cache_miss_tokens,cache_write_tokens,total_tokens,cache_observed,cache_outcome,ttft_ms,stream_ms,usage_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     } catch (error) {
       this.db = null;
