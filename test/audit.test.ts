@@ -142,10 +142,13 @@ test('existing ledgers gain ttft/stream columns via migration without losing row
   const audit = new UsageAudit({ dbFile: file });
   const columns = (audit.db as DatabaseSync).prepare('PRAGMA table_info(requests)').all().map((entry) => entry.name);
   assert.ok(columns.includes('ttft_ms') && columns.includes('stream_ms'));
+  assert.ok(columns.includes('routing_note')); // policy 决定来源与迁移去向的复盘注记列
   assert.equal(((audit.db as DatabaseSync).prepare('SELECT COUNT(*) AS n FROM requests').get() as { n: number }).n, 1);
-  audit.record({ ts: 2, identity_kind: 'session', subscription: 'sub', ttft_ms: 900, stream_ms: 500 },
-    { completion_tokens: 10 });
+  audit.record({ ts: 2, identity_kind: 'session', subscription: 'sub', ttft_ms: 900, stream_ms: 500 }, null);
   assert.equal(((audit.db as DatabaseSync).prepare('SELECT COUNT(*) AS n FROM requests WHERE ttft_ms=900 AND stream_ms=500').get() as { n: number }).n, 1);
+  audit.record({ ts: 3, identity_kind: 'session', subscription: 'sub', routing_note: 'builtin:migrate->other' }, null);
+  assert.equal(((audit.db as DatabaseSync).prepare(`SELECT COUNT(*) AS n FROM requests WHERE routing_note='builtin:migrate->other'`).get() as { n: number }).n, 1);
+  assert.equal(((audit.db as DatabaseSync).prepare('SELECT routing_note FROM requests WHERE ts=1').get() as { routing_note: string | null }).routing_note, null); // 旧行新列为 NULL
   audit.close(); fs.rmSync(dir, { recursive: true, force: true });
 });
 

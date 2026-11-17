@@ -80,6 +80,8 @@ export interface ProviderAdapter {
 export type ChatBody = Record<string, unknown>;
 export interface PrepareChatRequest extends HeaderContext {
   config: RequestConfig;
+  // 显式生效模型（policy 模型覆盖时传）；缺省沿用 config.models 按 body.model 查找。
+  model?: Model;
   body: ChatBody;
   backend: Backend;
 }
@@ -98,7 +100,8 @@ export interface Endpoint {
   host: string;
   port: number;
 }
-// The on-disk config.json shape; only the required fields are checked at load.
+// The policy declaration shape (field names survive from the config.json era); only
+// required fields are checked at load. RouterPolicy in policy-contract.ts adds decide().
 export interface GatewayConfig extends RequestConfig {
   backends: Backend[];
   models: Model[];
@@ -110,13 +113,6 @@ export interface GatewayConfig extends RequestConfig {
   identity_header?: string;
   identityHeader?: string;
   sessions_db?: string;
-}
-// loadConfig() fills every default, so routing code never re-derives them.
-export interface LoadedConfig extends GatewayConfig {
-  listen: Endpoint;
-  admin: Endpoint;
-  masterKeyEnv: string;
-  identityHeader: string;
 }
 
 // node:sqlite rows and HTTP payloads are untyped at the boundary; these are the
@@ -134,6 +130,8 @@ export interface AuditEntry {
   ms?: number | null;
   ttft_ms?: number | null;
   stream_ms?: number | null;
+  // 决定来源与去向的复盘注记：policy@<mtime>:keep / builtin:migrate->x 等，普通路径为 null。
+  routing_note?: string | null;
 }
 export interface AuditRow {
   id: number;
@@ -157,6 +155,7 @@ export interface AuditRow {
   cache_outcome: string | null;
   ttft_ms: number | null;
   stream_ms: number | null;
+  routing_note: string | null;
 }
 export interface CacheLossEvent {
   ts: number;

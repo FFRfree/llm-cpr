@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS requests (
   cache_outcome TEXT,
   ttft_ms INTEGER,
   stream_ms INTEGER,
+  routing_note TEXT,
   usage_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_requests_identity_ts ON requests(identity, ts, id);
@@ -81,15 +82,15 @@ export class UsageAudit {
       this.db = new DatabaseSync(dbFile);
       this.db.exec('PRAGMA journal_mode=WAL');
       this.db.exec(SCHEMA);
-      // 旧库迁移：新增性能列（ttft/stream），ALTER 对已存在的表逐列补齐
+      // 旧库迁移：新增性能列（ttft/stream）与复盘注记列（routing_note），ALTER 对已存在的表逐列补齐
       const columns = new Set(this.db.prepare('PRAGMA table_info(requests)').all().map((entry) => String(entry.name)));
-      for (const [name, ddl] of [['ttft_ms', 'INTEGER'], ['stream_ms', 'INTEGER']] as const) {
+      for (const [name, ddl] of [['ttft_ms', 'INTEGER'], ['stream_ms', 'INTEGER'], ['routing_note', 'TEXT']] as const) {
         if (!columns.has(name)) this.db.exec(`ALTER TABLE requests ADD COLUMN ${name} ${ddl}`);
       }
       // 看板查询索引：必须在列迁移之后建（sub_agg 依赖 ttft_ms/stream_ms），老库新库统一走这里
       this.db.exec('CREATE INDEX IF NOT EXISTS idx_requests_sess_group ON requests(identity, identity_kind, ts)');
       this.db.exec('CREATE INDEX IF NOT EXISTS idx_requests_sub_agg ON requests(subscription, status, total_tokens, completion_tokens, stream_ms, ttft_ms)');
-      this.insert = this.db.prepare(`INSERT INTO requests(ts,identity,identity_kind,subscription,account,model,translated_model,path,status,ms,prompt_tokens,completion_tokens,cache_hit_tokens,cache_miss_tokens,cache_write_tokens,total_tokens,cache_observed,cache_outcome,ttft_ms,stream_ms,usage_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+      this.insert = this.db.prepare(`INSERT INTO requests(ts,identity,identity_kind,subscription,account,model,translated_model,path,status,ms,prompt_tokens,completion_tokens,cache_hit_tokens,cache_miss_tokens,cache_write_tokens,total_tokens,cache_observed,cache_outcome,ttft_ms,stream_ms,routing_note,usage_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     } catch (error) {
       this.db = null;
       this.insert = null;
@@ -106,6 +107,7 @@ export class UsageAudit {
         entry.account ?? null, entry.model ?? null, entry.translated_model ?? null, entry.path ?? null, entry.status ?? null, entry.ms ?? null,
         tokens.prompt_tokens, tokens.completion_tokens, tokens.cache_hit_tokens, tokens.cache_miss_tokens, tokens.cache_write_tokens,
         tokens.total_tokens, tokens.cache_observed ? 1 : 0, outcome, ms(entry.ttft_ms), ms(entry.stream_ms),
+        entry.routing_note ?? null,
         usage && typeof usage === 'object' ? JSON.stringify(usage) : null);
       return true;
     } catch (error) {

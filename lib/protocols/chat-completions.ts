@@ -102,11 +102,11 @@ export const chatCompletions = {
     base.pathname = `${base.pathname === '/' ? '' : base.pathname}${apiPath}`;
     return base;
   },
-  prepareRequest({ config, body, headers, backend, upstreamKey, identity, identityHeader = config.identityHeader || 'x-session-id' }: PrepareChatRequest) {
-    const model = config.models.find((entry) => entry.id === body.model);
-    if (!model) throw Object.assign(new Error(`model not allowed: ${body.model ?? ''}`), { statusCode: 400 });
-    const translatedModel = model.backends[backend.family];
-    if (!translatedModel) throw Object.assign(new Error(`model ${model.id} is not available on ${backend.family}`), { statusCode: 400 });
+  prepareRequest({ config, model, body, headers, backend, upstreamKey, identity, identityHeader = config.identityHeader || 'x-session-id' }: PrepareChatRequest) {
+    const entry = model ?? config.models.find((candidate) => candidate.id === body.model);
+    if (!entry) throw Object.assign(new Error(`model not allowed: ${body.model ?? ''}`), { statusCode: 400 });
+    const translatedModel = entry.backends[backend.family];
+    if (!translatedModel) throw Object.assign(new Error(`model ${entry.id} is not available on ${backend.family}`), { statusCode: 400 });
     return {
       body: { ...body, model: translatedModel },
       headers: providerFor(backend).requestHeaders({ headers, upstreamKey, identity, identityHeader }),

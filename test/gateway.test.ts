@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { loadConfig } from '../lib/config.ts';
+import { PolicyStore, resolveListenEndpoints } from '../lib/policy-loader.ts';
 import { translateRequest } from '../lib/translate.ts';
 import { createGatewayServers } from '../lib/server.ts';
 
@@ -18,16 +18,23 @@ const baseConfig = (baseUrl: string, family: Backend['family'] = 'ocg'): Gateway
   backends: [{ name: 'first', family, base_url: baseUrl, key_env: 'CPR_TEST_UPSTREAM' }],
 });
 
-test('configuration loads backends, model whitelist and environment port overrides', () => {
+test('policy file loads backends, model whitelist and environment port overrides', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-config-'));
-  const filename = path.join(dir, 'config.json');
-  fs.writeFileSync(filename, JSON.stringify(baseConfig('http://127.0.0.1:9')));
+  const filename = path.join(dir, 'policy.ts');
+  fs.writeFileSync(filename, `
+    export default class {
+      master_key_env = 'CPR_TEST_MASTER';
+      models = [{ id: 'unified-model', backends: { ocg: 'native-model' } }];
+      backends = [{ name: 'first', family: 'ocg', base_url: 'http://127.0.0.1:9', key_env: 'CPR_TEST_UPSTREAM' }];
+    }
+  `);
   try {
-    const config = loadConfig({ env: { CPR_CONFIG_FILE: filename, CPR_FORWARD_PORT: '0', CPR_ADMIN_PORT: '0', CPR_TEST_MASTER: 'master' } });
-    assert.equal(config.backends[0].family, 'ocg');
-    assert.equal(config.models[0].id, 'unified-model');
-    assert.equal(config.listen.port, 0);
-    assert.equal(config.admin.port, 0);
+    const policy = await new PolicyStore({ file: filename }).current();
+    assert.equal(policy.backends[0].family, 'ocg');
+    assert.equal(policy.models[0].id, 'unified-model');
+    const { listen, admin } = resolveListenEndpoints(policy, { CPR_FORWARD_PORT: '0', CPR_ADMIN_PORT: '0' });
+    assert.equal(listen.port, 0);
+    assert.equal(admin.port, 0);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

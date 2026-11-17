@@ -1,23 +1,13 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import type { Backend, Environment, Family, GatewayConfig, LoadedConfig, Model } from './contracts.ts';
+import type { Family, GatewayConfig } from './contracts.ts';
 
-const root = path.dirname(fileURLToPath(new URL('../package.json', import.meta.url)));
 const FAMILIES: readonly Family[] = ['ocg', 'ccg'];
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function portFrom(value: unknown, fallback: number, name: string): number {
-  if (value === undefined || value === '') return fallback;
-  const port = Number(value);
-  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`${name} must be an integer from 0 to 65535`);
-  return port;
-}
-
-// Validation checks only what routing depends on; everything else stays optional.
+// 校验的是「声明」：policy 实例（或任何对象）的 backends/models 必填字段、唯一键、URL 合法性。
+// 只在文件加载路径调用（PolicyStore）；测试直传的静态实例不校验。
 export function validateConfig(raw: unknown): GatewayConfig {
   const config = record(raw);
   if (!config || !Array.isArray(config.backends) || config.backends.length === 0) throw new Error('config.backends must contain at least one backend');
@@ -42,22 +32,4 @@ export function validateConfig(raw: unknown): GatewayConfig {
     ids.add(id);
   }
   return config as unknown as GatewayConfig;
-}
-
-export function loadConfig({ env = process.env, configFile }: { env?: Environment; configFile?: string } = {}): LoadedConfig {
-  const filename = configFile || env.CPR_CONFIG_FILE || path.join(root, 'config.json');
-  const raw: unknown = JSON.parse(fs.readFileSync(filename, 'utf8'));
-  const config = validateConfig(raw);
-  if (config.identity_header !== undefined && (typeof config.identity_header !== 'string' || !config.identity_header.trim())) throw new Error('config.identity_header must be a non-empty header name when set');
-  const forwardPort = portFrom(env.CPR_FORWARD_PORT, config.listen?.port ?? 8741, 'CPR_FORWARD_PORT');
-  const adminPort = portFrom(env.CPR_ADMIN_PORT, config.admin?.port ?? 8740, 'CPR_ADMIN_PORT');
-  return {
-    ...config,
-    backends: config.backends as Backend[],
-    models: config.models as Model[],
-    listen: { host: config.listen?.host || '127.0.0.1', port: forwardPort },
-    admin: { host: config.admin?.host || '127.0.0.1', port: adminPort },
-    masterKeyEnv: env.CPR_KEYS_ENV || config.master_key_env || 'CPR_MASTER_KEY',
-    identityHeader: (config.identity_header || 'x-session-id').trim().toLowerCase(),
-  };
 }

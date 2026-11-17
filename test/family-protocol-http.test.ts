@@ -6,7 +6,6 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { loadConfig } from '../lib/config.ts';
 import { createGatewayServers } from '../lib/server.ts';
 import type { Gateway } from '../lib/server.ts';
 import type { TestContext } from 'node:test';
@@ -14,7 +13,7 @@ import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } fro
 import type { AddressInfo } from 'node:net';
 import type { ChildProcessByStdio } from 'node:child_process';
 import type { Readable } from 'node:stream';
-import type { AuditRow, QuotaSnapshot } from '../lib/contracts.ts';
+import type { AuditRow, Backend, QuotaSnapshot } from '../lib/contracts.ts';
 
 interface InferenceBody extends Record<string, unknown> {
   model: string;
@@ -90,15 +89,13 @@ async function fixture(t: TestContext, { family = 'ocg', prefix = '', identity_h
     res.writeHead(200, { 'content-type': 'application/json' }).end('{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":8}}}');
   });
   const origin = await listen(upstream);
-  const configFile = path.join(dir, 'config.json');
-  fs.writeFileSync(configFile, JSON.stringify({
+  const config = {
     master_key_env: 'MASTER', identity_header,
     listen: { host: '127.0.0.1', port: 0 }, admin: { port: 0 },
-    backends: [{ name: 'stable-subscription', alias: 'display-only', account, family, direct, base_url: `${origin}${prefix}`, key_env: 'UPSTREAM', admin_key_env: 'ADMIN' }],
+    backends: [{ name: 'stable-subscription', alias: 'display-only', account, family: family as Backend['family'], direct, base_url: `${origin}${prefix}`, key_env: 'UPSTREAM', admin_key_env: 'ADMIN' }],
     models: [{ id: 'public-model', backends: { [family]: 'native-model' } }],
-  }));
+  };
   const env = { MASTER: 'test-master', UPSTREAM: 'test-upstream', ADMIN: 'test-admin', CPR_SESSIONS_DB: path.join(dir, 'sessions.db'), CPR_USAGE_DB: path.join(dir, 'usage.db') };
-  const config = loadConfig({ configFile, env });
   let gateway: Gateway, forward: string, admin: string;
   const start = async (): Promise<void> => {
     gateway = createGatewayServers(config, { env, logger: { warn() {} } });
@@ -233,15 +230,18 @@ test('unchanged main entry runs native typed modules with disposable config and 
     fs.rmSync(dir, { recursive: true, force: true });
   });
   const base_url = await listen(upstream);
-  const configFile = path.join(dir, 'config.json');
-  fs.writeFileSync(configFile, JSON.stringify({
-    master_key_env: 'MASTER', models: [{ id: 'public-model', backends: { ocg: 'native-model' } }],
-    backends: [{ name: 'main-subscription', family: 'ocg', base_url, key_env: 'UPSTREAM' }],
-  }));
+  const policyFile = path.join(dir, 'policy.ts');
+  fs.writeFileSync(policyFile, `
+    export default class {
+      master_key_env = 'MASTER';
+      models = [{ id: 'public-model', backends: { ocg: 'native-model' } }];
+      backends = [{ name: 'main-subscription', family: 'ocg', base_url: ${JSON.stringify(base_url)}, key_env: 'UPSTREAM' }];
+    }
+  `);
   child = spawn(process.execPath, ['lib/main.ts'], {
     cwd: fileURLToPath(new URL('../', import.meta.url)),
-    // Do not inherit credentials or the production config/port environment.
-    env: { MASTER: 'test-master', UPSTREAM: 'test-upstream', CPR_CONFIG_FILE: configFile, CPR_FORWARD_PORT: '0', CPR_ADMIN_PORT: '0',
+    // Do not inherit credentials or the production policy/port environment.
+    env: { MASTER: 'test-master', UPSTREAM: 'test-upstream', CPR_POLICY_FILE: policyFile, CPR_FORWARD_PORT: '0', CPR_ADMIN_PORT: '0',
       CPR_SESSIONS_DB: path.join(dir, 'sessions.db'), CPR_USAGE_DB: path.join(dir, 'usage.db') },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
