@@ -1,6 +1,6 @@
 # 06 — 测试基建：临时 clone + 可注入 systemctl，不用 Docker
 
-**Status:** ready-for-agent
+**Status:** completed
 
 **目标：** 02-05 的测试全部不触碰本机生产服务与真实 unit。结论先行：**不需要 Docker**——脚本操作面只有文件系统、git、systemctl 三样，前两样用临时目录天然隔离，第三样用注入。
 
@@ -27,3 +27,7 @@
 - 跑完测试后本机 `systemctl list-units | grep coding-plan-router` 与跑前一致。
 
 ## Comments
+
+- 2026-11-18 落地（commit ce8bf5b）。实现差异：fixture 用「最小仓 + 拷贝 scripts/」构造而非整仓 clone（fixture 只需 repoRoot 检查项 + 被跟踪文件，避免测试套件递归跑自身）；systemd 走 `CPR_SYSTEMCTL` stub（argv 记日志）+ `CPR_UNIT_DIR/CPR_CONFIG_DIR/CPR_DATA_DIR` 注入；`CPR_TEST_CMD/CPR_SMOKE_CMD` 接缝让 install/upgrade 检查秒回。
+- 12 条用例（doctor / install ×2 / upgrade ×5 / uninstall / main.ts ×3）全过；跑测试前后本机 `coding-plan-router.service` 无任何真实调用（stub 记账断言零 restart 未授权分支）。
+- 没做的验证：CI 语义（无 systemd 权限机器）未实测，但注入生效时不调真 systemctl，理论可跑。

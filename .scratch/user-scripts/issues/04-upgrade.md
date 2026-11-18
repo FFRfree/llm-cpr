@@ -1,6 +1,6 @@
 # 04 — upgrade：决策树与安全边界
 
-**Status:** ready-for-agent
+**Status:** completed
 
 **目标：** `scripts/cpr.ts upgrade`，核心原则：只处理干净状态，带杂质一律拒绝并把选择权递回用户；脚本永不 stash/commit/discard。
 
@@ -27,3 +27,7 @@
 - 测试全部经 `CPR_SYSTEMCTL` 注入，断言仅收到预期调用（restart 仅在 y/--yes 分支）。
 
 ## Comments
+
+- 2026-11-18 落地（commit ce8bf5b）。实现差异：`--yes` 语义 = 对所有已打印清楚的确认（含重启）答 y；rebase 回滚提示区分分支（`git reset --hard <旧SHA>`）与 detached（`git checkout <旧SHA>`）；其他分支且无领先 commit 时用 `git merge --ff-only` 快进该分支而非切走。
+- 决策树五态测试全过：ff / ff+重启 / 分叉 rebase / 冲突 abort 逐字节还原 / 脏文件拒绝零副作用。全量 119/119。
+- 没做的验证：detached HEAD 用户路径未单独测试（代码分支在，fixture 没造该形态）；默认冒烟（git archive + smoke-release）在真实升级里只验过冒烟函数存在，未在本 fixture 外端到端跑。

@@ -1,6 +1,6 @@
 # 05 — uninstall：红线是数据
 
-**Status:** ready-for-agent
+**Status:** completed
 
 **目标：** `scripts/cpr.ts uninstall`，能卸干净，但唯一不可逆的东西（数据库）永不静默删。
 
@@ -18,3 +18,7 @@
 - `--purge` 无确认不删；clone 目录任何情况下不被脚本删除。
 
 ## Comments
+
+- 2026-11-18 落地（commit ce8bf5b）。实现差异：数据/密钥目录默认 `~/.config|~/.local/share/coding-plan-router`，可经 `CPR_CONFIG_DIR`/`CPR_DATA_DIR` 注入（测试隔离用）；`--purge` 删除前仍过一遍 confirm（非交互默认 N）。
+- 验证：uninstall 三段用例（默认删 unit 留数据 / --purge 无确认不删 / --purge --yes 删且 clone 目录保留）全过；全量 119/119。
+- 没做的验证：真实 systemd disable 未跑（stub 注入口径同 03）。

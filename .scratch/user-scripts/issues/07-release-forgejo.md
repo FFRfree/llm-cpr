@@ -22,3 +22,6 @@
 - `git ls-remote` 能看到 tag；启动日志/管理 API 报出的 commit 与 tag 一致。
 
 ## Comments
+
+- 2026-11-18 进展：Forgejo 远端已建（`https://hermes-git.ffrfree.xyz:8443/ffrfree/coding-plan-router.git`，push-create 私有仓，master 基线 + user-scripts 分支已推）；README「安装/升级/卸载」章节与版本可见性（main.ts 启动日志报 commit + policy 来源）已随 commit ce8bf5b 落地；MR #1 在审。
+- 剩余：MR 批准合并后打首个 tag（打前先 git archive 快照 + smoke-release 冒烟）；`mine.ts` 真实订阅声明通用化另立工单（公开化前置，本仓保持 private）。

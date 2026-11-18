@@ -1,6 +1,6 @@
 # 01 — policy.local.ts：本地 policy 文件机制
 
-**Status:** ready-for-agent
+**Status:** completed
 
 **目标：** 用户 policy 改动移出 git 跟踪范围，升级零冲突。这是 02-05 的地基。
 
@@ -24,3 +24,7 @@
 - `git status` 永远不显示 policy.local.ts；smoke-release 不受影响（release 目录无 local，走回落路径）。
 
 ## Comments
+
+- 2026-11-18 落地于 `scripts/cpr.ts`（commit ce8bf5b）。实现与验收的差异：报错指向用 `${source}: <原报错>` 前缀实现（validateConfig 报错统一加文件名前缀）；tsconfig include 未扩（按票面取舍，local 文件靠启动校验兜底）。
+- 验证：`node --test test/user-scripts.test.ts` 三条 main.ts 用例（回落 twin / local 优先 / 坏 local 拒启报 `policy.local.ts:`）全过；全量 `node --test` 119/119、`npm run typecheck` 干净。
+- 没做的验证：真实 fork（改 lib）用户视角的手工路径未端到端跑过（测试是 fixture 替身）；type-tests 未覆盖 local 文件（include 外）。

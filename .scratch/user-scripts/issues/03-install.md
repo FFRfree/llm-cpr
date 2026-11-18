@@ -1,6 +1,6 @@
 # 03 — install：从 clone 到跑起来
 
-**Status:** ready-for-agent
+**Status:** completed
 
 **目标：** `scripts/cpr.ts install`，用户零文档装完（脚本本身在仓内，先 clone 后跑，无 curl|sh）。
 
@@ -25,3 +25,7 @@
 - 已装环境重跑：报现状、零副作用。
 
 ## Comments
+
+- 2026-11-18 落地（commit ce8bf5b）。实现差异：测试命令可经 `CPR_TEST_CMD` 注入（接缝在 06 票统一登记）；unit 覆盖前自动备份为 `.bak-<时间戳>`；install 的 `runChecks` 只跑测试不跑冒烟（冒烟归 upgrade，install 场景刚 clone 本来就是干净 commit）。
+- 验证：install 用例（unit 内容含 WorkingDirectory/EnvironmentFile/CPR_SESSIONS_DB、.env 权限 0600、master key 随机 48 hex、daemon-reload + enable --now stub 调用）+ 幂等用例（重复 install 不重置 .env/policy.local.ts）全过；全量 119/119。
+- 没做的验证：真实 systemd 环境（非注入）从未跑过 install——按设计留给用户实测，本机生产 unit 不动。

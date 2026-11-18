@@ -1,6 +1,6 @@
 # 02 — doctor：只读体检（install/upgrade 共用闸门）
 
-**Status:** ready-for-agent
+**Status:** completed
 
 **目标：** `scripts/cpr.ts doctor`，一次输出升级/安装决策所需的全部事实，不做任何写操作。
 
@@ -23,3 +23,8 @@
 - doctor 在任何状态都不改工作树（测试断言 `git status` 前后一致）。
 
 ## Comments
+
+- 2026-11-18 落地（commit ce8bf5b）。实现差异：结论行格式落地为 `NODE/REPO/BRANCH/HEAD/TAG/FETCHED/UPSTREAM/BEHIND/AHEAD/AHEAD_COMMIT=*/DIRTY=/UNTRACKED=`；`NEXT=` 给建议；无 remote 时 FETCHED=0 并标注「落后数字不可信」。
+- 修过一个真 bug：`git()` 辅助对 stdout trim 吞掉 porcelain 行首空格 → 未暂存文件名被削首字符（DIRTY=ib/main.ts）。新增 `{ raw: true }` 旁路，只有 porcelain 用它。
+- 验证：专项测试 doctor 用例 + 全量 119/119 + typecheck 干净。
+- 没做的验证：离线/无网 fetch 失败路径只测了「无 remote」形态，未测「有 remote 但网络断」。
