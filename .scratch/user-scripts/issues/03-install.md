@@ -27,5 +27,5 @@
 ## Comments
 
 - 2026-11-18 落地（commit ce8bf5b）。实现差异：测试命令可经 `CPR_TEST_CMD` 注入（接缝在 06 票统一登记）；unit 覆盖前自动备份为 `.bak-<时间戳>`；install 的 `runChecks` 只跑测试不跑冒烟（冒烟归 upgrade，install 场景刚 clone 本来就是干净 commit）。
-- 验证：install 用例（unit 内容含 WorkingDirectory/EnvironmentFile/CPR_SESSIONS_DB、.env 权限 0600、master key 随机 48 hex、daemon-reload + enable --now stub 调用）+ 幂等用例（重复 install 不重置 .env/policy.local.ts）全过；全量 119/119。
-- 没做的验证：真实 systemd 环境（非注入）从未跑过 install——按设计留给用户实测，本机生产 unit 不动。
+- 2026-11-18 review 修复（commit 46a6592）：install 原先没建 `CPR_DATA_DIR`——`node:sqlite` 打开库文件不会自建父目录（实测 `ERR_SQLITE_ERROR: unable to open database file`），新用户首次启动必挂。现 install 预建数据目录（0700）并新增测试断言。
+- 验证：install 用例补数据目录断言；全量 120/120、typecheck 干净。真实 systemd 首次启动仍留给非生产机器实测。

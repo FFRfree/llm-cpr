@@ -28,3 +28,4 @@
 - 修过一个真 bug：`git()` 辅助对 stdout trim 吞掉 porcelain 行首空格 → 未暂存文件名被削首字符（DIRTY=ib/main.ts）。新增 `{ raw: true }` 旁路，只有 porcelain 用它。
 - 验证：专项测试 doctor 用例 + 全量 119/119 + typecheck 干净。
 - 没做的验证：离线/无网 fetch 失败路径只测了「无 remote」形态，未测「有 remote 但网络断」。
+- 2026-11-18 review 修复（commit 46a6592）：原 `collectState` 的 `fetch` 参数形同虚设（doctor 也会 fetch 但未声明）——现参数真正生效，doctor 保留 fetch 并新增 `NOTE=` 行明示「更新本地远端引用与 tag，不改工作树」；全量 120/120。
