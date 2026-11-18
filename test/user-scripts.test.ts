@@ -52,6 +52,8 @@ function makeFixture(): Fixture {
   fs.writeFileSync(stub, '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$CPR_SYSTEMCTL_LOG"\nexit 0\n');
   fs.chmodSync(stub, 0o755);
   const env: Env = {
+    // 接缝全集显式钉死：父进程若带着 CPR_*（如 e2e 的 CPR_UNIT_NAME）进来会污染 fixture 断言。
+    CPR_UNIT_NAME: UNIT,
     CPR_SYSTEMCTL: stub,
     CPR_SYSTEMCTL_LOG: path.join(base, 'systemctl.log'),
     CPR_UNIT_DIR: path.join(base, 'unit'),
