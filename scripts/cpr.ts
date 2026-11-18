@@ -318,7 +318,7 @@ async function install(yes: boolean): Promise<number> {
   } else {
     console.log(`cpr: 未启动。之后手动：systemctl enable --now ${UNIT_NAME}`);
   }
-  console.log('cpr: 推理口 127.0.0.1:8741（鉴权 key = .env 的 CPR_MASTER_KEY）；管理口 127.0.0.1:8740（只绑回环，看板经反代+SSO 暴露，绝不直接开公网）。');
+  console.log('cpr: 推理口/管理口端口以 policy 声明为准（默认 127.0.0.1:8741 / 8740；管理口只绑回环，看板经反代+SSO 暴露，绝不直接开公网）。');
   return 0;
 }
 
@@ -375,13 +375,13 @@ async function upgrade(yes: boolean): Promise<number> {
     console.error(state.branch === null ? `  git checkout ${oldHead}` : `  git reset --hard ${oldHead}`);
     return 1;
   }
-  if (await confirm('重启 coding-plan-router 服务？（y/N）', yes)) {
+  if (await confirm(`重启 ${UNIT_NAME} 服务？（y/N）`, yes)) {
     const restart = systemctl('restart', UNIT_NAME);
     if (!restart.ok) {
       console.error(`cpr: 重启失败：${restart.err}（排查：journalctl -u ${UNIT_NAME} -n 50）`);
       return 1;
     }
-    console.log('cpr: 已重启。验证：启动日志应有当前 commit；curl -s http://127.0.0.1:8740/api/route/status 应返回订阅列表。');
+    console.log(`cpr: 已重启。验证：启动日志应有当前 commit；管理口 /api/route/status 应返回订阅列表。`);
   } else {
     console.log('cpr: 未重启。改动在下次重启生效：systemctl restart ' + UNIT_NAME);
   }
@@ -391,14 +391,21 @@ async function upgrade(yes: boolean): Promise<number> {
 // ---- uninstall ----
 
 async function uninstall(yes: boolean, purge: boolean): Promise<number> {
-  const stop = systemctl('disable', '--now', UNIT_NAME);
-  if (!stop.ok) {
-    console.error(`cpr: 停止/禁用服务失败：${stop.err}`);
-    console.error('cpr: 服务可能仍在运行或 systemd 不可用——为保护正在使用的数据库，拒绝继续卸载。');
-    console.error(`  排查后重试；手工口径：systemctl disable --now ${UNIT_NAME}`);
-    return 1;
+  // 守卫口径：只有服务确实在跑（is-active 成功）时，才强制要求 disable 成功——
+  // 「unit 文件已不存在」的重复卸载/disable 必然报错，但那是合法状态，不该拦住后续清理。
+  const activeNow = systemctl('is-active', UNIT_NAME).ok;
+  if (activeNow) {
+    const stop = systemctl('disable', '--now', UNIT_NAME);
+    if (!stop.ok) {
+      console.error(`cpr: 停止/禁用服务失败：${stop.err}`);
+      console.error('cpr: 服务可能仍在运行或 systemd 不可用——为保护正在使用的数据库，拒绝继续卸载。');
+      console.error(`  排查后重试；手工口径：systemctl disable --now ${UNIT_NAME}`);
+      return 1;
+    }
+    console.log('cpr: 服务已停并移除自启');
+  } else {
+    console.log(`cpr: 服务未在运行（${UNIT_NAME} 不存在或已停）——直接进入清理`);
   }
-  console.log('cpr: 服务已停并移除自启');
   const unitPath = path.join(unitDir(), UNIT_NAME);
   if (fs.existsSync(unitPath)) {
     fs.rmSync(unitPath);
