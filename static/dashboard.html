@@ -96,6 +96,9 @@ details.models .chips span{padding:1px 8px;border:1px solid var(--border);font-s
 .toolbar label{font-size:12px;display:inline-flex;align-items:center;gap:5px;cursor:pointer;padding:4px 0;flex:none;white-space:nowrap}
 #sort-sel{display:none;font:inherit;color:var(--text);background:var(--surface);
   border:1px solid var(--border);padding:5px 8px}
+#tenant-sel{display:none;font:inherit;color:var(--text);background:var(--surface);
+  border:1px solid var(--border);padding:4px 8px}
+#tenant-sel.on{display:inline-block}
 table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--border)}
 th,td{padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);font-size:13px}
 th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;
@@ -167,6 +170,7 @@ tr.detail-row th{color:var(--muted)}
   <h1>Coding Plan Router</h1>
   <span id="status"><span class="dot"></span><span id="status-text">加载中…</span></span>
   <span class="spacer"></span>
+  <select id="tenant-sel" aria-label="按租户筛选" title="按租户筛选（调用方）"></select>
   <button id="snap-refresh-btn" type="button" title="立即向上游查询一次各订阅额度">刷新快照</button>
   <button id="refresh-btn" type="button">手动刷新</button>
 </header>
@@ -207,7 +211,9 @@ const $=(s)=>document.querySelector(s);
 const esc=(v)=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num=(v)=>typeof v==='number'&&Number.isFinite(v);
 const clamp=(v)=>Math.max(0,Math.min(100,v));
-const state={sort:{key:'losses',dir:-1},expanded:null,openModels:false};
+const state={sort:{key:'losses',dir:-1},expanded:null,openModels:false,tenant:''};
+/* 租户筛选：'' = 全部租户合计（与旧行为一致）；session 行的明细按行自带 tenant 查 */
+const withTenant=(path)=>state.tenant?`${path}?tenant=${encodeURIComponent(state.tenant)}`:path;
 
 /* 订阅家族全名（后台不缩写）；alias 由 config.json backends[].alias 提供 */
 const FAMILY_LABEL={ocg:'OpenCode Go',ccg:'CommandCode GOAT'};
@@ -310,7 +316,7 @@ function renderSubscriptions(status){
   const live=new Set(subs.map(x=>x.name));
   const maps=status.mappings||[];
   $('#mappings').innerHTML=maps.length
-    ?'亲和会话：'+maps.map(m=>`${esc(subLabel(status,m.backend))} ${m.identities}${live.has(m.backend)?'':'（已下线，下次请求自动改绑）'}`).join(' · '):'';
+    ?'亲和会话：'+maps.map(m=>`${m.tenant&&m.tenant!=='default'?esc(m.tenant)+' · ':''}${esc(subLabel(status,m.backend))} ${m.identities}${live.has(m.backend)?'':'（已下线，下次请求自动改绑）'}`).join(' · '):'';
 }
 
 /* ---- 会话表 ---- */
@@ -336,23 +342,24 @@ function renderSessions(sessions){
     const miss=s.full_miss_rate;
     const missHtml=miss==null?'<span class="muted">—</span>'
       :`<span class="${miss>=0.5?'lost':miss>=0.2?'warnmiss':''}">${(100*miss).toFixed(1)}%</span>`;
-    const isExpanded=state.expanded===s.identity;
-    return `<tr class="data${isExpanded?' expanded':''}" data-id="${esc(s.identity)}">
-      <td data-l="会话"><div class="idcell" title="${esc(s.identity)}">${esc(s.identity)} <button class="copy" data-copy="${esc(s.identity)}" title="复制完整 ID">⧉</button></div><span class="kind">${esc(s.identity_kind)}</span></td>
+    const tenant=s.tenant||'default';
+    const isExpanded=state.expanded===`${tenant}|${s.identity}`;
+    return `<tr class="data${isExpanded?' expanded':''}" data-id="${esc(s.identity)}" data-tenant="${esc(tenant)}">
+      <td data-l="会话"><div class="idcell" title="${esc(s.identity)}">${esc(s.identity)} <button class="copy" data-copy="${esc(s.identity)}" title="复制完整 ID">⧉</button></div><span class="kind">${esc(s.identity_kind)}${tenant!=='default'?` · ${esc(tenant)}`:''}</span></td>
       <td class="num" data-l="请求">${s.requests}</td>
       <td class="num" data-l="cache miss">${missHtml}</td>
       <td class="num" data-l="丢失">${losses?'<span class="lost">⚠ '+losses+'</span>':'<span class="muted">0</span>'}</td>
       <td class="num" data-l="最后活跃">${rel(s.last_ts)}</td>
-    </tr>${isExpanded?'<tr class="detail-row"><td colspan="5" data-detail="'+esc(s.identity)+'">加载中…</td></tr>':''}`;
+    </tr>${isExpanded?`<tr class="detail-row"><td colspan="5" data-detail="${esc(tenant+'|'+s.identity)}">加载中…</td></tr>`:''}`;
   }).join('')||'<tr><td colspan="5" class="empty">没有匹配的会话</td></tr>';
 }
 
-async function showDetail(id){
-  const cell=document.querySelector(`td[data-detail="${CSS.escape(id)}"]`);
+async function showDetail(id,tenant){
+  const cell=document.querySelector(`td[data-detail="${CSS.escape(tenant+'|'+id)}"]`);
   if(!cell)return;
   try{
-    const data=await fetch(`/api/audit/sessions/${encodeURIComponent(id)}`).then(r=>r.json());
-    if(state.expanded!==id)return;
+    const data=await fetch(`/api/audit/sessions/${encodeURIComponent(id)}?tenant=${encodeURIComponent(tenant)}`).then(r=>r.json());
+    if(state.expanded!==`${tenant}|${id}`)return;
     const lossTs=new Set((data.session?.loss_events||[]).map(e=>e.ts));
     const rows=(data.requests||[]).slice().reverse().map(r=>{
       const tps=num(r.stream_ms)&&r.stream_ms>0&&num(r.completion_tokens)?(r.completion_tokens*1000/r.stream_ms).toFixed(0):'—';
@@ -381,15 +388,27 @@ const renderStatus=()=>{
     :'尚无快照 · 等待首次刷新';
 };
 setInterval(renderStatus,5000);
-const refetchSessions=()=>fetch('/api/audit/sessions').then(r=>r.json()).then(d=>renderSessions(d.sessions));
+const refetchSessions=()=>fetch(withTenant('/api/audit/sessions')).then(r=>r.json()).then(d=>renderSessions(d.sessions));
+function renderTenantSelector(status){
+  const tenants=(status&&status.tenants)||[];
+  const sel=$('#tenant-sel');
+  if(tenants.length<=1){sel.classList.remove('on');return;} // 单租户（或隐式 default）不显示下拉
+  if(sel.dataset.count!==String(tenants.length)){
+    sel.dataset.count=String(tenants.length);
+    sel.innerHTML='<option value="">全部租户</option>'+tenants.map(t=>`<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('');
+    sel.value=state.tenant;
+  }
+  sel.classList.add('on');
+}
 async function refresh(){
   const btn=$('#refresh-btn');btn.disabled=true;
   try{
     const [status,sessions,summary]=await Promise.all([
       fetch('/api/route/status').then(r=>r.json()),
-      fetch('/api/audit/sessions').then(r=>r.json()),
-      fetch('/api/audit/summary').then(r=>r.json()),
+      fetch(withTenant('/api/audit/sessions')).then(r=>r.json()),
+      fetch(withTenant('/api/audit/summary')).then(r=>r.json()),
     ]);
+    renderTenantSelector(status);
     renderSummary(summary?.summary, status);
     renderSubscriptions(status);
     renderSessions(sessions.sessions);
@@ -431,8 +450,15 @@ $('#sessions').addEventListener('click',(e)=>{
   const row=e.target.closest('tr.data');
   if(!row)return;
   const id=row.dataset.id;
-  state.expanded=state.expanded===id?null:id;
-  fetch('/api/audit/sessions').then(r=>r.json()).then(d=>{renderSessions(d.sessions);if(state.expanded===id)showDetail(id);});
+  const tenant=row.dataset.tenant||'default';
+  const key=`${tenant}|${id}`;
+  state.expanded=state.expanded===key?null:key;
+  fetch(withTenant('/api/audit/sessions')).then(r=>r.json()).then(d=>{renderSessions(d.sessions);if(state.expanded===key)showDetail(id,tenant);});
+});
+$('#tenant-sel').addEventListener('change',()=>{
+  state.tenant=$('#tenant-sel').value;
+  state.expanded=null;
+  refresh();
 });
 document.addEventListener('visibilitychange',()=>{ // 后台标签页停更，回前台立即补一刷
   if(document.hidden){clearInterval(timer);timer=null;}

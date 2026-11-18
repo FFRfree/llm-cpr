@@ -32,6 +32,37 @@ export function validateConfig(raw: unknown): GatewayConfig {
     if (ids.has(id)) throw new Error(`duplicate model id: ${id}`);
     ids.add(id);
   }
+  // 租户声明：name 是身份键（唯一、不改）；key_env 必填；backends/models 子集必须引用已声明的名字。
+  // 声明了 tenants 就不再用 master_key_env 鉴权——每个能进门的调用方都必须有归属（含 main 租户显式写 CPR_MASTER_KEY）。
+  if (config.tenants !== undefined) {
+    if (!Array.isArray(config.tenants) || config.tenants.length === 0) throw new Error('config.tenants must be a non-empty array when set');
+    const tenantNames = new Set<string>();
+    const keyEnvs = new Set<string>();
+    for (const [index, entry] of (config.tenants as unknown[]).entries()) {
+      const tenant = record(entry);
+      // 类型钉死：name/key_env 必须是非空字符串（`{}`/数组经 String() 都能骗过 truthy 检查），子集元素逐个验串。
+      if (!tenant || typeof tenant.name !== 'string' || !tenant.name.trim() || typeof tenant.key_env !== 'string' || !tenant.key_env.trim()) throw new Error(`config.tenants[${index}] requires non-empty string name and key_env`);
+      const name = tenant.name;
+      if (name === 'default') throw new Error(`config.tenants[${index}].name must not be 'default' (reserved for the implicit no-tenants mode)`);
+      if (tenantNames.has(name)) throw new Error(`duplicate tenant name: ${name}`);
+      tenantNames.add(name);
+      // 同一个 key_env 指两个租户：静态可判的凭据冲突（运行期 env 值相同由 createGatewayServers fail fast 兜底）。
+      if (keyEnvs.has(tenant.key_env)) throw new Error(`duplicate tenant key_env: ${tenant.key_env} (shared by more than one tenant)`);
+      keyEnvs.add(tenant.key_env);
+      if (tenant.backends !== undefined) {
+        if (!Array.isArray(tenant.backends) || tenant.backends.length === 0 || tenant.backends.some((backend) => typeof backend !== 'string' || !backend)) throw new Error(`config.tenants[${index}].backends must be a non-empty array of backend names when set`);
+        for (const backend of tenant.backends) {
+          if (!backendNames.has(backend)) throw new Error(`config.tenants[${index}].backends references unknown backend: ${backend}`);
+        }
+      }
+      if (tenant.models !== undefined) {
+        if (!Array.isArray(tenant.models) || tenant.models.length === 0 || tenant.models.some((model) => typeof model !== 'string' || !model)) throw new Error(`config.tenants[${index}].models must be a non-empty array of model ids when set`);
+        for (const model of tenant.models) {
+          if (!ids.has(model)) throw new Error(`config.tenants[${index}].models references unknown model: ${model}`);
+        }
+      }
+    }
+  }
   // 决策面字段（原 PolicyStore 加载期校验，随 policy 内联并入启动校验）
   if (config.identity_header !== undefined && (typeof config.identity_header !== 'string' || !config.identity_header.trim())) throw new Error('identity_header must be a non-empty header name when set');
   if (config.decide !== undefined && typeof config.decide !== 'function') throw new Error('decide must be a function when set');

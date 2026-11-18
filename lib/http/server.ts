@@ -268,6 +268,32 @@ export interface Gateway {
 export function createGatewayServers(policy: RouterPolicy, { env = process.env, fetchImpl = fetch, logger = console }: CreateGatewayOptions = {}): Gateway {
   const identityHeaderOf = (p: RouterPolicy): string => String(p.identity_header || p.identityHeader || 'x-session-id').trim().toLowerCase();
   const masterKeyOf = (p: RouterPolicy): string | undefined => env[p.masterKeyEnv || p.master_key_env || 'CPR_MASTER_KEY'];
+  // 租户 = 一类调用方的身份键（ADR-0007）。声明了 tenants：Bearer 命中哪个租户的 key 就归属哪个租户，
+  // master_key_env 不再参与鉴权（main 租户显式写 key_env 即可）；未声明：隐式 default 租户 + master key，v0.1.0 行为不变。
+  interface ResolvedTenant { name: string; keyEnv?: string; backends?: string[]; models?: string[] }
+  const DEFAULT_TENANT: ResolvedTenant = { name: 'default' };
+  const declaredTenants: ResolvedTenant[] = (policy.tenants ?? []).map((tenant) => ({ name: tenant.name, keyEnv: tenant.key_env, backends: tenant.backends, models: tenant.models }));
+  // 凭据冲突 fail fast：两个租户解析出同一个 key 值 → 归属歧义（authenticate 命中最先声明者，后声明者被静默遮蔽）。
+  // 这不是可用性问题而是隔离失效（账本分不出人），拒绝启动；缺 env 的租户不在此列（自然 401，不拦启动）。
+  {
+    const byKey = new Map<string, string>();
+    for (const tenant of declaredTenants) {
+      const key = tenant.keyEnv !== undefined ? env[tenant.keyEnv] : undefined;
+      if (typeof key !== 'string' || key.length === 0) continue;
+      if (byKey.has(key)) throw new Error(`tenant credential conflict: ${byKey.get(key)} and ${tenant.name} resolve to the same key value (check ${tenant.keyEnv})`);
+      byKey.set(key, tenant.name);
+    }
+  }
+  const authenticate = (req: IncomingMessage): ResolvedTenant | null => {
+    if (declaredTenants.length) {
+      for (const tenant of declaredTenants) {
+        const key = tenant.keyEnv !== undefined ? env[tenant.keyEnv] : undefined;
+        if (typeof key === 'string' && key.length > 0 && req.headers.authorization === `Bearer ${key}`) return tenant;
+      }
+      return null;
+    }
+    return authorized(req, masterKeyOf(policy)) ? DEFAULT_TENANT : null;
+  };
   const dbPath = env.CPR_DB_FILE || policy.db_file || env.CPR_SESSIONS_DB || policy.sessions_db
     || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'data.db');
   // 单库两表（requests + system_events）：打开失败直接抛、拒绝起服务（fail fast，理由见 db.ts）。
@@ -284,10 +310,13 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
 
   const forwardServer = http.createServer(async (req, res) => {
     const p = policy;
-    const masterKey = masterKeyOf(p);
-    if (!authorized(req, masterKey)) return json(res, 401, { error: { message: 'unauthorized', type: 'authentication_error' } });
+    const tenant = authenticate(req);
+    if (!tenant) return json(res, 401, { error: { message: 'unauthorized', type: 'authentication_error' } });
+    // 租户后端池：租户带 backends 子集时收缩；亲和目标落到池外按 stale-pin 处理（与「订阅下线」同语义）。
+    const tenantBackends: Backend[] = tenant.backends ? p.backends.filter((candidate) => tenant.backends!.includes(candidate.name)) : p.backends;
     if (req.method === 'GET' && req.url === '/v1/models') {
-      return json(res, 200, { object: 'list', data: p.models.map(({ id }) => ({ id, object: 'model' })) });
+      const listed = tenant.models ? p.models.filter((entry) => tenant.models!.includes(entry.id)) : p.models;
+      return json(res, 200, { object: 'list', data: listed.map(({ id }) => ({ id, object: 'model' })) });
     }
     if (!chatCompletions.matches(req.method, req.url)) return json(res, 404, { error: { message: 'not found', type: 'not_found_error' } });
     try {
@@ -299,11 +328,12 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       const body = parsed as ChatBody;
       const requestedModel = p.models.find((entry) => entry.id === body.model);
       if (!requestedModel) return json(res, 400, { error: { message: `model not allowed: ${String(body.model ?? '')}`, type: 'invalid_request_error' } });
+      if (tenant.models && !tenant.models.includes(requestedModel.id)) return json(res, 400, { error: { message: `model not allowed for tenant ${tenant.name}: ${requestedModel.id}`, type: 'invalid_request_error' } });
       const identity = resolveIdentity({ headers: req.headers, body, remoteAddress: req.socket.remoteAddress ?? 'unknown', identityHeader: identityHeaderOf(p) });
-      const pinnedName = events.affinity(identity.kind, identity.key);
-      let backend: Backend | undefined = pinnedName ? p.backends.find((candidate) => candidate.name === pinnedName) : undefined;
+      const pinnedName = events.affinity(tenant.name, identity.kind, identity.key);
+      let backend: Backend | undefined = pinnedName ? tenantBackends.find((candidate) => candidate.name === pinnedName) : undefined;
       const stalePin = Boolean(pinnedName && !backend);
-      if (stalePin) logger.warn?.(`[routing] pinned backend "${pinnedName}" no longer configured; re-selecting for identity ${identity.kind}`);
+      if (stalePin) logger.warn?.(`[routing] pinned backend "${pinnedName}" no longer available for tenant ${tenant.name}; re-selecting for identity ${identity.kind}`);
       const snaps = snapshots;
       if (!backend && snaps.peek().fetchedAt === null) {
         await snaps.refresh();
@@ -319,7 +349,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       const upstreamTimeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
         ? Math.min(300_000, Math.max(1, configuredTimeout)) : 120_000;
       const current = snaps.peek();
-      const candidates: Backend[] = p.backends.filter((candidate) => requestedModel.backends[candidate.family]);
+      const candidates: Backend[] = tenantBackends.filter((candidate) => requestedModel.backends[candidate.family]);
       if (!candidates.length) return json(res, 400, { error: { message: 'model is not available on configured backends', type: 'invalid_request_error' } });
       const candidateView = (view: SnapshotView, backend2: Backend): CandidateView => {
         const raw = view.snapshots[backend2.name];
@@ -335,7 +365,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       const requestView = { model: requestedModel.id, chars: bytes.length, messages: Array.isArray(body.messages) ? body.messages.length : 0 };
       // 硬护栏：policy 只能在支持该模型的候选里挑；返回野名字/缺映射的目标一律判非法、回落内置。
       const policyErrorEvent = (error: string): void => {
-        try { events.append({ kind: 'policy.error', identity, detail: { error } }); }
+        try { events.append({ kind: 'policy.error', tenant: tenant.name, identity, detail: { error } }); }
         catch (cause) { logger.warn?.(`[events] policy.error append failed: ${messageOf(cause)}`); }
       };
       const askPolicy = (ctx: DecisionCtx): Decision => {
@@ -349,7 +379,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       };
       const resolvePolicyPick = (decision: Decision, baseModel: Model): { backend: Backend; model: Model } | null => {
         if (!decision || decision === 'keep') return null;
-        const target = p.backends.find((candidate) => candidate.name === decision.backend);
+        const target = tenantBackends.find((candidate) => candidate.name === decision.backend);
         if (!target || !candidates.some((candidate) => candidate.name === decision.backend)) return null;
         const model = decision.model === undefined ? baseModel : p.models.find((entry) => entry.id === decision.model);
         if (!model || !model.backends[target.family]) return null;
@@ -362,6 +392,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       let decided = false;
       const ctx: DecisionCtx = {
         now: Date.now(),
+        tenant: tenant.name,
         request: requestView,
         session: { affinity: pinnedName, pin: pinnedName },
         candidates: candidates.map((candidate) => candidateView(current, candidate)),
@@ -414,13 +445,13 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
         // policy 未做有效决定：内置兜底（月欠账/尊重亲和/重选），行为 = config 时代原逻辑。
         let built;
         try {
-          built = builtinDecide(ctx, { backends: p.backends, model: requestedModel, snapshots: current.snapshots, longSessionMin });
+          built = builtinDecide(ctx, { backends: tenantBackends, model: requestedModel, snapshots: current.snapshots, longSessionMin });
         } catch (error) {
           return json(res, statusOf(error, 500), { error: { message: messageOf(error), type: statusOf(error, 500) === 429 ? 'routing_error' : 'invalid_request_error' } });
         }
         if (built.decision === 'keep') {
           // builtin keep 仅在亲和合法时出现（ctx.session.affinity 有效且支持模型）。
-          backend = p.backends.find((candidate) => candidate.name === pinnedName);
+          backend = tenantBackends.find((candidate) => candidate.name === pinnedName);
         } else if (built.decision) {
           const picked = await firstHealthyBackend(built.orderedBackends ?? []);
           if (res.destroyed) return;
@@ -437,12 +468,12 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
         const bindDetail: RouteEventDetail = { trigger: 'new-session', source: attempt?.source ?? 'builtin', ...(attempt?.note ? { note: attempt.note } : {}) };
         const bindTarget = backend; // 闭包内保持收窄：事务回调里 TS 不会保留 let 的收窄
         audit.transaction(() => {
-          if (events.affinity(identity.kind, identity.key) !== undefined) return false; // 并发请求已首绑，不覆盖
-          events.append({ kind: 'route.bind', identity, backendName: bindTarget.name, detail: bindDetail });
+          if (events.affinity(tenant.name, identity.kind, identity.key) !== undefined) return false; // 并发请求已首绑，不覆盖
+          events.append({ kind: 'route.bind', tenant: tenant.name, identity, backendName: bindTarget.name, detail: bindDetail });
           return true;
         });
       } else if (backend.name !== pinnedName) {
-        try { events.append({ kind: 'route.rebind', identity, backendName: backend.name, detail: { trigger: stalePin ? 'stale-pin' : 'policy-override', source: attempt?.source ?? 'builtin', ...(attempt?.note ? { note: attempt.note } : {}) } }); }
+        try { events.append({ kind: 'route.rebind', tenant: tenant.name, identity, backendName: backend.name, detail: { trigger: stalePin ? 'stale-pin' : 'policy-override', source: attempt?.source ?? 'builtin', ...(attempt?.note ? { note: attempt.note } : {}) } }); }
         catch (error) { logger.warn?.(`[events] route.rebind append failed: ${messageOf(error)}`); }
       }
       const startedAt = Date.now();
@@ -457,7 +488,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
         const translatedModel = translated.body.model;
         const record: (status: number, payload: string | ChatUsage | null, timings?: ForwardTimings) => void = (status, payload, timings) => {
           audit.record({
-            ts: startedAt, identity: identity.key, identity_kind: identity.kind, subscription: active.name,
+            ts: startedAt, tenant: tenant.name, identity: identity.key, identity_kind: identity.kind, subscription: active.name,
             account: active.account ?? active.name, model: requestedModel.id, translated_model: typeof translatedModel === 'string' ? translatedModel : null,
             path: req.url, status, ms: Date.now() - startedAt, ttft_ms: timings?.ttftMs, stream_ms: timings?.streamMs,
           } satisfies AuditEntry, typeof payload === 'string' ? chatCompletions.responseUsage(payload) : payload);
@@ -465,7 +496,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
         };
         // 错误路径的失败笔条目（无 usage/timings）：与路由事件同事务成对落地用。
         const failEntry = (status: number): AuditEntry => ({
-          ts: startedAt, identity: identity.key, identity_kind: identity.kind, subscription: active.name,
+          ts: startedAt, tenant: tenant.name, identity: identity.key, identity_kind: identity.kind, subscription: active.name,
           account: active.account ?? active.name, model: requestedModel.id, translated_model: typeof translatedModel === 'string' ? translatedModel : null,
           path: req.url, status, ms: Date.now() - startedAt,
         });
@@ -482,11 +513,11 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
             continue;
           }
         }
-        if ((result.status === 403 || result.status === 429) && !events.coolingDown(identity.kind, identity.key, Date.now(), rebindCooldownMs)) {
+        if ((result.status === 403 || result.status === 429) && !events.coolingDown(tenant.name, identity.kind, identity.key, Date.now(), rebindCooldownMs)) {
           // 改绑决策点。护栏前置（policy 不可见、不可覆写）：冷却已在入口条件拦掉；
           // keep-affinity 长会话保亲和：轮数达阈值的会话不改绑——换后端作废上游 prompt cache，
           // 宁可让 agent 稍后重试原后端。账本读不出/降级也当长会话（宁保缓存的保守取舍）。
-          const history = audit.sessionSummary(identity.key);
+          const history = audit.sessionSummary(identity.key, { tenant: tenant.name });
           const stickyLong = longSessionMin > 0 && (history?.degraded === true
             || typeof history?.requests !== 'number' || history.requests >= longSessionMin);
           // 失败账本行与路由事件同事务成对落地：任一步失败即整体回滚并放弃改绑（返回 false）——
@@ -495,7 +526,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
           const failWith = (event: { kind: 'route.rebind' | 'route.hold'; backendName?: string; detail: RouteEventDetail }): boolean => {
             const ok = audit.transaction(() => {
               const requestId = audit.insertRow(failEntry(lastResult!.status), chatCompletions.responseUsage(lastResult!.body.toString('utf8')));
-              events.append({ kind: event.kind, identity, backendName: event.backendName, requestId, detail: event.detail });
+              events.append({ kind: event.kind, tenant: tenant.name, identity, backendName: event.backendName, requestId, detail: event.detail });
               return requestId;
             }) !== null;
             health.note(active.name, lastResult!.status);
@@ -505,6 +536,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
           const fresh = snaps.peek();
           const errorCtx: DecisionCtx = {
             now: Date.now(),
+            tenant: tenant.name,
             request: requestView,
             session: { affinity: active.name, pin: active.name },
             candidates: candidates.map((candidate) => candidateView(fresh, candidate)),
@@ -525,7 +557,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
             return passthroughError(res, lastResult!);
           }
           if (decision !== null && typeof decision === 'object') {
-            const target = p.backends.find((candidate) => candidate.name === decision.backend);
+            const target = tenantBackends.find((candidate) => candidate.name === decision.backend);
             if (!target || !candidates.some((candidate) => candidate.name === decision.backend)) {
               // 非法决定（野名字/缺候选）与合法但探活失败的目标要区分：只对前者落 policy.error。
               policyErrorEvent(`invalid decision: ${JSON.stringify(decision)}`);
@@ -540,7 +572,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
           // 内置兜底：备选月欠账排序 → 逐个探活（keep-affinity 已被护栏前置处理）。
           let built;
           try {
-            built = builtinDecide(errorCtx, { backends: p.backends, model: requestedModel, snapshots: fresh.snapshots, longSessionMin, sessionUsage: { requests: history?.requests ?? null, degraded: history?.degraded === true } });
+            built = builtinDecide(errorCtx, { backends: tenantBackends, model: requestedModel, snapshots: fresh.snapshots, longSessionMin, sessionUsage: { requests: history?.requests ?? null, degraded: history?.degraded === true } });
           } catch { built = { decision: 'keep' as const, hold: 'no-alternate' as const }; }
           if (built.decision === 'keep') {
             giveUp(built.hold ?? 'no-alternate');
@@ -559,7 +591,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
         if (lastResult.status === 403 || lastResult.status === 429) {
           audit.transaction(() => {
             const requestId = audit.insertRow(failEntry(lastResult!.status), chatCompletions.responseUsage(lastResult!.body.toString('utf8')));
-            events.append({ kind: 'route.hold', identity, requestId, detail: { cause: 'cooldown', status: lastResult!.status } });
+            events.append({ kind: 'route.hold', tenant: tenant.name, identity, requestId, detail: { cause: 'cooldown', status: lastResult!.status } });
             return requestId;
           });
           return passthroughError(res, lastResult);
@@ -596,6 +628,10 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       const p = policy;
       const snaps = snapshots;
       const current = snaps.peek();
+      // 租户清单（看板下拉用）：声明了 tenants 列真实租户；未声明时只有隐式 default。
+      const tenantViews = declaredTenants.length
+        ? declaredTenants.map((tenant) => ({ name: tenant.name, ...(tenant.backends ? { backends: tenant.backends } : {}), ...(tenant.models ? { models: tenant.models } : {}) }))
+        : [{ name: 'default' }];
       // 「当前优先」：如果现在来一个新会话，内置月欠账会挑谁。policy 自定义决定不在此列
       // （它每请求都可能不同），看板对钉死模型显示的优先序仅供参考。
       let preference: { name: string; score: number | null }[] | null = null;
@@ -609,26 +645,28 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
         account: candidate.account ?? candidate.name,
         models: p.models.filter((model) => model.backends?.[candidate.family]).map((model) => model.id),
         snapshot: current.snapshots[candidate.name] ?? { known: false, degraded: true, stale: true },
-      })), preference, mappings: events.mappingOverview(), snapshots: current });
+      })), tenants: tenantViews, preference, mappings: events.mappingOverview(), snapshots: current });
     }
     if (url.pathname === '/api/audit/requests') {
-      return json(res, 200, { requests: audit.listRequests({ limit: url.searchParams.get('limit'), identity: url.searchParams.get('identity') ?? undefined }) });
+      return json(res, 200, { requests: audit.listRequests({ limit: url.searchParams.get('limit'), identity: url.searchParams.get('identity') ?? undefined, tenant: url.searchParams.get('tenant') ?? undefined }) });
     }
-    if (url.pathname === '/api/audit/sessions') return json(res, 200, { sessions: audit.listSessions({ limit: url.searchParams.get('limit') }) });
+    if (url.pathname === '/api/audit/sessions') return json(res, 200, { sessions: audit.listSessions({ limit: url.searchParams.get('limit'), tenant: url.searchParams.get('tenant') ?? undefined }) });
     if (url.pathname === '/api/audit/summary') {
       const identity = url.searchParams.get('identity');
+      const tenant = url.searchParams.get('tenant') ?? undefined;
       const p = policy;
       // 汇总只看当前声明的订阅；已下线的（如历史 ocg-main/first/second）留在库里不上板
       return json(res, 200, identity === null
-        ? { summary: audit.summary({ subscriptionNames: p.backends.map((candidate) => candidate.name) }) }
-        : { summary: audit.sessionSummary(identity), requests: audit.listRequests({ limit: url.searchParams.get('limit'), identity }) });
+        ? { summary: audit.summary({ subscriptionNames: p.backends.map((candidate) => candidate.name), tenant }) }
+        : { summary: audit.sessionSummary(identity, { tenant }), requests: audit.listRequests({ limit: url.searchParams.get('limit'), identity, tenant }) });
     }
     const detail = url.pathname.match(/^\/api\/audit\/sessions\/(.+)$/);
     if (detail) {
       let identity: string;
-      try { identity = decodeURIComponent(detail[1]); }
+      let tenant: string;
+      try { identity = decodeURIComponent(detail[1]); tenant = url.searchParams.get('tenant') ?? 'default'; }
       catch { return json(res, 400, { error: { message: 'invalid session URL', type: 'invalid_request_error' } }); }
-      return json(res, 200, { session: audit.sessionSummary(identity), requests: audit.listRequests({ limit: url.searchParams.get('limit'), identity }) });
+      return json(res, 200, { session: audit.sessionSummary(identity, { tenant }), requests: audit.listRequests({ limit: url.searchParams.get('limit'), identity, tenant }) });
     }
     return json(res, 404, { error: { message: 'not found', type: 'not_found_error' } });
   });

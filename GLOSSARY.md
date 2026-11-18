@@ -22,6 +22,10 @@ _Avoid_: account（单指账号时用 account）
 判定「这个请求属于哪个会话」的三级口径：统一会话头 → 对话指纹 → 客户端地址；身份命中亲和即粘住。
 _Avoid_: session key, user
 
+**Tenant（租户）**:
+一类调用方的身份键（`tenants[]` 声明的 `name`）；Bearer 命中哪个租户的 key 就归谁记账、按谁的身份亲和。是记账与选路的维度，**不是额度隔离**（订阅额度是上游账号的物理属性，租户共享全池）。不声明 tenants 时走隐式 `default` 租户。
+_Avoid_: user/account（各另有所指）, workspace, 项目（不是按项目分）
+
 ### 路由决策
 
 **Affinity（亲和）**:

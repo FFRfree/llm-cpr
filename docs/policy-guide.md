@@ -23,6 +23,7 @@
 ```ts
 decide?(ctx: {
   now: number;                                    // 本次决策时刻（毫秒时间戳）
+  tenant: string;                                 // 本次请求归属的租户名（tenants[].name；未声明 tenants 时恒为 'default'）
   request: {
     model: string;                                // 客户端请求的模型 id（models[].id 口径）
     chars: number;                                // 整个请求体 JSON 的字节数（≈上下文大小，不是 token 数）
@@ -55,6 +56,7 @@ interface CandidateView {
 
 字段解读的铁律：
 
+- `tenant` 是**记账/选路维度，不是额度**：额度（`walled`/`snapshot`）是订阅的物理属性，所有租户共享同一个池。按调用方写策略分支（如 `ctx.tenant === 'hermes'` 时只挑便宜档）看它；想「限某租户烧多少」不是 decide 能表达的，那是引擎层护栏。
 - `chars` 是**字节不是 token**：代码/英文约 3.5~4 字符/token，中文约 1.5~2。300k token 的代码上下文 ≈ 1MB 请求体。
 - `messages` 是本次请求里打包的消息条数（agent 每轮全量重发历史，所以它随会话线性涨，可当「聊到第几轮」的代理指标）。
 - `snapshot === undefined` 是「未知」，不能当「没额度」用。

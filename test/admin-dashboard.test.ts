@@ -12,7 +12,7 @@ import type { AuditRow, GatewayConfig, QuotaSnapshot, SessionSummary } from '../
 
 interface RouteStatus {
   subscriptions: { name: string; snapshot: QuotaSnapshot & { fiveHour: { cap: number } } }[];
-  mappings: { backend: string; identities: number }[];
+  mappings: { tenant: string; backend: string; identities: number }[];
 }
 interface RequestsPayload { requests: AuditRow[] }
 interface SessionsPayload { sessions: SessionSummary[] }

@@ -52,7 +52,7 @@ export class UsageAudit {
     // 打开即 fail fast（声明在 db.ts）：合并库后「账本不可用」不再是可以静默跑路由的状态。
     // 打开与语句准备阶段的任何失败都直接抛，启动入口据此拒绝起服务；运行中写入失败才走降级。
     this.db = db ?? openDatabase(String(dbFile));
-    this.insert = this.db.prepare(`INSERT INTO requests(ts,identity,identity_kind,subscription,account,model,translated_model,path,status,ms,prompt_tokens,completion_tokens,cache_hit_tokens,cache_miss_tokens,cache_write_tokens,total_tokens,cache_observed,cache_outcome,ttft_ms,stream_ms,usage_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    this.insert = this.db.prepare(`INSERT INTO requests(ts,tenant,identity,identity_kind,subscription,account,model,translated_model,path,status,ms,prompt_tokens,completion_tokens,cache_hit_tokens,cache_miss_tokens,cache_write_tokens,total_tokens,cache_observed,cache_outcome,ttft_ms,stream_ms,usage_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   }
 
   // 无兜底写入：供「账本行 + 事件行同事务成对落地」的路径使用，任何一步抛错即整体回滚。
@@ -61,7 +61,7 @@ export class UsageAudit {
     if (!stmt) throw new Error('usage ledger unavailable');
     const tokens = tokenFields(usage);
     const outcome = !tokens.cache_observed ? null : tokens.cache_hit_tokens === 0 ? 'miss' : tokens.cache_miss_tokens === 0 ? 'hit' : 'partial';
-    const info = stmt.run(entry.ts ?? Date.now(), entry.identity ?? null, entry.identity_kind ?? 'unknown', entry.subscription ?? null,
+    const info = stmt.run(entry.ts ?? Date.now(), entry.tenant ?? 'default', entry.identity ?? null, entry.identity_kind ?? 'unknown', entry.subscription ?? null,
       entry.account ?? null, entry.model ?? null, entry.translated_model ?? null, entry.path ?? null, entry.status ?? null, entry.ms ?? null,
       tokens.prompt_tokens, tokens.completion_tokens, tokens.cache_hit_tokens, tokens.cache_miss_tokens, tokens.cache_write_tokens,
       tokens.total_tokens, tokens.cache_observed ? 1 : 0, outcome, ms(entry.ttft_ms), ms(entry.stream_ms),
@@ -114,32 +114,47 @@ export class UsageAudit {
     }
   }
 
-  listRequests({ limit = 100, identity }: { limit?: number | string | null; identity?: string } = {}): AuditRow[] {
+  listRequests({ limit = 100, identity, tenant }: { limit?: number | string | null; identity?: string; tenant?: string } = {}): AuditRow[] {
     return this.#read<AuditRow[]>([], (db) => {
       const count = Math.max(1, Math.min(500, Math.trunc(Number(limit) || 100)));
-      const rows = identity === undefined
-        ? db.prepare('SELECT * FROM requests ORDER BY ts DESC,id DESC LIMIT ?').all(count)
-        : db.prepare('SELECT * FROM requests WHERE identity=? ORDER BY ts DESC,id DESC LIMIT ?').all(identity, count);
+      // tenant 过滤语义：undefined = 不过滤（全租户合计）；旧行经 ALTER 默认值已落 'default'。
+      const rows = tenant === undefined
+        ? identity === undefined
+          ? db.prepare('SELECT * FROM requests ORDER BY ts DESC,id DESC LIMIT ?').all(count)
+          : db.prepare('SELECT * FROM requests WHERE identity=? ORDER BY ts DESC,id DESC LIMIT ?').all(identity, count)
+        : identity === undefined
+          ? db.prepare('SELECT * FROM requests WHERE tenant=? ORDER BY ts DESC,id DESC LIMIT ?').all(tenant, count)
+          : db.prepare('SELECT * FROM requests WHERE tenant=? AND identity=? ORDER BY ts DESC,id DESC LIMIT ?').all(tenant, identity, count);
       return rows.map(({ usage_json, ...row }) => asRow(row));
     });
   }
 
-  listSessions({ limit = 100 }: { limit?: number | string | null } = {}): SessionSummary[] {
+  listSessions({ limit = 100, tenant }: { limit?: number | string | null; tenant?: string } = {}): SessionSummary[] {
     return this.#read<SessionSummary[]>([], (db) => {
       const count = Math.max(1, Math.min(500, Math.trunc(Number(limit) || 100)));
-      const rows = db.prepare(`SELECT identity, identity_kind, COUNT(*) AS requests, MAX(ts) AS last_ts
-        FROM requests WHERE identity IS NOT NULL GROUP BY identity, identity_kind ORDER BY last_ts DESC LIMIT ?`).all(count);
+      // 同一 identity 可存在于多个租户（租户隔离），GROUP BY 带上 tenant 才是完整会话清单。
+      const rows = tenant === undefined
+        ? db.prepare(`SELECT tenant, identity, identity_kind, COUNT(*) AS requests, MAX(ts) AS last_ts
+          FROM requests WHERE identity IS NOT NULL GROUP BY tenant, identity, identity_kind ORDER BY last_ts DESC LIMIT ?`).all(count)
+        : db.prepare(`SELECT tenant, identity, identity_kind, COUNT(*) AS requests, MAX(ts) AS last_ts
+          FROM requests WHERE identity IS NOT NULL AND tenant = ? GROUP BY tenant, identity, identity_kind ORDER BY last_ts DESC LIMIT ?`).all(tenant, count);
       return rows.map((session) => {
         const identity = String(session.identity);
-        return { ...session, ...this.sessionSummary(identity) } as unknown as SessionSummary;
+        const sessionTenant = String(session.tenant);
+        return { ...session, ...this.sessionSummary(identity, { tenant: sessionTenant }) } as unknown as SessionSummary;
       });
     });
   }
 
-  summary({ subscriptionNames }: { subscriptionNames?: string[] } = {}): AuditSummary {
+  summary({ subscriptionNames, tenant }: { subscriptionNames?: string[]; tenant?: string } = {}): AuditSummary {
     return this.#read<AuditSummary>({ requests: null, sessions: null, subscriptions: [], degraded: true }, (db) => {
-      const requestsRow = db.prepare('SELECT COUNT(*) AS n FROM requests').get();
-      const sessionsRow = db.prepare('SELECT COUNT(DISTINCT identity) AS n FROM requests WHERE identity IS NOT NULL').get();
+      // tenant = undefined 时不过滤（看板默认全租户合计，与旧行为一致）。
+      const scope = tenant === undefined ? '' : ' WHERE tenant = ?';
+      const scopeArgs = tenant === undefined ? [] : [tenant];
+      const requestsRow = db.prepare(`SELECT COUNT(*) AS n FROM requests${scope}`).get(...scopeArgs);
+      // 会话数按 (tenant, identity) 去重：同一 identity 在多个租户是多个会话（租户隔离），
+      // 与 listSessions 的 GROUP BY tenant, identity 同口径；无租户时代全为 default，与旧行为等价。
+      const sessionsRow = db.prepare(`SELECT COUNT(*) AS n FROM (SELECT identity FROM requests WHERE identity IS NOT NULL${scope ? scope.replace(' WHERE', ' AND') : ''} GROUP BY tenant, identity)`).get(...scopeArgs);
       const requests = typeof requestsRow?.n === 'number' ? requestsRow.n : null;
       const sessions = typeof sessionsRow?.n === 'number' ? sessionsRow.n : null;
       // subscriptionNames 传入当前配置的内部名集合：只展示还在配置里的订阅，已下线的留在库里不上板
@@ -151,7 +166,7 @@ export class UsageAudit {
         AVG(CASE WHEN status < 400 AND ttft_ms IS NOT NULL THEN ttft_ms END) AS avg_ttft_ms,
         SUM(CASE WHEN status < 400 THEN COALESCE(completion_tokens,0) END) AS sum_completion,
         SUM(CASE WHEN status < 400 THEN COALESCE(stream_ms,0) END) AS sum_stream_ms
-        FROM requests GROUP BY subscription ORDER BY requests DESC`).all() as unknown as Aggregate[];
+        FROM requests${scope} GROUP BY subscription ORDER BY requests DESC`).all(...scopeArgs) as unknown as Aggregate[];
       const subscriptions: SubscriptionSummary[] = rows
         .map(({ sum_completion, sum_stream_ms, ...row }) => ({
           ...row,
@@ -163,14 +178,19 @@ export class UsageAudit {
     });
   }
 
-  sessionSummary(identity: string, { threshold = 0.6 }: { threshold?: number } = {}): SessionSummary {
+  sessionSummary(identity: string, { tenant, threshold = 0.6 }: { tenant?: string; threshold?: number } = {}): SessionSummary {
     // Unknown history is not zero history. Routing callers must preserve the
     // current affinity when degraded and long-session protection is enabled.
+    // tenant 显式传入（路由长会话判定、listSessions 行自带 tenant、看板明细）→ 按 (tenant, identity) 查；
+    // 省略 → 不过滤租户（管理口 summary?identity= 不带 tenant 时与同响应的 requests 明细同范围，两侧不打架；
+    // 无租户声明的部署里全部行都是 default，省略与显式 'default' 结果相同）。
     const unknown: SessionSummary = { identity, requests: null, full_miss_rate: null, loss_events: [], degraded: true };
     if (this.#historyIncomplete) return unknown;
     return this.#read<SessionSummary>(unknown, (db) => {
       interface HistoryRow { ts: number; prompt_tokens: number | null; cache_hit_tokens: number | null; cache_observed: number; cache_outcome: string | null }
-      const rows = db.prepare('SELECT ts, prompt_tokens, cache_hit_tokens, cache_observed, cache_outcome FROM requests WHERE identity=? ORDER BY ts,id').all(identity) as unknown as HistoryRow[];
+      const rows = tenant === undefined
+        ? db.prepare('SELECT ts, prompt_tokens, cache_hit_tokens, cache_observed, cache_outcome FROM requests WHERE identity=? ORDER BY ts,id').all(identity) as unknown as HistoryRow[]
+        : db.prepare('SELECT ts, prompt_tokens, cache_hit_tokens, cache_observed, cache_outcome FROM requests WHERE identity=? AND tenant=? ORDER BY ts,id').all(identity, tenant) as unknown as HistoryRow[];
       const observed = rows.filter((row) => row.cache_observed);
       const misses = observed.filter((row) => row.cache_outcome === 'miss').length;
       const loss_events: CacheLossEvent[] = [];

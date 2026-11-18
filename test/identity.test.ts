@@ -37,16 +37,16 @@ test('affinity is the latest bind/rebind event and survives reopening the sqlite
   const filename = path.join(dir, 'data.db');
   try {
     let store = createSystemEventStore(openDatabase(filename));
-    assert.equal(store.affinity('session', 'id-1'), undefined);
+    assert.equal(store.affinity('default', 'session', 'id-1'), undefined);
     store.append({ kind: 'route.bind', identity: { kind: 'session', key: 'id-1' }, backendName: 'backend-a', detail: { trigger: 'new-session', source: 'builtin', note: 'monthly-debt' } });
-    assert.equal(store.affinity('session', 'id-1'), 'backend-a');
+    assert.equal(store.affinity('default', 'session', 'id-1'), 'backend-a');
     store.append({ kind: 'route.rebind', identity: { kind: 'session', key: 'id-1' }, backendName: 'backend-b', detail: { trigger: 'quota-wall', source: 'builtin', note: 'monthly-debt' } });
-    assert.equal(store.affinity('session', 'id-1'), 'backend-b');
+    assert.equal(store.affinity('default', 'session', 'id-1'), 'backend-b');
     // hold 事件不改变归属
     store.append({ kind: 'route.hold', identity: { kind: 'session', key: 'id-1' }, detail: { cause: 'cooldown', status: 429 } });
-    assert.equal(store.affinity('session', 'id-1'), 'backend-b');
+    assert.equal(store.affinity('default', 'session', 'id-1'), 'backend-b');
     store = createSystemEventStore(openDatabase(filename));
-    assert.equal(store.affinity('session', 'id-1'), 'backend-b');
-    assert.deepEqual(store.mappingOverview(), [{ backend: 'backend-b', identities: 1 }]);
+    assert.equal(store.affinity('default', 'session', 'id-1'), 'backend-b');
+    assert.deepEqual(store.mappingOverview(), [{ tenant: 'default', backend: 'backend-b', identities: 1 }]);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

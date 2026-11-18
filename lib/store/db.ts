@@ -7,6 +7,7 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER NOT NULL,
+  tenant TEXT NOT NULL DEFAULT 'default',
   identity TEXT,
   identity_kind TEXT NOT NULL,
   subscription TEXT,
@@ -32,6 +33,7 @@ CREATE INDEX IF NOT EXISTS idx_requests_identity_ts ON requests(identity, ts, id
 CREATE TABLE IF NOT EXISTS system_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER NOT NULL,
+  tenant TEXT NOT NULL DEFAULT 'default',
   kind TEXT NOT NULL,
   identity_kind TEXT,
   identity_hash TEXT,
@@ -62,11 +64,14 @@ export function openDatabase(dbFile: string): DatabaseSync {
   }
   db.exec('PRAGMA journal_mode=WAL');
   db.exec(SCHEMA);
-  // 旧库列迁移（ttft/stream）：只对「早于 2026-11-17 schema 的 requests 表」触发，新库由 SCHEMA 直接建全。
+  // 旧库列迁移（ttft/stream + tenant）：只对「早于当前 schema 的表」触发，新库由 SCHEMA 直接建全。
+  // tenant 用 ALTER ... NOT NULL DEFAULT 'default'：SQLite 对常量默认值允许，旧行立即落到 'default'，无需回填语句。
   const columns = new Set(db.prepare('PRAGMA table_info(requests)').all().map((entry) => String(entry.name)));
-  for (const [name, ddl] of [['ttft_ms', 'INTEGER'], ['stream_ms', 'INTEGER']] as const) {
+  for (const [name, ddl] of [['ttft_ms', 'INTEGER'], ['stream_ms', 'INTEGER'], ['tenant', "TEXT NOT NULL DEFAULT 'default'"]] as const) {
     if (!columns.has(name)) db.exec(`ALTER TABLE requests ADD COLUMN ${name} ${ddl}`);
   }
+  const eventColumns = new Set(db.prepare('PRAGMA table_info(system_events)').all().map((entry) => String(entry.name)));
+  if (!eventColumns.has('tenant')) db.exec(`ALTER TABLE system_events ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`);
   // 看板查询索引：必须建在列迁移之后（sub_agg 依赖 ttft_ms/stream_ms），老库新库统一走这里。
   db.exec('CREATE INDEX IF NOT EXISTS idx_requests_sess_group ON requests(identity, identity_kind, ts)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_requests_sub_agg ON requests(subscription, status, total_tokens, completion_tokens, stream_ms, ttft_ms)');

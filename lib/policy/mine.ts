@@ -10,6 +10,13 @@ export default class Mine implements RouterPolicy {
   listen = { host: '127.0.0.1', port: 8741 };
   admin = { host: '127.0.0.1', port: 8740 };
   routing = { snapshot_interval_ms: 300_000, long_session_min_requests: 10 };
+  // 租户（ADR-0007）：key 即租户——Bearer 命中谁家的 key 就记谁的账、按谁的身份亲和。
+  // main = 人工/交互流量（沿用 master key）；hermes = Hermes Agent（cron/子代理/主动消息）。
+  // 第一版不限定池子/模型：先分账跑一两周看 Hermes 实际烧量，再决定要不要收紧（spec .scratch/tenants）。
+  tenants = [
+    { name: 'main', key_env: 'CPR_MASTER_KEY' },
+    { name: 'hermes', key_env: 'CPR_TENANT_HERMES_KEY' },
+  ];
 
   backends = [
     { name: 'ocg-foxmail', family: 'ocg' as const, alias: 'foxmail', base_url: 'https://opencode.ai/zen/go/v1', key_env: 'OPENCODE_GO_KEY_FOXMAIL', direct: true },

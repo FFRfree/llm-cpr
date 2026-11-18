@@ -44,7 +44,7 @@ async function setup(t: TestContext, handlers: Handler[], configExtra: Partial<G
 const ok = (name: string): Handler => ({ name, run: (_req, res) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ backend: name })) });
 const quota = (name: string, status: number, headers: http.OutgoingHttpHeaders = {}): Handler => ({ name, run: (_req, res) => res.writeHead(status, headers).end(`quota-${status}`) });
 const affinityOf = (app: { env: Record<string, string> }, key: string): string | undefined =>
-  createSystemEventStore(openDatabase(app.env.CPR_DB_FILE)).affinity('session', key);
+  createSystemEventStore(openDatabase(app.env.CPR_DB_FILE)).affinity('default', 'session', key);
 
 test('429 retries only with short Retry-After, then rebinds and the replacement affinity persists', async (t) => {
   let attempts = 0;

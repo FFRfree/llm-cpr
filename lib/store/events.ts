@@ -27,6 +27,7 @@ export interface RouteEventDetail {
 export interface SystemEventInput {
   kind: EventKind;
   ts?: number;
+  tenant?: string;        // 归属租户；缺省 'default'（无租户声明/非请求事件）
   identity?: Identity;      // 非路由事件（快照失败、服务启动等）可无身份
   backendName?: string;
   requestId?: number;       // 触发它的账本行（错误路径的失败笔与事件同事务成对）
@@ -34,6 +35,7 @@ export interface SystemEventInput {
 }
 
 export interface RouteMapping {
+  tenant: string;
   backend: string;
   identities: number;
 }
@@ -41,6 +43,7 @@ export interface RouteMapping {
 export interface SystemEventRow {
   id: number;
   ts: number;
+  tenant: string;
   kind: string;
   identity_kind: string | null;
   identity_hash: string | null;
@@ -55,22 +58,23 @@ const backendOf = (row: Record<string, unknown> | undefined): string | undefined
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
 export function createSystemEventStore(db: DatabaseSync, logger: Logger = console) {
-  const insert = db.prepare(`INSERT INTO system_events (ts, kind, identity_kind, identity_hash, backend_name, request_id, detail) VALUES (?,?,?,?,?,?,?)`);
-  const affinityOf = db.prepare(`SELECT backend_name FROM system_events WHERE identity_kind = ? AND identity_hash = ?
+  const insert = db.prepare(`INSERT INTO system_events (ts, tenant, kind, identity_kind, identity_hash, backend_name, request_id, detail) VALUES(?,?,?,?,?,?,?,?)`);
+  // 归属与冷却按 (tenant, kind, key) 查询：租户间同 identity 不串粘（ADR-0007）。
+  const affinityOf = db.prepare(`SELECT backend_name FROM system_events WHERE tenant = ? AND identity_kind = ? AND identity_hash = ?
     AND kind IN ('route.bind','route.rebind') ORDER BY id DESC LIMIT 1`);
-  const lastRebind = db.prepare(`SELECT ts FROM system_events WHERE identity_kind = ? AND identity_hash = ?
+  const lastRebind = db.prepare(`SELECT ts FROM system_events WHERE tenant = ? AND identity_kind = ? AND identity_hash = ?
     AND kind = 'route.rebind' ORDER BY id DESC LIMIT 1`);
-  // 每身份最新一条 bind/rebind（SQLite 约定：聚合 MAX 所在行的裸列取自该行）再按后端聚合。
-  const overview = db.prepare(`SELECT backend_name AS backend, COUNT(*) AS identities FROM (
-    SELECT identity_kind, identity_hash, backend_name, MAX(id) FROM system_events
+  // 每身份最新一条 bind/rebind（SQLite 约定：聚合 MAX 所在行的裸列取自该行）再按租户+后端聚合。
+  const overview = db.prepare(`SELECT tenant, backend_name AS backend, COUNT(*) AS identities FROM (
+    SELECT tenant, identity_kind, identity_hash, backend_name, MAX(id) FROM system_events
     WHERE kind IN ('route.bind','route.rebind') AND identity_hash IS NOT NULL
-    GROUP BY identity_kind, identity_hash
-  ) GROUP BY backend_name ORDER BY backend_name`);
+    GROUP BY tenant, identity_kind, identity_hash
+  ) GROUP BY tenant, backend_name ORDER BY tenant, backend_name`);
 
   return {
     append(input: SystemEventInput): number {
       const identity = input.identity;
-      const info = insert.run(input.ts ?? Date.now(), input.kind,
+      const info = insert.run(input.ts ?? Date.now(), input.tenant ?? 'default', input.kind,
         identity?.kind ?? null, identity ? identityHash(identity.key) : null,
         input.backendName ?? null, input.requestId ?? null,
         input.detail ? JSON.stringify(input.detail) : null);
@@ -78,22 +82,22 @@ export function createSystemEventStore(db: DatabaseSync, logger: Logger = consol
     },
     // 读路径不降级：读失败向上抛（unknown ≠ new identity——把读失败当新身份会静默重绑、
     // 作废上游 prompt cache，违反「宁保缓存」取向；请求报错由客户端重试，锁恢复即自愈）。
-    // 该身份当前亲和的订阅名；没有 bind/rebind 事件 = 新身份，undefined。
-    affinity(kind: string, key: string): string | undefined {
-      return backendOf(affinityOf.get(kind, identityHash(key)) as Record<string, unknown> | undefined);
+    // 该 (租户,身份) 当前亲和的订阅名；没有 bind/rebind 事件 = 新身份，undefined。
+    affinity(tenant: string, kind: string, key: string): string | undefined {
+      return backendOf(affinityOf.get(tenant, kind, identityHash(key)) as Record<string, unknown> | undefined);
     },
     // 冷却只认 rebind：bind 不触发冷却（新会话首绑不得自带改绑锁）。
-    lastRebindAt(kind: string, key: string): number | undefined {
-      const row = lastRebind.get(kind, identityHash(key)) as { ts?: unknown } | undefined;
+    lastRebindAt(tenant: string, kind: string, key: string): number | undefined {
+      const row = lastRebind.get(tenant, kind, identityHash(key)) as { ts?: unknown } | undefined;
       return typeof row?.ts === 'number' ? row.ts : undefined;
     },
-    coolingDown(kind: string, key: string, now = Date.now(), cooldownMs = 3_600_000): boolean {
-      const at = this.lastRebindAt(kind, key);
+    coolingDown(tenant: string, kind: string, key: string, now = Date.now(), cooldownMs = 3_600_000): boolean {
+      const at = this.lastRebindAt(tenant, kind, key);
       return typeof at === 'number' && Number.isFinite(at) && now - at < cooldownMs;
     },
     mappingOverview(): RouteMapping[] {
       try {
-        return (overview.all() as unknown as RouteMapping[]).map((row) => ({ backend: String(row.backend), identities: Number(row.identities) }));
+        return (overview.all() as unknown as RouteMapping[]).map((row) => ({ tenant: String(row.tenant), backend: String(row.backend), identities: Number(row.identities) }));
       } catch (error) { logger.warn?.(`[events] degraded: overview read failed (${message(error)})`); return []; }
     },
     listEvents({ kind, limit = 100 }: { kind?: string; limit?: number | string | null } = {}): SystemEventRow[] {

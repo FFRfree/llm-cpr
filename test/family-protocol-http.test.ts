@@ -40,7 +40,7 @@ interface FamilyFixture {
 interface RequestsPayload { requests: AuditRow[] }
 interface RouteStatus {
   subscriptions: { name: string; account: string; alias: string; snapshot: QuotaSnapshot & { fiveHour: { exceeded: boolean } } }[];
-  mappings: { backend: string; identities: number }[];
+  mappings: { tenant: string; backend: string; identities: number }[];
 }
 interface ChatPayload { usage: { completion_tokens: number } }
 interface Addresses { forward: string; admin: string }
@@ -292,6 +292,6 @@ test('headerless fingerprint is the OCG upstream session, audit identity and per
     assert.equal(row.cache_hit_tokens, 8);
   }
   const status = await app.get<RouteStatus>('/api/route/status');
-  assert.deepEqual(status.mappings, [{ backend: 'stable-subscription', identities: 1 }]);
+  assert.deepEqual(status.mappings, [{ tenant: 'default', backend: 'stable-subscription', identities: 1 }]);
   assert.equal(status.subscriptions[0].snapshot.monthlyPercent, 25);
 });

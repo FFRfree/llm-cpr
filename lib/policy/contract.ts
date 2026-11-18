@@ -1,7 +1,7 @@
 // Policy-as-code 契约：用户 policy 文件 import type 用的唯一入口。
 // 引擎侧硬护栏不在这里（模型支持校验、改绑冷却、探活、鉴权、账本、长会话保亲和），policy 只回答「发给谁」。
-import type { Backend, Endpoint, Family, Model, QuotaSnapshot, RoutingConfig } from '../contracts.ts';
-export type { Backend, Endpoint, Family, Model, QuotaSnapshot, RoutingConfig } from '../contracts.ts';
+import type { Backend, Endpoint, Family, Model, QuotaSnapshot, RoutingConfig, Tenant } from '../contracts.ts';
+export type { Backend, Endpoint, Family, Model, QuotaSnapshot, RoutingConfig, Tenant } from '../contracts.ts';
 
 // 后端近期健康：record() 记账路径喂入的内存追踪（见 server.ts），窗口 10 分钟。
 // undefined = 窗口内没观察到失败 —— 观察不到 ≠ 事情没发生（引擎刚重启、流量稀疏都如此），别当健康保证。
@@ -29,6 +29,9 @@ export interface CandidateView {
 
 export interface DecisionCtx {
   now: number;
+  // 本次请求归属的租户名（tenants 声明的 name；未声明 tenants 时恒为 'default'）。
+  // 纯记账/选路维度：额度仍共享全池，tenant 不是额度隔离（ADR-0007）。
+  tenant: string;
   // 客户端请求的模型 id（config models[].id 口径）；policy 可用 {model} 覆盖实际模型。
   // chars = 整个请求体 JSON 的字节数（≈上下文大小，不是 token 数）；messages = 消息条数（精确值）。
   request: { model: string; chars: number; messages: number };
@@ -56,6 +59,9 @@ export type Decision = { backend: string; model?: string; reason?: string } | 'k
 export interface RouterPolicy {
   backends: Backend[];
   models: Model[];
+  // 租户声明（可选）：Bearer 命中某租户 key_env 的 key 即归属该租户；声明后 master_key_env 不再用于鉴权。
+  // 未声明时走隐式 default 租户 + master key，行为与旧版一致（v0.1.0 兼容）。
+  tenants?: Tenant[];
   listen?: Partial<Endpoint>;
   admin?: Partial<Endpoint>;
   routing?: RoutingConfig;
