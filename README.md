@@ -23,7 +23,7 @@
 ## 快速开始
 
 1. 克隆仓库后编辑 `policy.local.ts`（没有就 `cp policy.example.ts policy.local.ts`）——配置即代码：订阅声明与路由策略就在这个文件里，改它等于改代码。它被 gitignore，升级永不冲突；`lib/policy/mine.ts` 是仓库自带的默认声明（作者的实际配置），没有 local 文件时用它。先从一份账号、一个模型开始，再扩展。
-2. 生成足够长的随机 master key；将其和后端凭据放在本机 `.env`，设置文件权限为仅当前用户可读（`chmod 600 .env`）。不要提交 `.env`。本仓库是开发环境示例；生产机的实际密钥放在 `/root/.config/coding-plan-router/.env`，部署布局见 [`docs/xdg-deployment.md`](docs/xdg-deployment.md)。
+2. 生成足够长的随机 master key；将其和后端凭据放在本机 `.env`，设置文件权限为仅当前用户可读（`chmod 600 .env`）。不要提交 `.env`。本仓库是开发环境示例；生产机的实际密钥放在配置目录（如 `~/.config/coding-plan-router/.env`），部署布局见 [`docs/deployment.md`](docs/deployment.md)。
 3. 根据订阅家族设置每个 backend 的 `family`（`ocg` 或 `ccg`）、`base_url`、`key_env`；`name` 是持久会话映射和审计的稳定身份键，不应重命名；`account` 用于上游额度账号匹配，`alias` 只改显示。OCG 的 `base_url` 指向直连服务或兼容代理，CCG 指向其 OpenAI 兼容 Provider API。
 4. 在 `models` 中配置对客户端公开的统一 `id`，并在 `backends` 映射中填写每个家族的准确上游模型 ID。仅加入你已验证可用、且希望公开给客户端的模型。
 5. 启动并检查模型列表与管理看板。
@@ -42,7 +42,7 @@ CPR_UPSTREAM_KEY=replace-with-your-provider-api-key
 
 `backends[].alias` 是可选的看板显示名：后台各处（订阅卡标题、汇总、钉住会话、请求明细）优先显示它，家族一律用全名 `OpenCode Go` / `CommandCode GOAT`，卡片脚注保留内部名 `name` 便于对日志。不配 `alias` 时显示内部名。
 
-`base_url` 是上游 URL 前缀，网关会在其后追加 `/v1/chat/completions`；例如 CCG 的 `/provider` 前缀，最终请求路径为 `/provider/v1/chat/completions`。`CPR_FORWARD_PORT`、`CPR_ADMIN_PORT` 可在启动时覆盖声明里的端口。路由监听默认仅绑定 `127.0.0.1`；管理口固定绑定回环地址。不要将管理口直接暴露到公网。改声明 = 改代码，须走发布流程（`npm run typecheck` + `node --test` + 假上游冒烟 + release 切换）。生产部署路径与数据库隔离方式见 [`docs/xdg-deployment.md`](docs/xdg-deployment.md)。
+`base_url` 是上游 URL 前缀，网关会在其后追加 `/v1/chat/completions`；例如 CCG 的 `/provider` 前缀，最终请求路径为 `/provider/v1/chat/completions`。`CPR_FORWARD_PORT`、`CPR_ADMIN_PORT` 可在启动时覆盖声明里的端口。路由监听默认仅绑定 `127.0.0.1`；管理口固定绑定回环地址。不要将管理口直接暴露到公网。改声明 = 改代码，须走发布流程（`npm run typecheck` + `node --test` + 假上游冒烟 + release 切换）。生产部署路径与数据库隔离方式见 [`docs/deployment.md`](docs/deployment.md)。
 
 开发启动：
 

@@ -26,7 +26,7 @@ docs/agents/      agent 协作约定（issue tracker、domain docs）
 - 运行时零第三方依赖（node:sqlite 与原生类型擦除），Node ≥ 22.18；TypeScript 为开发依赖。
 - 全仓 `.ts`（`lib/`、`test/`、`scripts/`）：Node 原生类型擦除直接运行，没有构建步骤，`import` 必须写 `.ts` 后缀；`npm run typecheck` 覆盖这三处，`node --test` 会自动发现 `test/*.test.ts`。编译期负例放 `type-tests/`（`node --test` 不扫该目录）。
 - 配置即代码：订阅声明与路由策略在仓库 `lib/policy/mine.ts`（随 release 发布）；仓库只放不含密钥的 `.env.example`，开发复制成 `.env`（被 `.gitignore` 排除），生产密钥在 `/root/.config/coding-plan-router/.env`。改声明 = 改代码，走 typecheck + 测试 + 冒烟 + release 切换。
-- 生产运行副本在 `/root/.local/lib/coding-plan-router/current`，SQLite 在 `/root/.local/share/coding-plan-router/`；源码树不是生产运行目录，发布/回滚见 `docs/xdg-deployment.md`。
+- 生产运行副本在 `/root/.local/lib/coding-plan-router/current`，SQLite 在 `/root/.local/share/coding-plan-router/`；源码树不是生产运行目录，发布/回滚见 `docs/deployment.md`（通用版）；本机专属部署事实以技能 `coding-plan-router` 的 `references/production-deployment.md` 为准。
 - 管理口永远只绑回环；开发期用端口覆盖 + 假上游冒烟，不碰生产端口。
 - 审计写失败只丢行不挡转发；不落请求正文。
 - 正式改动单独中文 git commit，结束工作树应干净。
