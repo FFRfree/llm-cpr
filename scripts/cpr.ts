@@ -19,7 +19,9 @@ import readline from 'node:readline/promises';
 
 const BRAND = 'coding-plan-router';
 // unit 名可注入：端到端测试用独立名字（如 coding-plan-router-e2e）装在真 systemd 上，与生产 unit 错开。
-const UNIT_NAME = process.env.CPR_UNIT_NAME || 'coding-plan-router.service';
+// 后缀归一化：用户传裸名（不带 .service）时自动补上，否则 systemd 按 <名>.service 找不到 unit 文件。
+const unitNameRaw = process.env.CPR_UNIT_NAME || 'coding-plan-router.service';
+const UNIT_NAME = unitNameRaw.endsWith('.service') ? unitNameRaw : `${unitNameRaw}.service`;
 
 interface RunResult { ok: boolean; out: string; err: string }
 
