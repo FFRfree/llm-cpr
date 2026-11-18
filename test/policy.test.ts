@@ -1,5 +1,5 @@
 // Policy-as-code 契约测试：decide 语义（keep/null/覆写/撞墙/模型覆盖/错误路径）、
-// 迁移记账补漏与 routing_note。配置即代码：loader 生命周期测试随 PolicyStore 退役删除。
+// 失败记账与路由事件。配置即代码：loader 生命周期测试随 PolicyStore 退役删除。
 import type { AddressInfo } from 'node:net';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
@@ -38,7 +38,7 @@ async function setup(t: TestContext, handlers: Handler[], decide?: (ctx: Decisio
   }));
   const urls = await Promise.all(upstreams.map(listen));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-policy-'));
-  const env = { CPR_MASTER: 'master', CPR_SESSIONS_DB: path.join(dir, 'sessions.db'), K0: 'key0', K1: 'key1', K2: 'key2' };
+  const env = { CPR_MASTER: 'master', CPR_DB_FILE: path.join(dir, 'data.db'), K0: 'key0', K1: 'key1', K2: 'key2' };
   const backends: Backend[] = urls.map((base_url, i) => ({ name: handlers[i].name, family: 'ocg', base_url, key_env: `K${i}`, priority: i }));
   const policy: RouterPolicy = {
     master_key_env: 'CPR_MASTER',
@@ -63,25 +63,31 @@ async function rows(gateway: { audit: { listRequests(args: { identity?: string; 
   return gateway.audit.listRequests(identity ? { identity } : {});
 }
 
-test('policy keep respects the pin and is noted in the ledger; absence falls back to builtin selection', async (t) => {
-  const app = await setup(t, [ok('first'), ok('second')], (ctx) => (ctx.session.pin ? 'keep' : null));
+test('policy keep respects the affinity and emits no event; absence falls back to builtin selection', async (t) => {
+  const app = await setup(t, [ok('first'), ok('second')], (ctx) => (ctx.session.affinity ? 'keep' : null));
   assert.equal((await chat(app.url, 's1')).status, 200);
   assert.equal((await chat(app.url, 's1')).status, 200);
   assert.deepEqual(app.seen, [app.seen[0], app.seen[0]]); // 两轮同一订阅（keep 生效）
   const history = await rows(app, 's1');
   assert.equal(history.length, 2);
-  assert.match(String(history[0].routing_note), /^policy:keep$/); // 最新在前：第二轮被 policy keep
-  assert.match(String(history[1].routing_note), /^builtin:select->/); // 首轮 builtin 月欠账
+  // 归属未变不落事件：只有首轮的 route.bind，且由内置做出（policy 返回 null）
+  const events = app.events.listEvents();
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, 'route.bind');
+  assert.equal(events[0].backend_name, app.seen[0]);
+  assert.deepEqual(JSON.parse(events[0].detail ?? '{}'), { trigger: 'new-session', source: 'builtin', note: 'monthly-debt' });
 });
 
-test('policy per-request override migrates a pinned session and records the migration channel', async (t) => {
-  const app = await setup(t, [ok('first'), ok('second')], (ctx) => (ctx.session.pin ? { backend: 'second' } : null));
+test('policy per-request override rebinds a pinned session and the event records the channel', async (t) => {
+  const app = await setup(t, [ok('first'), ok('second')], (ctx) => (ctx.session.pin ? { backend: 'second' } : null)); // pin = v0.1.0 兼容别名，仍可读
   assert.equal((await chat(app.url, 's1')).status, 200); // builtin 首选 first（priority 0）
   assert.equal((await chat(app.url, 's1')).status, 200); // policy 覆写 → second
-  assert.equal((await chat(app.url, 's1')).status, 200); // pin 已是 second：policy keep 等价
+  assert.equal((await chat(app.url, 's1')).status, 200); // 亲和已是 second：policy keep 等价
   assert.deepEqual(app.seen, ['first', 'second', 'second']);
-  const history = await rows(app, 's1');
-  assert.match(String(history[1].routing_note), /^policy:override->second$/);
+  const rebinds = app.events.listEvents({ kind: 'route.rebind' });
+  assert.equal(rebinds.length, 1);
+  assert.equal(rebinds[0].backend_name, 'second');
+  assert.deepEqual(JSON.parse(rebinds[0].detail ?? '{}'), { trigger: 'policy-override', source: 'policy' });
 });
 
 test('policy may pin a walled backend; builtin still filters walled candidates', async (t) => {
@@ -107,54 +113,83 @@ test('policy model override rewrites translation while the ledger keeps the requ
   const history = await rows(app, 's1');
   assert.equal(history[0].model, 'm'); // 客户端请求的真名
   assert.equal(history[0].translated_model, 'native-m2');
-  assert.match(String(history[0].routing_note), /model->m2$/);
+  // 同后端换模型：归属不变，无 rebind 事件
+  assert.equal(app.events.listEvents({ kind: 'route.rebind' }).length, 0);
 });
 
 test('policy keep on quota error passes the error through without migration, even for short sessions', async (t) => {
-  const app = await setup(t, [quota('first', 403), ok('second')], (ctx) => (ctx.error ? 'keep' : null));
+  const normalCalls: { candidates: { name: string; recent?: { fails: number } }[] }[] = [];
+  const app = await setup(t, [quota('first', 403), ok('second')], (ctx) => {
+    if (ctx.error) return 'keep';
+    normalCalls.push(structuredClone({ candidates: ctx.candidates.map(({ name, recent }) => ({ name, recent })) }));
+    return null;
+  });
   const response = await chat(app.url, 's1');
   assert.equal(response.status, 403);
   assert.equal(await response.text(), 'quota-403');
-  assert.deepEqual(app.seen, ['first']); // policy keep 压过了内置的短会话迁移
-  const history = await rows(app, 's1');
-  assert.match(String(history[0].routing_note), /policy:keep$/);
+  assert.deepEqual(app.seen, ['first']); // policy keep 压过了内置的短会话改绑
+  const holds = app.events.listEvents({ kind: 'route.hold' });
+  assert.deepEqual(JSON.parse(holds[0].detail ?? '{}'), { cause: 'policy-keep', status: 403 });
+  // 失败笔虽走事务路径，健康追踪不能漏：第二轮正常路径的 recent 必须看到第一笔 403 记账
+  assert.equal((await chat(app.url, 's1')).status, 403); // first 永远 403：第二轮同样 keep 透传
+  const secondCall = normalCalls[1]?.candidates.find((c) => c.name === 'first');
+  assert.equal(secondCall?.recent?.fails, 1, 'policy-keep 的 403 失败笔必须喂入 recent 健康追踪');
 });
 
-test('policy picks the migration target on quota error and the failed attempt lands in the ledger', async (t) => {
-  const app = await setup(t, [quota('first', 403), ok('second'), ok('third')], (ctx) => (ctx.error ? { backend: 'third' } : null));
+test('invalid decision on the error path is recorded as policy.error and falls back to builtin', async (t) => {
+  const app = await setup(t, [quota('first', 403), ok('second')], (ctx) => (ctx.error ? { backend: 'nope' } : null));
+  assert.equal((await chat(app.url, 's1')).status, 200);
+  assert.deepEqual(app.seen, ['first', 'second']);
+  const errors = app.events.listEvents({ kind: 'policy.error' });
+  assert.match(String(JSON.parse(errors[0].detail ?? '{}').error), /nope/);
+});
+
+test('policy picks the rebind target on quota error and the failed attempt lands in the ledger', async (t) => {
+  const app = await setup(t, [quota('first', 403), ok('second'), ok('third')], (ctx) => (ctx.error ? { backend: 'third', reason: 'third has headroom' } : null));
   const response = await chat(app.url, 's1');
   assert.equal(response.status, 200);
   assert.deepEqual(app.seen, ['first', 'third']);
   const history = await rows(app, 's1');
   assert.equal(history.length, 2); // 失败笔不再被 continue 跳过
   assert.equal(history[1].status, 403);
-  assert.match(String(history[1].routing_note), /policy:migrate->third$/);
   assert.equal(history[0].subscription, 'third');
-  assert.match(String(history[0].routing_note), /policy:migrate->third$/);
+  // 失败笔 + 改绑事件同事务成对：事件 request_id 指回失败行，reason 随事件落库
+  const rebind = app.events.listEvents({ kind: 'route.rebind' })[0];
+  assert.equal(rebind.backend_name, 'third');
+  assert.deepEqual(JSON.parse(rebind.detail ?? '{}'), { trigger: 'quota-wall', source: 'policy', note: 'third has headroom' });
+  assert.equal(rebind.request_id, history[1].id);
 });
 
-test('builtin migration still records the failed attempt with its note', async (t) => {
+test('builtin rebind still records the failed attempt and pairs it with the event', async (t) => {
   const app = await setup(t, [quota('first', 403), ok('second')]); // 无 decide：纯内置
   assert.equal((await chat(app.url, 's1')).status, 200);
   const history = await rows(app, 's1');
   assert.equal(history.length, 2);
   assert.equal(history[1].status, 403);
-  assert.match(String(history[1].routing_note), /builtin:migrate->second$/);
-  assert.match(String(history[0].routing_note), /builtin:migrate->second$/);
+  const rebind = app.events.listEvents({ kind: 'route.rebind' })[0];
+  assert.equal(rebind.backend_name, 'second');
+  assert.deepEqual(JSON.parse(rebind.detail ?? '{}'), { trigger: 'quota-wall', source: 'builtin', note: 'monthly-debt' });
+  assert.equal(rebind.request_id, history[1].id);
 });
 
-test('decide throwing on the error path falls back to builtin migration', async (t) => {
+test('decide throwing on the error path falls back to builtin rebind and the throw is recorded as an event', async (t) => {
   const app = await setup(t, [quota('first', 403), ok('second')], (ctx) => { if (ctx.error) throw new Error('boom'); return null; });
   assert.equal((await chat(app.url, 's1')).status, 200);
   assert.deepEqual(app.seen, ['first', 'second']);
+  const errors = app.events.listEvents({ kind: 'policy.error' });
+  assert.equal(errors.length, 1);
+  assert.match(String(JSON.parse(errors[0].detail ?? '{}').error), /boom/);
 });
 
 test('invalid policy decisions (unknown backend / missing family map) are ignored in favor of builtin', async (t) => {
   const app = await setup(t, [ok('first'), ok('second')], () => ({ backend: 'nope' }));
   assert.equal((await chat(app.url, 's1')).status, 200);
   assert.equal(app.seen[0], 'first');
-  const history = await rows(app, 's1');
-  assert.match(String(history[0].routing_note), /^builtin:select->/); // 野目标回落内置
+  // 野目标回落内置：bind 事件 source=builtin，policy.error 记下非法决定现场
+  const events = app.events.listEvents();
+  const bind = events.find((event) => event.kind === 'route.bind');
+  assert.deepEqual(JSON.parse(bind?.detail ?? '{}'), { trigger: 'new-session', source: 'builtin', note: 'monthly-debt' });
+  assert.match(String(JSON.parse(events.find((event) => event.kind === 'policy.error')?.detail ?? '{}').error), /nope/);
 });
 
 test('sticky-long guardrail preempts policy: a long session is not even consulted on the error path', async (t) => {

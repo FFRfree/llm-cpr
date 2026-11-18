@@ -38,7 +38,7 @@ export function validateConfig(raw: unknown): GatewayConfig {
   // routing 数值参数：非有限/负数一律拒启动（server 侧另有兜底回落默认，直传实例的测试不经这里）。
   const routing = record(config.routing);
   if (routing) {
-    for (const key of ['long_session_min_requests', 'snapshot_interval_ms', 'upstream_timeout_ms', 'migration_cooldown_ms', 'wall_retry_max_attempts', 'wall_retry_max_after_ms'] as const) {
+    for (const key of ['long_session_min_requests', 'snapshot_interval_ms', 'upstream_timeout_ms', 'rebind_cooldown_ms', 'migration_cooldown_ms', 'wall_retry_max_attempts', 'wall_retry_max_after_ms'] as const) {
       const value = routing[key];
       if (value === undefined) continue;
       if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error(`routing.${key} must be a non-negative finite number`);

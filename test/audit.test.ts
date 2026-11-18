@@ -16,10 +16,10 @@ import type { AddressInfo } from 'node:net';
 import type { AuditRow, GatewayConfig, Logger } from '../lib/contracts.ts';
 
 interface RequestPayload extends Record<string, unknown> { stream?: boolean }
-interface FixtureOptions { body?: RequestPayload; logger?: Logger; auditPath?: string }
+interface FixtureOptions { body?: RequestPayload; logger?: Logger; dbPath?: string }
 interface AuditFixture {
   gateway: Gateway;
-  env: { CPR_MASTER: string; KEY: string; CPR_SESSIONS_DB: string; CPR_USAGE_DB: string };
+  env: { CPR_MASTER: string; KEY: string; CPR_DB_FILE: string };
   dir: string;
   send(payload?: RequestPayload): Promise<Response>;
   logger: Logger;
@@ -28,7 +28,7 @@ interface StoredAuditRow extends AuditRow { usage_json: string }
 
 const listen = async (server: Server): Promise<string> => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return `http://127.0.0.1:${(server.address() as AddressInfo).port}`; };
 const close = (server: Server): Promise<Error | undefined> => new Promise<Error | undefined>((resolve) => server.close(resolve));
-const fixture = async (t: TestContext, { body, logger = { warn() {}, log() {} }, auditPath }: FixtureOptions = {}): Promise<AuditFixture> => {
+async function fixture(t: TestContext, { body, logger = { warn() {}, log() {} }, dbPath }: FixtureOptions = {}): Promise<AuditFixture> {
   const upstream = http.createServer(async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (req.method !== 'POST') { res.writeHead(404).end(); return; }
     const chunks: Buffer[] = [];
@@ -48,7 +48,7 @@ const fixture = async (t: TestContext, { body, logger = { warn() {}, log() {} },
   });
   const baseUrl = await listen(upstream);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-audit-'));
-  const env = { CPR_MASTER: 'master', KEY: 'upstream', CPR_SESSIONS_DB: path.join(dir, 'sessions.db'), ...(auditPath ? { CPR_USAGE_DB: auditPath } : { CPR_USAGE_DB: path.join(dir, 'usage.db') }) };
+  const env = { CPR_MASTER: 'master', KEY: 'upstream', CPR_DB_FILE: dbPath ?? path.join(dir, 'data.db') };
   const config: GatewayConfig = { master_key_env: 'CPR_MASTER', models: [{ id: 'unified', backends: { ocg: 'native' } }], backends: [{ name: 'subscription-a', family: 'ocg', account: 'account-a', base_url: baseUrl, key_env: 'KEY' }] };
   const gateway = createGatewayServers(config, { env, logger });
   gateway.forwardServer.listen(0, '127.0.0.1');
@@ -62,7 +62,7 @@ test('audit stores complete request metadata and parsed upstream usage, never re
   const { gateway, env, send } = await fixture(t);
   const response = await send();
   assert.equal(response.status, 200);
-  const db = new DatabaseSync(env.CPR_USAGE_DB);
+  const db = new DatabaseSync(env.CPR_DB_FILE);
   // node:sqlite row boundary: this query returns the inserted request and its raw usage.
   const row = db.prepare('SELECT * FROM requests').get() as unknown as StoredAuditRow;
   assert.equal(row.identity, 'session-a');
@@ -101,7 +101,7 @@ test('streaming responses and concurrent requests each produce one audit row', a
   const responses = await Promise.all(Array.from({ length: 6 }, (_, index) => send({ model: 'unified', stream: index === 0 })));
   assert.ok(responses.every((response) => response.status === 200));
   await Promise.all(responses.map((response) => response.arrayBuffer()));
-  const db = new DatabaseSync(env.CPR_USAGE_DB);
+  const db = new DatabaseSync(env.CPR_DB_FILE);
   assert.equal((db.prepare('SELECT COUNT(*) AS n FROM requests').get() as { n: number }).n, 6);
   assert.ok((db.prepare('SELECT COUNT(*) AS n FROM requests WHERE usage_json IS NOT NULL').get() as { n: number }).n === 6);
   db.close();
@@ -111,7 +111,7 @@ test('ttft/stream timings are recorded for streaming, ttft only for non-streamin
   const { env, gateway, send } = await fixture(t);
   await (await send({ model: 'unified', stream: true })).arrayBuffer();
   await (await send()).arrayBuffer();
-  const db = new DatabaseSync(env.CPR_USAGE_DB);
+  const db = new DatabaseSync(env.CPR_DB_FILE);
   // node:sqlite row boundary: SELECT returns the two fixture request rows.
   const [streamRow, plainRow] = db.prepare('SELECT * FROM requests ORDER BY ts, id').all() as unknown as StoredAuditRow[];
   assert.equal(typeof streamRow.ttft_ms, 'number');
@@ -129,7 +129,7 @@ test('ttft/stream timings are recorded for streaming, ttft only for non-streamin
 
 test('existing ledgers gain ttft/stream columns via migration without losing rows', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-audit-migrate-'));
-  const file = path.join(dir, 'usage.db');
+  const file = path.join(dir, 'data.db');
   const legacy = new DatabaseSync(file);
   legacy.exec(`CREATE TABLE requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, identity TEXT, identity_kind TEXT NOT NULL,
@@ -140,15 +140,13 @@ test('existing ledgers gain ttft/stream columns via migration without losing row
   legacy.prepare(`INSERT INTO requests(ts,identity_kind,subscription,status,cache_observed) VALUES(1,'session','sub',200,0)`).run();
   legacy.close();
   const audit = new UsageAudit({ dbFile: file });
-  const columns = (audit.db as DatabaseSync).prepare('PRAGMA table_info(requests)').all().map((entry) => entry.name);
+  const db = audit.db as DatabaseSync;
+  const columns = db.prepare('PRAGMA table_info(requests)').all().map((entry) => entry.name);
   assert.ok(columns.includes('ttft_ms') && columns.includes('stream_ms'));
-  assert.ok(columns.includes('routing_note')); // policy 决定来源与迁移去向的复盘注记列
-  assert.equal(((audit.db as DatabaseSync).prepare('SELECT COUNT(*) AS n FROM requests').get() as { n: number }).n, 1);
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM requests').get() as { n: number }).n, 1);
   audit.record({ ts: 2, identity_kind: 'session', subscription: 'sub', ttft_ms: 900, stream_ms: 500 }, null);
-  assert.equal(((audit.db as DatabaseSync).prepare('SELECT COUNT(*) AS n FROM requests WHERE ttft_ms=900 AND stream_ms=500').get() as { n: number }).n, 1);
-  audit.record({ ts: 3, identity_kind: 'session', subscription: 'sub', routing_note: 'builtin:migrate->other' }, null);
-  assert.equal(((audit.db as DatabaseSync).prepare(`SELECT COUNT(*) AS n FROM requests WHERE routing_note='builtin:migrate->other'`).get() as { n: number }).n, 1);
-  assert.equal(((audit.db as DatabaseSync).prepare('SELECT routing_note FROM requests WHERE ts=1').get() as { routing_note: string | null }).routing_note, null); // 旧行新列为 NULL
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM requests WHERE ttft_ms=900 AND stream_ms=500').get() as { n: number }).n, 1);
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM system_events').get() as { n: number }).n, 0); // 旧库同文件补建事件表，不塞历史事件
   audit.close(); fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -191,8 +189,12 @@ test('summary filters subscriptions to currently configured names when given', (
 test('audit write failure logs degraded marker and does not block successful forwarding', async (t: TestContext): Promise<void> => {
   const warnings: string[] = [];
   const logger: Logger = { warn: (...args: unknown[]): number => warnings.push(args.join(' ')), log() {} };
-  const { gateway, send } = await fixture(t, { logger });
-  (gateway.audit.db as DatabaseSync).close();
+  const { gateway, send, env } = await fixture(t, { logger });
+  // 合并库后亲和读失败会拒绝请求（unknown ≠ 新身份，宁保缓存），所以只废写路径：
+  // 触发器拒写 requests、读保持健康——验证「写失败降级转发」这一契约本身。
+  const breaker = new DatabaseSync(env.CPR_DB_FILE);
+  t.after(() => breaker.close());
+  breaker.exec(`CREATE TRIGGER reject_requests BEFORE INSERT ON requests BEGIN SELECT RAISE(FAIL, 'test write failure'); END`);
   const response = await send();
   assert.equal(response.status, 200);
   assert.ok(warnings.some((message) => /\[audit\].*degraded|\[audit\].*record failed/i.test(message)));

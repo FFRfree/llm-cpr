@@ -127,7 +127,7 @@ test('install --yes：写出 unit / .env(随机 master key) / policy.local.ts，
   const unit = fs.readFileSync(unitPath, 'utf8');
   assert.ok(unit.includes(`WorkingDirectory=${f.work}`));
   assert.ok(unit.includes(`EnvironmentFile=${f.env.CPR_CONFIG_DIR}/.env`));
-  assert.ok(unit.includes(`CPR_SESSIONS_DB=${f.env.CPR_DATA_DIR}/sessions.db`));
+  assert.ok(unit.includes(`CPR_DB_FILE=${f.env.CPR_DATA_DIR}/data.db`));
   assert.ok(unit.includes('ExecStart=') && unit.includes('lib/main.ts'));
 
   const envFile = path.join(f.env.CPR_CONFIG_DIR, '.env');

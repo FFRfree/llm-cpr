@@ -10,8 +10,8 @@
 
 - 一个 OpenAI Chat Completions 兼容入口，提供 `/v1/chat/completions` 与配置白名单 `/v1/models`。
 - 多个 `ocg` / `ccg` 后端账号；每个模型可声明其在不同家族中的上游模型 ID。
-- 会话身份命中后钉死后端；新会话按“周期时间进度 − 已用进度”的欠账评分选择后端。
-- 配额类错误（403 / 429）可迁移到其他兼容后端；已知窗口超限时不选该后端，额度未知时按优先级尝试，上游额外计费开关须自行关闭。
+- 会话身份命中后亲和到固定后端；新会话按“周期时间进度 − 已用进度”的欠账评分选择后端。
+- 配额类错误（403 / 429）可改绑到其他兼容后端；已知窗口超限时不选该后端，额度未知时按优先级尝试，上游额外计费开关须自行关闭。
 - 本机管理看板与只读 API；SQLite 审计记录请求元数据及用量，不保存请求正文。
 
 ## 要求
@@ -85,9 +85,9 @@ node scripts/cpr.ts upgrade          # 干净仓 fast-forward；升级后自动 
 
 ## 路由行为
 
-1. **会话钉死**：识别统一会话头（默认 `x-session-id`——OpenRouter/opencode/AWS AgentCore 的业界通用名，可在 `identity_header` 配置），已有映射优先复用原后端，避免缓存前缀因换账号失效。
+1. **会话亲和**：识别统一会话头（默认 `x-session-id`——OpenRouter/opencode/AWS AgentCore 的业界通用名，可在 `identity_header` 配置），已有映射优先复用原后端，避免缓存前缀因换账号失效。
 2. **欠账评分**：新身份在模型可用的后端中，按周期时间进度减已用进度选择；落后于日历进度的订阅优先获得新请求。窗口额度和快照可用性也会影响候选资格。
-3. **错误迁移**：遇到符合条件的 403 / 429 配额错误时，尝试将会话迁移到另一可用后端并更新映射；迁移有冷却保护。流式响应开始后不会静默重试。**长会话例外**：请求轮数达到 `routing.long_session_min_requests`（默认 10，0 关闭）的会话不做额度迁移——换后端会作废上游 prompt cache，此时原样透传错误（含 `retry-after`），由客户端稍后重试原后端。
+3. **撞墙改绑**：遇到符合条件的 403 / 429 配额错误时，尝试将会话改绑到另一可用后端并更新映射；改绑有冷却保护。流式响应开始后不会静默重试。**长会话例外**：请求轮数达到 `routing.long_session_min_requests`（默认 10，0 关闭）的会话不做额度改绑——换后端会作废上游 prompt cache，此时原样透传错误（含 `retry-after`），由客户端稍后重试原后端。
 4. **窗口满时挡住**：新会话的候选后端全部处于已知超限窗口时返回错误。快照未知或过期时可能仍向上游尝试；网关无法保证上游不会使用额外付费额度，应在订阅服务侧关闭额外计费。
 
 `routing.snapshot_interval_ms`（默认 300000，即 5 分钟）控制额度快照轮询间隔；管理口 `POST /api/snapshots/refresh` 可随时手动触发一轮刷新（看板「刷新快照」按钮走同一通道）。
@@ -121,15 +121,15 @@ npm test            # 等同 node --test
 
 生产仍用 `node lib/main.ts`，不用编译或安装开发依赖；若用 npm 安装生产环境，可用 `npm ci --omit=dev`。`package-lock.json` 固定开发工具链，不依赖全局 `tsc`。
 
-测试只用公开配置、真实本机 HTTP、假凭据和可丢弃数据库，包含 main 入口、两家族会话头/额度端点、JSON/SSE 原字节透传、路由钉死与迁移、审计/看板，以及超时/取消/流式缓冲上限回归。不要连接生产账号、读取真实凭据或请求真实上游。`type-tests/` 只用于编译期正负类型契约，刻意放在 Node 测试自动发现目录之外。
+测试只用公开配置、真实本机 HTTP、假凭据和可丢弃数据库，包含 main 入口、两家族会话头/额度端点、JSON/SSE 原字节透传、路由亲和与改绑、审计/看板，以及超时/取消/流式缓冲上限回归。不要连接生产账号、读取真实凭据或请求真实上游。`type-tests/` 只用于编译期正负类型契约，刻意放在 Node 测试自动发现目录之外。
 
 ### 渐进类型化与模块职责
 
 - `lib/providers/opencode.ts` / `commandcode.ts` 是同一 `ProviderAdapter` 的两个真实实现：负责各家的会话头和 quota read。OCG 保留直连 `/usage`（浏览器 UA + 订阅 key）与代理 route-status（管理 key + `account` 匹配）；CCG 读取三个 `/alpha` 额度端点。`providers/index.ts` 集中注册家族，不把家族分支放进路由核。
 - `lib/protocols/chat-completions.ts` 是具体 Chat 实现：入口匹配、上游路径拼接、模型重映射、透明保留其他请求字段、JSON/SSE 用量观察。256 KiB 的有界旁路只供审计，不重写响应字节。
 - `lib/contracts.ts` 类型覆盖后端身份/模型映射、会话身份、HTTP headers、额度窗口/快照，以及 provider/protocol 输入输出；第三方 JSON 从 `unknown` 检查后读取，不用 `any` 假装已验证。用量对象仍是开放字段集，token 数值与 cache 字段的校验继续由原审计层负责。
-- `server.ts` 继续负责 HTTP 生命周期、超时、取消、选路、钉死、重试、迁移与审计；`snapshots.ts` 继续负责轮询、去重、过期与降级状态，只将获取各家额度委托给 provider。没有改变持久化 schema、订阅 `name`、重试阈值或迁移策略。
-- 无会话头时，OCG 上游 session 使用路由已经解析的 fingerprint（无可指纹化消息时用 address），使上游缓存键与钉死/审计身份一致；有效统一头仍优先，旧 `x-opencode-session` 仍兼容，空统一头不覆盖有效旧头。CCG 不接收这两种会话头。
+- `server.ts` 继续负责 HTTP 生命周期、超时、取消、选路、亲和、重试、改绑与事件账；`snapshots.ts` 继续负责轮询、去重、过期与降级状态，只将获取各家额度委托给 provider。没有改变持久化 schema、订阅 `name`、重试阈值或改绑策略。
+- 无会话头时，OCG 上游 session 使用路由已经解析的 fingerprint（无可指纹化消息时用 address），使上游缓存键与亲和/审计身份一致；有效统一头仍优先，旧 `x-opencode-session` 仍兼容，空统一头不覆盖有效旧头。CCG 不接收这两种会话头。
 
 全仓 TypeScript：`lib/`、`test/`、`scripts/` 下只有 `.ts`，Node 原生类型擦除直接运行，没有构建步骤也没有运行时依赖。`npm run typecheck` 对这三处全部做 strict 静态检查；`type-tests/` 只放编译期正负类型契约，刻意放在 Node 测试自动发现目录之外。类型不代替运行时校验：配置、上游 JSON 与 SQLite 行仍从 `unknown` 检查后读取。
 

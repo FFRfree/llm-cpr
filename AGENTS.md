@@ -2,7 +2,7 @@
 
 对多个 coding-plan 订阅（OpenCode Go / CommandCode GOAT / 未来 Codex 等）做
 负载均衡的 LLM 路由网关：agent-agnostic，hermes / pi / oh-my-pi / hindsight 等客户端
-经上层适配接入，统一拿到「会话钉死 + 月度欠账评分 + 审计 + 看板」。
+经上层适配接入，统一拿到「会话亲和 + 月度欠账评分 + 审计 + 看板」。
 
 ## 当前状态（重要）
 

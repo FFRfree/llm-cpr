@@ -1,6 +1,6 @@
 // 我的 policy：配置即代码（2026-11-18 从 policies/mine.ts 收进 lib，随 release 发布）。
 // 从 config.json 机械翻译（2026-11-17），声明与旧 config 逐字段一致，
-// decide 恒返 null → 行为与切换前逐字节等价（内置月欠账/长会话保缓存/尊重钉死）。
+// decide 恒返 null → 行为与切换前逐字节等价（内置月欠账/长会话保亲和/尊重亲和）。
 // 规则从这里一条条加；name 是身份键，绝不改。
 import type { RouterPolicy } from './contract.ts';
 

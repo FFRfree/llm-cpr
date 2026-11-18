@@ -310,7 +310,7 @@ function renderSubscriptions(status){
   const live=new Set(subs.map(x=>x.name));
   const maps=status.mappings||[];
   $('#mappings').innerHTML=maps.length
-    ?'钉住会话：'+maps.map(m=>`${esc(subLabel(status,m.backend))} ${m.identities}${live.has(m.backend)?'':'（已下线，下次请求自动迁移）'}`).join(' · '):'';
+    ?'亲和会话：'+maps.map(m=>`${esc(subLabel(status,m.backend))} ${m.identities}${live.has(m.backend)?'':'（已下线，下次请求自动改绑）'}`).join(' · '):'';
 }
 
 /* ---- 会话表 ---- */

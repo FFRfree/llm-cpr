@@ -3,7 +3,9 @@ import test from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveIdentity, createIdentityStore } from '../lib/store/identity.ts';
+import { resolveIdentity } from '../lib/store/identity.ts';
+import { openDatabase } from '../lib/store/db.ts';
+import { createSystemEventStore } from '../lib/store/events.ts';
 
 const request = (headers: Record<string, string> = {}, body: Record<string, unknown> = {}, remoteAddress: string = '127.0.0.1'): { headers: Record<string, string>; body: Record<string, unknown>; remoteAddress: string } => ({ headers, body, remoteAddress });
 
@@ -30,17 +32,21 @@ test('fingerprints are stable for identical system and first user content and ch
   assert.equal(resolveIdentity(request({}, { messages: [{ role: 'user', content: 'x'.repeat(10000) }] })).kind, 'fingerprint');
 });
 
-test('identity subscription mapping is immutable and survives reopening the sqlite database', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-identity-'));
-  const filename = path.join(dir, 'sessions.db');
+test('affinity is the latest bind/rebind event and survives reopening the sqlite database', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-affinity-'));
+  const filename = path.join(dir, 'data.db');
   try {
-    let store = createIdentityStore(filename);
-    assert.equal(store.get('session', 'id-1'), undefined);
-    assert.equal(store.pin('session', 'id-1', 'backend-a'), 'backend-a');
-    assert.equal(store.pin('session', 'id-1', 'backend-b'), 'backend-a');
-    store.close();
-    store = createIdentityStore(filename);
-    assert.equal(store.get('session', 'id-1'), 'backend-a');
-    store.close();
+    let store = createSystemEventStore(openDatabase(filename));
+    assert.equal(store.affinity('session', 'id-1'), undefined);
+    store.append({ kind: 'route.bind', identity: { kind: 'session', key: 'id-1' }, backendName: 'backend-a', detail: { trigger: 'new-session', source: 'builtin', note: 'monthly-debt' } });
+    assert.equal(store.affinity('session', 'id-1'), 'backend-a');
+    store.append({ kind: 'route.rebind', identity: { kind: 'session', key: 'id-1' }, backendName: 'backend-b', detail: { trigger: 'quota-wall', source: 'builtin', note: 'monthly-debt' } });
+    assert.equal(store.affinity('session', 'id-1'), 'backend-b');
+    // hold 事件不改变归属
+    store.append({ kind: 'route.hold', identity: { kind: 'session', key: 'id-1' }, detail: { cause: 'cooldown', status: 429 } });
+    assert.equal(store.affinity('session', 'id-1'), 'backend-b');
+    store = createSystemEventStore(openDatabase(filename));
+    assert.equal(store.affinity('session', 'id-1'), 'backend-b');
+    assert.deepEqual(store.mappingOverview(), [{ backend: 'backend-b', identities: 1 }]);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

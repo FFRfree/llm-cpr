@@ -95,10 +95,12 @@ export interface RoutingConfig {
   long_session_min_requests?: number;
   upstream_timeout_ms?: number;
   snapshot_interval_ms?: number;
-  // 迁移冷却长度（默认 3_600_000）：迁移成功即入冷却，窗口内不再触发迁移决策。
+  // 改绑冷却长度（默认 3_600_000）：改绑成功即入冷却，窗口内不再触发改绑决策。
+  // 旧名 migration_cooldown_ms 仍被读取（v0.1.0 兼容别名，声明方应改用新名）。
+  rebind_cooldown_ms?: number;
   migration_cooldown_ms?: number;
   // 原地短重试（仅 429）：retry-after ≤ wall_retry_max_after_ms 时原地等重试，最多 wall_retry_max_attempts 次。
-  // 0 = 关闭原地重试（第一次撞墙直接进迁移决策点）。原地重试不落账本、不问 policy。
+  // 0 = 关闭原地重试（第一次撞墙直接进改绑决策点）。原地重试不落账本、不问 policy。
   wall_retry_max_attempts?: number;
   wall_retry_max_after_ms?: number;
 }
@@ -118,6 +120,8 @@ export interface GatewayConfig extends RequestConfig {
   masterKeyEnv?: string;
   identity_header?: string;
   identityHeader?: string;
+  // 数据库单文件（流量账 requests + 事件账 system_events 共库）；旧名 sessions_db 仍被读取。
+  db_file?: string;
   sessions_db?: string;
 }
 
@@ -136,8 +140,6 @@ export interface AuditEntry {
   ms?: number | null;
   ttft_ms?: number | null;
   stream_ms?: number | null;
-  // 决定来源与去向的复盘注记：policy@<mtime>:keep / builtin:migrate->x 等，普通路径为 null。
-  routing_note?: string | null;
 }
 export interface AuditRow {
   id: number;
@@ -161,7 +163,6 @@ export interface AuditRow {
   cache_outcome: string | null;
   ttft_ms: number | null;
   stream_ms: number | null;
-  routing_note: string | null;
 }
 export interface CacheLossEvent {
   ts: number;

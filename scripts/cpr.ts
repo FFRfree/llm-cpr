@@ -235,8 +235,7 @@ Type=simple
 WorkingDirectory=${root}
 ExecStart=${process.execPath} lib/main.ts
 EnvironmentFile=${config}/.env
-Environment=CPR_SESSIONS_DB=${data}/sessions.db
-Environment=CPR_USAGE_DB=${data}/usage.db
+Environment=CPR_DB_FILE=${data}/data.db
 Restart=on_failure_placeholder
 RestartSec=3
 NoNewPrivileges=yes

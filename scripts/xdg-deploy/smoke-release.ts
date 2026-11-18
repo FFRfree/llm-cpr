@@ -87,12 +87,12 @@ fs.writeFileSync(launcher, [
   `});`,
 ].join('\n'));
 
-const sessionsDb = path.join(dataDir, 'sessions.db');
+const sessionsDb = path.join(dataDir, 'data.db');
 const child = spawn(process.execPath, [launcher], {
   cwd: tmpRoot,
   env: {
     ...process.env,
-    CPR_SESSIONS_DB: sessionsDb,
+    CPR_DB_FILE: sessionsDb,
     CPR_MASTER_KEY: 'smoke-master',
     FAKE_UPSTREAM_KEY: 'fake-upstream-key',
     CPR_FORWARD_PORT: String(forwardPort),
@@ -211,8 +211,7 @@ try {
   assert.ok(dashboardHtml.length > 5000, '看板内容长度异常');
   record('看板静态资源', `${dashboardHtml.length} 字节`);
 
-  assert.ok(fs.existsSync(sessionsDb), '应使用显式指定的 sessions.db');
-  assert.ok(fs.existsSync(path.join(dataDir, 'usage.db')), 'usage.db 应跟随 sessions.db 同目录');
+  assert.ok(fs.existsSync(sessionsDb), '应使用显式指定的 data.db');
   const strayDbs = fs.readdirSync(releaseDir).filter((name: string): boolean => name.endsWith('.db'));
   assert.deepEqual(strayDbs, [], `发布目录不应出现数据库文件：${strayDbs.join(', ')}`);
   // 发布副本在 releases/ 下时，父目录也不能出现库文件；在临时 scratch 目录里跑就不查父目录（那里本就有别的测试残留）。
@@ -220,7 +219,7 @@ try {
     const parentDbs = fs.readdirSync(path.dirname(releaseDir)).filter((n: string): boolean => n.endsWith('.db'));
     assert.deepEqual(parentDbs, [], `发布父目录不应出现数据库文件：${parentDbs.join(', ')}`);
   }
-  record('数据落位', `${dataDir}（sessions.db + usage.db），发布目录无库文件`);
+  record('数据落位', `${dataDir}（data.db 单库双表），发布目录无库文件`);
 } catch (error) {
   child.kill('SIGKILL');
   upstream.close();

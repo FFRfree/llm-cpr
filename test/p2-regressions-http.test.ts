@@ -47,11 +47,11 @@ async function fixture(t: TestContext, handlers: UpstreamHandler[], routing: Rou
     Promise.resolve(handler(req, res)).catch(() => res.destroy());
   }));
   const urls = await Promise.all(upstreams.map(listen));
-  const auditFile = path.join(dir, 'usage.db');
+  const auditFile = path.join(dir, 'data.db');
   const gateway = createGatewayServers({
     master_key_env: 'MASTER', models: [{ id: 'm', backends: { ocg: 'native' } }], routing,
     backends: urls.map((base_url, i) => ({ name: `sub-${i}`, family: 'ocg', base_url, key_env: 'KEY', priority: i })),
-  }, { env: { MASTER: 'fake-master', KEY: 'fake-upstream', CPR_SESSIONS_DB: path.join(dir, 'sessions.db'), CPR_USAGE_DB: auditFile }, logger: { warn() {} } });
+  }, { env: { MASTER: 'fake-master', KEY: 'fake-upstream', CPR_DB_FILE: auditFile }, logger: { warn() {} } });
   const [url, admin] = await Promise.all([listen(gateway.forwardServer), listen(gateway.adminServer)]);
   t.after(async () => {
     await Promise.all([close(gateway.forwardServer), close(gateway.adminServer)]);

@@ -89,9 +89,9 @@ async function fixture(t: TestContext, states: UpstreamState[], routing: Routing
     models: [{ id: 'm', backends: { ocg: 'native' } }],
     backends: urls.map((base_url, index) => ({ name: `sub-${index}`, family: 'ocg', direct: true, base_url, key_env: 'KEY', priority: index })),
   };
-  const auditFile = path.join(dir, 'usage.db');
+  const auditFile = path.join(dir, 'data.db');
   gateway = createGatewayServers(config, {
-    env: { MASTER: 'test-master', KEY: 'test-upstream', CPR_SESSIONS_DB: path.join(dir, 'sessions.db'), CPR_USAGE_DB: auditFile },
+    env: { MASTER: 'test-master', KEY: 'test-upstream', CPR_DB_FILE: auditFile },
     logger: { warn: (message) => warnings.push(message) },
   });
   const [forward, admin] = await Promise.all([listen(gateway.forwardServer), listen(gateway.adminServer)]);
@@ -161,7 +161,9 @@ test('audit read failures report unknown counts rather than throwing or pretendi
   const warnings: unknown[] = [];
   const audit = new UsageAudit({ dbFile: file, logger: { warn: (message) => warnings.push(message) } });
   t.after(() => { audit.close(); fs.rmSync(dir, { recursive: true, force: true }); });
-  assert.equal(audit.record({ identity: 'long', identity_kind: 'session', status: 200 }, undefined), true);
+  const rowId = audit.record({ identity: 'long', identity_kind: 'session', status: 200 }, undefined);
+  assert.equal(typeof rowId, 'number');
+  assert.equal(rowId, audit.listRequests()[0].id, 'record 返回值必须对应实际插入的账本行');
   assert.equal(audit.sessionSummary('long').requests, 1);
   // Break only this disposable ledger through SQLite's external storage boundary.
   // No replacing gateway internals / methods, and no production database access.
