@@ -25,9 +25,9 @@ Single-context repo:
 
 ## Existing domain material
 
-Before GLOSSARY.md / ADRs exist, the authoritative domain narrative lives in
-`docs/design.md`（含已验证事实底座、三层结构、已拍板决策）. Skills should read it
-first; GLOSSARY/ADR 会随 `/domain-modeling` 惰性生成，届时以 GLOSSARY 的措辞为准。
+`GLOSSARY.md`（repo root）与 `docs/adr/` 已就位：术语与拍板结论以它们为准。
+`docs/design.md` 仍是历史规划与事实底座（需求、已验证事实、三层结构），先读它
+理解来龙去脉，但术语和「已拍板」结论不要照抄它的旧措辞。
 
 ## Use the glossary's vocabulary
 

@@ -15,7 +15,10 @@
 ## 目录
 
 ```
-docs/design.md    设计文档（规划稿 v0.2）
+GLOSSARY.md       领域词汇表（术语唯一正本）
+docs/adr/         已拍板的架构决策（ADR）
+docs/design.md    历史规划与事实底座（2026-11-16 规划稿，不随实现更新）
+docs/agents/      agent 协作约定（issue tracker、domain docs）
 ```
 
 ## 约定（与 ocg-proxy 同源的规矩）

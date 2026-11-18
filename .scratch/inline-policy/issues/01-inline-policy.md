@@ -24,3 +24,4 @@
 - 2026-11-18：用户拍板「先做简单一点，不要加载用户配置」——热重载/软链/`CPR_POLICY_FILE` 全套机制退役；代价是改声明必须走发布流程，收益是少一整层加载失败语义。`mine.ts` 导出的是 class，默认 import 拿到的是类不是实例（PolicyStore 时代在加载器里 `new`），此坑在 gateway.test 的 tsc 报错中现形。
 - 2026-11-18：**未上线**。生产仍跑 `20261116-252f723`（读 config.json 旧版），本次改动不触碰线上。未来上线清单简化为：发 release（`git archive HEAD lib static package.json`，声明已随 lib 打包）+ unit `ExecStart` 改 `lib/main.ts`，不再需要软链与 `CPR_POLICY_FILE`；旧 config.json 稳定一个周期后删。
 - 2026-11-18：decide 契约（`{backend, model?}` | `'keep'` | `null`）与全部 decide 语义测试原样保留——后续选路钩子（choose/shouldMigrate）的地基不动。
+- 2026-11-18：**已上线**。release `20261118-dc9c759` 冒烟全过，unit `ExecStart` 改 `lib/main.ts`、删 `CPR_CONFIG_FILE`（旧 unit 备份 rollback/coding-plan-router.service.mjs-era），重启后验证：cwd 指向新 release、DB fd 落位、`routing_note` 列自动补齐、三订阅快照真实解析 known。config.json 移入 `rollback/config.json.retired-20261118`（旧 .mjs release 回滚时仍需它，不删）。真流量落行未验证（切换后无流量进来），真实冒烟需单独授权。
