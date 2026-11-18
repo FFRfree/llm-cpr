@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
-import { createGatewayServers } from '../lib/server.ts';
+import { createGatewayServers } from '../lib/http/server.ts';
 
 // Agreed seam: real HTTP on ephemeral loopback ports, with local fake upstreams.
 // No production config, credentials, inference, or private collaborator mocks.
@@ -342,7 +342,7 @@ test('large SSE forwards incrementally within a small heap and audits trailing u
   t.after(() => close(upstream));
   const dir = fs.mkdtempSync(path.join(scratch, 'cpr-stream-heap-'));
   const child = spawn(process.execPath, ['--max-old-space-size=48', '--input-type=module', '-e', `
-    import { createGatewayServers } from ${JSON.stringify(new URL('../lib/server.ts', import.meta.url).href)};
+    import { createGatewayServers } from ${JSON.stringify(new URL('../lib/http/server.ts', import.meta.url).href)};
     const g = createGatewayServers({master_key_env:'MASTER',models:[{id:'m',backends:{ocg:'native'}}],
       backends:[{name:'sub',family:'ocg',base_url:${JSON.stringify(base_url)},key_env:'KEY'}]},
       {env:{MASTER:'test-master',KEY:'test-upstream',CPR_SESSIONS_DB:${JSON.stringify(path.join(dir, 'sessions.db'))}},logger:{warn(){}}});
@@ -384,7 +384,7 @@ test('malformed admin URLs return 400 without terminating the gateway process', 
   const dir = fs.mkdtempSync(path.join(scratch, 'cpr-admin-url-'));
   // Isolate a potential unhandled rejection: a broken admin request must not kill the process.
   const child = spawn(process.execPath, ['--input-type=module', '-e', `
-    import { createGatewayServers } from ${JSON.stringify(new URL('../lib/server.ts', import.meta.url).href)};
+    import { createGatewayServers } from ${JSON.stringify(new URL('../lib/http/server.ts', import.meta.url).href)};
     const g = createGatewayServers({ models: [], backends: [] }, {
       env: { CPR_SESSIONS_DB: ${JSON.stringify(path.join(dir, 'sessions.db'))} }, logger: { warn() {} }
     });

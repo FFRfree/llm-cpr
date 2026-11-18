@@ -7,9 +7,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { PolicyStore, resolveListenEndpoints } from '../lib/policy-loader.ts';
-import { translateRequest } from '../lib/translate.ts';
-import { createGatewayServers } from '../lib/server.ts';
+import { resolveListenEndpoints } from '../lib/policy/config.ts';
+import Mine from '../lib/policy/mine.ts';
+const policy = new Mine();
+import { chatCompletions } from '../lib/protocols/chat-completions.ts';
+import { createGatewayServers } from '../lib/http/server.ts';
 
 const baseConfig = (baseUrl: string, family: Backend['family'] = 'ocg'): GatewayConfig => ({
   master_key_env: 'CPR_TEST_MASTER',
@@ -18,29 +20,17 @@ const baseConfig = (baseUrl: string, family: Backend['family'] = 'ocg'): Gateway
   backends: [{ name: 'first', family, base_url: baseUrl, key_env: 'CPR_TEST_UPSTREAM' }],
 });
 
-test('policy file loads backends, model whitelist and environment port overrides', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-config-'));
-  const filename = path.join(dir, 'policy.ts');
-  fs.writeFileSync(filename, `
-    export default class {
-      master_key_env = 'CPR_TEST_MASTER';
-      models = [{ id: 'unified-model', backends: { ocg: 'native-model' } }];
-      backends = [{ name: 'first', family: 'ocg', base_url: 'http://127.0.0.1:9', key_env: 'CPR_TEST_UPSTREAM' }];
-    }
-  `);
-  try {
-    const policy = await new PolicyStore({ file: filename }).current();
-    assert.equal(policy.backends[0].family, 'ocg');
-    assert.equal(policy.models[0].id, 'unified-model');
-    const { listen, admin } = resolveListenEndpoints(policy, { CPR_FORWARD_PORT: '0', CPR_ADMIN_PORT: '0' });
-    assert.equal(listen.port, 0);
-    assert.equal(admin.port, 0);
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+test('in-code policy declaration carries the whitelist; env overrides win on ports', () => {
+  assert.equal(policy.backends[0].family, 'ocg');
+  assert.equal(policy.models[0].id, 'glm-5.3-flash');
+  const { listen, admin } = resolveListenEndpoints(policy, { CPR_FORWARD_PORT: '0', CPR_ADMIN_PORT: '0' });
+  assert.equal(listen.port, 0);
+  assert.equal(admin.port, 0);
 });
 
 test('translation replaces model and auth while preserving OCG session header', () => {
   const config = baseConfig('http://upstream', 'ocg');
-  const result = translateRequest({ config, body: { model: 'unified-model' }, headers: { authorization: 'Bearer master', 'x-session-id': 'session' }, backend: config.backends[0], upstreamKey: 'upstream-key' });
+  const result = chatCompletions.prepareRequest({ config, body: { model: 'unified-model' }, headers: { authorization: 'Bearer master', 'x-session-id': 'session' }, backend: config.backends[0], upstreamKey: 'upstream-key' });
   assert.deepEqual(result.body, { model: 'native-model' });
   assert.equal(result.headers.authorization, 'Bearer upstream-key');
   assert.equal(result.headers['x-opencode-session'], 'session');
@@ -48,16 +38,16 @@ test('translation replaces model and auth while preserving OCG session header', 
 
 test('translation strips the unified session header for CCG', () => {
   const config = baseConfig('http://upstream', 'ccg');
-  const result = translateRequest({ config, body: { model: 'unified-model' }, headers: { authorization: 'Bearer master', 'x-session-id': 'session' }, backend: config.backends[0], upstreamKey: 'upstream-key' });
+  const result = chatCompletions.prepareRequest({ config, body: { model: 'unified-model' }, headers: { authorization: 'Bearer master', 'x-session-id': 'session' }, backend: config.backends[0], upstreamKey: 'upstream-key' });
   assert.equal(result.headers['x-opencode-session'], undefined);
 });
 
 test('translation keeps legacy x-opencode-session clients working: passthrough on OCG, stripped on CCG', () => {
   const ocg = baseConfig('http://upstream', 'ocg');
-  const kept = translateRequest({ config: ocg, body: { model: 'unified-model' }, headers: { authorization: 'Bearer master', 'x-opencode-session': 'legacy' }, backend: ocg.backends[0], upstreamKey: 'upstream-key' });
+  const kept = chatCompletions.prepareRequest({ config: ocg, body: { model: 'unified-model' }, headers: { authorization: 'Bearer master', 'x-opencode-session': 'legacy' }, backend: ocg.backends[0], upstreamKey: 'upstream-key' });
   assert.equal(kept.headers['x-opencode-session'], 'legacy');
   const ccg = baseConfig('http://upstream', 'ccg');
-  const stripped = translateRequest({ config: ccg, body: { model: 'unified-model' }, headers: { authorization: 'Bearer master', 'x-opencode-session': 'legacy' }, backend: ccg.backends[0], upstreamKey: 'upstream-key' });
+  const stripped = chatCompletions.prepareRequest({ config: ccg, body: { model: 'unified-model' }, headers: { authorization: 'Bearer master', 'x-opencode-session': 'legacy' }, backend: ccg.backends[0], upstreamKey: 'upstream-key' });
   assert.equal(stripped.headers['x-opencode-session'], undefined);
 });
 

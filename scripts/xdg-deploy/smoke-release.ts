@@ -74,21 +74,24 @@ const upstreamPort = upstreamAddress.port;
 
 const forwardPort = await freePort();
 const adminPort = await freePort();
-const configFile = path.join(tmpRoot, 'config.json');
-fs.writeFileSync(configFile, JSON.stringify({
-  master_key_env: 'CPR_MASTER_KEY',
-  identity_header: 'x-session-id',
-  routing: { snapshot_interval_ms: 3_600_000, long_session_min_requests: 10 },
-  backends: [{ name: 'fake-backend', family: 'ocg', base_url: `http://127.0.0.1:${upstreamPort}/v1`, key_env: 'FAKE_UPSTREAM_KEY' }],
-  models: [{ id: 'unified-model', backends: { ocg: 'native-model' } }],
-}, null, 2));
+// 配置即代码：冒烟不跑 release 的 main.ts（那是生产声明），用临时启动器直传假 policy。
+const launcher = path.join(tmpRoot, 'smoke-launcher.mjs');
+fs.writeFileSync(launcher, [
+  `import { startGateway } from ${JSON.stringify(path.join(releaseDir, 'lib', 'http', 'server.ts'))};`,
+  `await startGateway({`,
+  `  master_key_env: 'CPR_MASTER_KEY',`,
+  `  identity_header: 'x-session-id',`,
+  `  routing: { snapshot_interval_ms: 3_600_000, long_session_min_requests: 10 },`,
+  `  backends: [{ name: 'fake-backend', family: 'ocg', base_url: ${JSON.stringify(`http://127.0.0.1:${upstreamPort}/v1`)}, key_env: 'FAKE_UPSTREAM_KEY' }],`,
+  `  models: [{ id: 'unified-model', backends: { ocg: 'native-model' } }],`,
+  `});`,
+].join('\n'));
 
 const sessionsDb = path.join(dataDir, 'sessions.db');
-const child = spawn(process.execPath, [path.join(releaseDir, 'lib', 'main.ts')], {
-  cwd: releaseDir,
+const child = spawn(process.execPath, [launcher], {
+  cwd: tmpRoot,
   env: {
     ...process.env,
-    CPR_CONFIG_FILE: configFile,
     CPR_SESSIONS_DB: sessionsDb,
     CPR_MASTER_KEY: 'smoke-master',
     FAKE_UPSTREAM_KEY: 'fake-upstream-key',

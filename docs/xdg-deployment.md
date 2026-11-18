@@ -10,7 +10,7 @@
 | 开发源码 + Git | `/root/ffr-projects/coding-plan-router/` | 只在这里改代码；不是运行目录 |
 | 正式运行代码 | `/root/.local/lib/coding-plan-router/releases/<日期>-<短sha>/` | 从 `git archive` 出的发布副本，带 `RELEASE.txt` |
 | 当前生效版本 | `/root/.local/lib/coding-plan-router/current` | 软链指向某个 release 目录 |
-| 运行配置 | `/root/.config/coding-plan-router/config.json` | 不含密钥，chmod 600 |
+| 运行声明（配置即代码） | 仓库 `lib/policy/mine.ts`，随 release 发布 | 改声明 = 改代码，走发布流程 |
 | 密钥环境变量 | `/root/.config/coding-plan-router/.env` | chmod 600，生产唯一一份 |
 | 持久数据 | `/root/.local/share/coding-plan-router/sessions.db`、`usage.db`（含 `-wal`/`-shm`） | 唯一生效库 |
 | 迁移备份 | `/root/.local/share/coding-plan-router/backups/<时间戳>/` | 迁移时的一致性快照 |
@@ -18,13 +18,13 @@
 
 `~/.local/lib` 不是 XDG 规范目录，是本项目选定的用户级运行代码位置；配置与数据分别遵循 XDG 的 `~/.config` 与 `~/.local/share`。
 
-源仓只保留不含密钥的示例：`config.example.json` 与 `.env.example`。本机开发时复制成 `config.json` / `.env`（两者都已被 `.gitignore` 排除）。生产机唯一生效的配置是上表里的 `/root/.config/coding-plan-router/config.json`；改源码仓库里的示例不会影响线上。运行代码可以是 TypeScript（`.ts`，靠 Node 原生类型擦除，无需构建），因此发布副本直接带 `lib/` 里的 `.ts` 文件即可，前提是 Node ≥ 22.18。
+配置即代码（2026-11-18 起）：订阅声明与路由策略就在仓库 `lib/policy/mine.ts` 里，随 release 发布；源仓只保留不含密钥的 `.env.example`，本机开发复制成 `.env`（已被 `.gitignore` 排除）。生产机唯一生效的声明是运行副本里随 `git archive` 发布的 `lib/policy/mine.ts`；在仓库改声明不影响线上，直到发布切换。运行代码是 TypeScript（`.ts`，靠 Node 原生类型擦除，无需构建），因此发布副本直接带 `lib/` 里的 `.ts` 文件即可，前提是 Node ≥ 22.18。注意：当前线上仍跑 config.json 时代的旧 release，切到新版前该文件仍是唯一生效配置。
 
 systemd 仍为**系统级** unit（`/etc/systemd/system/coding-plan-router.service`），用户级目录不意味着 user service。运行时零第三方依赖，发布副本不需要 `node_modules`。
 
 ## 为什么必须显式指定数据库路径
 
-`lib/server.ts` 的默认值是「跟着代码走」：`CPR_SESSIONS_DB` → `config.sessions_db` → 代码目录上一层的 `sessions.db`，而 `usage.db` 取 sessions 所在目录。只把代码搬到 `~/.local/lib` 而不写路径，新进程会安静地开一套**空库**，服务照常 active。因此 unit 里固定写死：
+`lib/http/server.ts` 的默认值是「跟着代码走」：`CPR_SESSIONS_DB` → `policy.sessions_db` → 代码目录上两层的 `sessions.db`，而 `usage.db` 取 sessions 所在目录。只把代码搬到 `~/.local/lib` 而不写路径，新进程会安静地开一套**空库**，服务照常 active。因此 unit 里固定写死：
 
 ```
 Environment=CPR_SESSIONS_DB=/root/.local/share/coding-plan-router/sessions.db
@@ -70,7 +70,7 @@ node scripts/xdg-deploy/migrate-dbs.ts \
 
 ## 切换 unit 与验证
 
-新 unit 见 `/root/.config/coding-plan-router/rollback/coding-plan-router.service.new`，与旧 unit 的差别只有四处：`WorkingDirectory` 指 `current`、`EnvironmentFile` 指 `~/.config`、新增 `CPR_CONFIG_FILE`/`CPR_SESSIONS_DB`/`CPR_USAGE_DB` 三个 `Environment=`、`ReadWritePaths` 换成 `~/.local/share/coding-plan-router`。
+新 unit 见 `/root/.config/coding-plan-router/rollback/coding-plan-router.service.new`，与旧 unit 的差别只有四处：`WorkingDirectory` 指 `current`、`EnvironmentFile` 指 `~/.config`、新增 `CPR_CONFIG_FILE`/`CPR_SESSIONS_DB`/`CPR_USAGE_DB` 三个 `Environment=`、`ReadWritePaths` 换成 `~/.local/share/coding-plan-router`。（2026-11-18 配置即代码后：未来的新版 unit 不再需要 `CPR_CONFIG_FILE`——声明随 release 走；`ExecStart` 改为 `lib/main.ts`，其余环境变量不变。）
 
 ```bash
 cp /etc/systemd/system/coding-plan-router.service /root/.config/coding-plan-router/rollback/coding-plan-router.service.old

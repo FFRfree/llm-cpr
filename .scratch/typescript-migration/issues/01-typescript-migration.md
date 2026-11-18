@@ -1,4 +1,4 @@
-# 12 — 全仓迁移到 TypeScript（去掉剩余的 .mjs）
+# 1 — 全仓迁移到 TypeScript（去掉剩余的 .mjs）
 
 **Status:** completed
 
@@ -27,3 +27,4 @@
 - 2026-11-16：验证命令与结果（工作树 `1f905da`）：`npx tsc --noEmit` 通过（strict + `erasableSyntaxOnly` + `verbatimModuleSyntax`）；`node --test` 97 tests / 0 fail（79 个顶层测试）；`grep` 确认 `lib|test|scripts` 无 `any`/`@ts-ignore`/`@ts-expect-error`；发布副本冒烟 `node scripts/xdg-deploy/smoke-release.ts <release>` 全部步骤通过（进程启动、鉴权、JSON/SSE 转发、route/status、账本、会话聚合、看板、数据落位）。未调用真实推理、未消耗订阅额度。
 - 2026-11-16：发布配方发现一处隐式依赖：`.ts` 文件的模块类型由最近的 `package.json`（`"type": "module"`）决定，而原配方 `git archive HEAD lib static` 不带它，副本能跑只是因为 Node 22 的语法探测在兜底。已把配方改成带上 `package.json`，并在 `smoke-release.ts` 里加断言（缺 `package.json` 或不是 `type: module` 直接失败）。
 - 2026-11-16：生产未动：`current` 仍指向 `20261116-252f723`（全 `.mjs`），systemd `ExecStart=/usr/bin/node lib/main.mjs`。切换需要：发布新 release、把 unit 的 `ExecStart` 改成 `lib/main.ts`、`daemon-reload` + `restart`（会中断在途请求）。这三步属生产改动，待用户逐次授权后执行。
+- 2026-11-18：本票从 `.scratch/coding-plan-router/issues/12-typescript-migration.md`（伞下编号 12）拆出为独立 feature 目录 `.scratch/typescript-migration/`，重编号为 1；决策与验收记录原样保留，见同目录 `spec.md`。

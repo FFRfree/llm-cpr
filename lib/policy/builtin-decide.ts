@@ -1,9 +1,9 @@
 // 内置决策：decide 返回 null 时的兜底，行为 = config 时代的原逻辑（月欠账评分、
 // 长会话保缓存、尊重钉死）。用户 policy 坏掉时引擎也回到这里，所以它必须独立于 policy 可测。
 import { rankBackends } from './selection.ts';
-import type { Backend, Model } from './contracts.ts';
-import type { Decision, DecisionCtx } from './policy-contract.ts';
-import type { QuotaSnapshot } from './contracts.ts';
+import type { Backend, Model } from '../contracts.ts';
+import type { Decision, DecisionCtx } from './contract.ts';
+import type { QuotaSnapshot } from '../contracts.ts';
 
 export interface BuiltinOptions {
   // 全量声明（不只是 ctx.candidates）：重选/备选排序要在完整集合上做。

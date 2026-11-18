@@ -4,16 +4,16 @@ import type { TestContext } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import type { IncomingMessage, OutgoingHttpHeaders, Server, ServerResponse } from 'node:http';
 import type { AuditSummary, Backend, GatewayConfig, QuotaSnapshot, QuotaWindow, RoutingConfig, SessionSummary } from '../lib/contracts.ts';
-import type { Gateway } from '../lib/server.ts';
+import type { Gateway } from '../lib/http/server.ts';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
-import { createGatewayServers } from '../lib/server.ts';
-import { UsageSnapshots } from '../lib/snapshots.ts';
-import { rankBackends, monthlyDebtScore } from '../lib/selection.ts';
-import { UsageAudit } from '../lib/audit.ts';
+import { createGatewayServers } from '../lib/http/server.ts';
+import { UsageSnapshots } from '../lib/store/snapshots.ts';
+import { rankBackends, monthlyDebtScore } from '../lib/policy/selection.ts';
+import { UsageAudit } from '../lib/store/audit.ts';
 
 interface UsageWindow { percent: number; resetsAt: string | null }
 interface Usage { rolling: UsageWindow; weekly: UsageWindow; monthly: UsageWindow }

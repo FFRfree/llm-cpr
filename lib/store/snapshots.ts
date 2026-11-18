@@ -1,5 +1,5 @@
-import { providerFor } from './providers/index.ts';
-import type { Backend, Environment, Logger, QuotaSnapshot, SnapshotView } from './contracts.ts';
+import { providerFor } from '../providers/index.ts';
+import type { Backend, Environment, Logger, QuotaSnapshot, SnapshotView } from '../contracts.ts';
 
 export function timestampMs(value: unknown): number {
   if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;

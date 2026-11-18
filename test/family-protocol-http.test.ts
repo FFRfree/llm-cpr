@@ -6,8 +6,8 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { createGatewayServers } from '../lib/server.ts';
-import type { Gateway } from '../lib/server.ts';
+import { createGatewayServers } from '../lib/http/server.ts';
+import type { Gateway } from '../lib/http/server.ts';
 import type { TestContext } from 'node:test';
 import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -230,18 +230,20 @@ test('unchanged main entry runs native typed modules with disposable config and 
     fs.rmSync(dir, { recursive: true, force: true });
   });
   const base_url = await listen(upstream);
-  const policyFile = path.join(dir, 'policy.ts');
-  fs.writeFileSync(policyFile, `
-    export default class {
-      master_key_env = 'MASTER';
-      models = [{ id: 'public-model', backends: { ocg: 'native-model' } }];
-      backends = [{ name: 'main-subscription', family: 'ocg', base_url: ${JSON.stringify(base_url)}, key_env: 'UPSTREAM' }];
-    }
+  // 配置即代码：子进程用临时启动器直传假 policy（不再经 CPR_POLICY_FILE 加载文件）。
+  const launcher = path.join(dir, 'launcher.mjs');
+  fs.writeFileSync(launcher, `
+    import { startGateway } from ${JSON.stringify(fileURLToPath(new URL('../lib/http/server.ts', import.meta.url)))};
+    await startGateway({
+      master_key_env: 'MASTER',
+      models: [{ id: 'public-model', backends: { ocg: 'native-model' } }],
+      backends: [{ name: 'main-subscription', family: 'ocg', base_url: ${JSON.stringify(base_url)}, key_env: 'UPSTREAM' }],
+    });
   `);
-  child = spawn(process.execPath, ['lib/main.ts'], {
+  child = spawn(process.execPath, [launcher], {
     cwd: fileURLToPath(new URL('../', import.meta.url)),
     // Do not inherit credentials or the production policy/port environment.
-    env: { MASTER: 'test-master', UPSTREAM: 'test-upstream', CPR_POLICY_FILE: policyFile, CPR_FORWARD_PORT: '0', CPR_ADMIN_PORT: '0',
+    env: { MASTER: 'test-master', UPSTREAM: 'test-upstream', CPR_FORWARD_PORT: '0', CPR_ADMIN_PORT: '0',
       CPR_SESSIONS_DB: path.join(dir, 'sessions.db'), CPR_USAGE_DB: path.join(dir, 'usage.db') },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

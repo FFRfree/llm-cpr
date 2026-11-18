@@ -6,8 +6,8 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { once } from 'node:events';
-import { createGatewayServers } from '../lib/server.ts';
-import { monthlyDebtScore } from '../lib/selection.ts';
+import { createGatewayServers } from '../lib/http/server.ts';
+import { monthlyDebtScore } from '../lib/policy/selection.ts';
 
 test('numeric millisecond quota reset expires and monthly timestamps score correctly', async (t) => {
   let calls = 0;

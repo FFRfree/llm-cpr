@@ -1,4 +1,4 @@
-# 13 — 账本看板查询索引（3 个月量级性能保障）+ e2e 夹具日期防腐烂
+# 1 — 账本看板查询索引（3 个月量级性能保障）+ e2e 夹具日期防腐烂
 
 **Status:** completed
 
@@ -26,3 +26,4 @@
 - 2026-11-17：迁移测试的即时价值——首版把两条索引放进 SCHEMA，老库（缺 ttft/stream 列）开库即降级，新测试与既有列迁移测试双双失败，定位后移入构造函数列迁移之后，全绿。教训固化：**凡引用可选列的索引，创建时机必须在列迁移后**。
 - 2026-11-17：定时炸弹根因链——夹具 rolling `resetsAt: 2026-11-17T00:00:00Z` 当天过期 → `snapshots.ts` 按设计标 `known:false, expired:true`（「过期标未知而非确定有额」是既定行为）→ 排序降级 priority 兜底 → foxmail(p0) 赢 gmail，断言期望 gmail 失败。纯函数测试自冻 `now` 不受影响，故只修 e2e。`client-cancel.test.ts` 的 2026-01-01 早已过期但单后端场景掩盖了问题，同批修掉。
 - 2026-11-17：生产手动建索引经用户明确授权（clarify 逐次确认），连接设 `busy_timeout=5000` 防与在途 INSERT 撞写锁；执行后服务 active、`/api/audit/requests` 正常返回、账本持续落行。生产 `current` 仍为全 `.mjs` 版（无此代码），下次 `.ts` 上线时构造函数的 `IF NOT EXISTS` 会自然幂等通过，无需重复处理。
+- 2026-11-18：本票从 `.scratch/coding-plan-router/issues/13-dashboard-query-indexes.md`（伞下编号 13）拆出为独立 feature 目录 `.scratch/dashboard-query-indexes/`，重编号为 1；决策与验收记录原样保留，见同目录 `spec.md`。

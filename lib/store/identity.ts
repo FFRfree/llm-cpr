@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import type { ChatBody, Identity } from './contracts.ts';
+import type { ChatBody, Identity } from '../contracts.ts';
 
 function contentText(content: unknown): string {
   if (typeof content === 'string') return content;

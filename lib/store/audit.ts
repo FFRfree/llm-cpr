@@ -1,5 +1,5 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
-import type { AuditEntry, AuditRow, AuditSummary, CacheLossEvent, ChatUsage, Logger, SessionSummary, SubscriptionSummary } from './contracts.ts';
+import type { AuditEntry, AuditRow, AuditSummary, CacheLossEvent, ChatUsage, Logger, SessionSummary, SubscriptionSummary } from '../contracts.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS requests (

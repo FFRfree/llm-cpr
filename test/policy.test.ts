@@ -1,5 +1,5 @@
 // Policy-as-code 契约测试：decide 语义（keep/null/覆写/撞墙/模型覆盖/错误路径）、
-// PolicyStore 生命周期（启动拒绝、热重载保旧）、迁移记账补漏与 routing_note。
+// 迁移记账补漏与 routing_note。配置即代码：loader 生命周期测试随 PolicyStore 退役删除。
 import type { AddressInfo } from 'node:net';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,9 +9,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { createGatewayServers } from '../lib/server.ts';
-import { PolicyStore } from '../lib/policy-loader.ts';
-import type { DecisionCtx, Decision, RouterPolicy } from '../lib/policy-contract.ts';
+import { createGatewayServers } from '../lib/http/server.ts';
+import type { DecisionCtx, Decision, RouterPolicy } from '../lib/policy/contract.ts';
 import type { AuditRow, Backend } from '../lib/contracts.ts';
 
 const listen = async (server: http.Server): Promise<string> => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return `http://127.0.0.1:${(server.address() as AddressInfo).port}`; };
@@ -150,52 +149,10 @@ test('decide throwing on the error path falls back to builtin migration', async 
   assert.deepEqual(app.seen, ['first', 'second']);
 });
 
-test('admin GET /api/policy reports the active policy source and version', async (t) => {
-  const app = await setup(t, [ok('first')]);
-  const admin = `http://127.0.0.1:${(app.adminServer.address() as import('node:net').AddressInfo).port}`;
-  const meta = await (await fetch(`${admin}/api/policy`)).json();
-  assert.equal(meta.source, 'static');
-  assert.equal(meta.lastError, null);
-});
-
 test('invalid policy decisions (unknown backend / missing family map) are ignored in favor of builtin', async (t) => {
   const app = await setup(t, [ok('first'), ok('second')], () => ({ backend: 'nope' }));
   assert.equal((await chat(app.url, 's1')).status, 200);
   assert.equal(app.seen[0], 'first');
   const history = await rows(app, 's1');
   assert.match(String(history[0].routing_note), /^builtin:select->/); // 野目标回落内置
-});
-
-test('PolicyStore: boot with a broken policy file refuses to load; later breakage keeps the previous instance', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-policy-store-'));
-  const file = path.join(dir, 'policy.ts');
-  const write = (content: string, tick: number): void => {
-    fs.writeFileSync(file, content);
-    const at = new Date(Date.now() + tick * 1000);
-    fs.utimesSync(file, at, at); // 强制 mtime 变化，绕开文件系统时间戳精度
-  };
-  write(`export default class { backends = [{ name: 'only', family: 'ocg', base_url: 'http://127.0.0.1:9', key_env: 'K' }]; models = [{ id: 'm', backends: { ocg: 'x' } }]; }`, 1);
-  const store = new PolicyStore({ file });
-  const first = await store.current();
-  assert.equal(first.backends[0].name, 'only');
-  // 热重载失败：语法/校验错误 → 保留旧实例，lastError 记证词
-  write(`export default class (`, 2);
-  const kept = await store.current();
-  assert.equal(kept, first);
-  assert.ok(store.meta().lastError !== null); // 具体报错文案是 Node 解析器的，只断言有证词
-  // 修好并改声明 → 新实例生效
-  write(`export default class { backends = [{ name: 'a', family: 'ocg', base_url: 'http://127.0.0.1:9', key_env: 'K' }, { name: 'b', family: 'ocg', base_url: 'http://127.0.0.1:9', key_env: 'K' }]; models = [{ id: 'm', backends: { ocg: 'x' } }]; }`, 3);
-  const next = await store.current();
-  assert.equal(next.backends.length, 2);
-  assert.equal(store.meta().lastError, null);
-  assert.ok(store.meta().mtimeMs !== null);
-  // 非法声明（缺 backends）→ 启动语义：未加载过就拒绝；已加载过则保旧
-  write(`export default class { models = [{ id: 'm', backends: { ocg: 'x' } }]; }`, 4);
-  assert.equal(await store.current(), next);
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-});
-
-test('PolicyStore: first load of a missing file rejects (refuse to start)', async () => {
-  const store = new PolicyStore({ file: '/nonexistent/cpr-policy-test-does-not-exist.ts' });
-  await assert.rejects(store.current(), /policy file unavailable/);
 });

@@ -22,7 +22,7 @@
 
 ## 快速开始
 
-1. 克隆仓库后 `cp config.example.json config.json`，再按自己的账号改本机那份 `config.json`（已被 `.gitignore` 排除，不会误提交）。先从一份账号、一个模型开始，再扩展。
+1. 克隆仓库后编辑 `lib/policy/mine.ts`——配置即代码：订阅声明与路由策略就在这个文件里，改它等于改代码（随 release 发布）。先从一份账号、一个模型开始，再扩展。
 2. 生成足够长的随机 master key；将其和后端凭据放在本机 `.env`，设置文件权限为仅当前用户可读（`chmod 600 .env`）。不要提交 `.env`。本仓库是开发环境示例；生产机的实际密钥放在 `/root/.config/coding-plan-router/.env`，部署布局见 [`docs/xdg-deployment.md`](docs/xdg-deployment.md)。
 3. 根据订阅家族设置每个 backend 的 `family`（`ocg` 或 `ccg`）、`base_url`、`key_env`；`name` 是持久会话映射和审计的稳定身份键，不应重命名；`account` 用于上游额度账号匹配，`alias` 只改显示。OCG 的 `base_url` 指向直连服务或兼容代理，CCG 指向其 OpenAI 兼容 Provider API。
 4. 在 `models` 中配置对客户端公开的统一 `id`，并在 `backends` 映射中填写每个家族的准确上游模型 ID。仅加入你已验证可用、且希望公开给客户端的模型。
@@ -38,38 +38,11 @@ CPR_UPSTREAM_KEY=replace-with-your-provider-api-key
 # CPR_ADMIN_PORT=8740
 ```
 
-基础 `config.json` 示例（只包含一个 CCG 后端和两个示例映射；上线前请核对你的订阅及上游模型 ID）：
-
-```json
-{
-  "master_key_env": "CPR_MASTER_KEY",
-  "listen": { "host": "127.0.0.1", "port": 8741 },
-  "admin": { "port": 8740 },
-  "backends": [
-    {
-      "name": "ccg-main",
-      "family": "ccg",
-      "alias": "foxmail",
-      "base_url": "https://api.commandcode.ai/provider",
-      "key_env": "CPR_UPSTREAM_KEY"
-    }
-  ],
-  "models": [
-    {
-      "id": "glm-5.3-flash",
-      "backends": { "ccg": "z-ai/glm-5.3-flash" }
-    },
-    {
-      "id": "deepseek-v4.1-flash",
-      "backends": { "ccg": "deepseek/deepseek-v4.1-flash" }
-    }
-  ]
-}
-```
+声明形状（`lib/policy/mine.ts` 内即是实例，不用写 JSON；上线前请核对你的订阅及上游模型 ID）：`master_key_env`、`listen`/`admin` 端口、`backends[]`（`name`/`family`/`alias`/`base_url`/`key_env`）与 `models[]`（对客户端公开的统一 `id` → 各家族真名映射）。完整真实示例直接看 `lib/policy/mine.ts`。
 
 `backends[].alias` 是可选的看板显示名：后台各处（订阅卡标题、汇总、钉住会话、请求明细）优先显示它，家族一律用全名 `OpenCode Go` / `CommandCode GOAT`，卡片脚注保留内部名 `name` 便于对日志。不配 `alias` 时显示内部名。
 
-开发环境默认配置路径是仓库根目录的 `config.json`。`base_url` 是上游 URL 前缀，网关会在其后追加 `/v1/chat/completions`；例如 CCG 示例使用 `/provider` 前缀，最终请求路径为 `/provider/v1/chat/completions`。可用 `CPR_CONFIG_FILE` 指定其他路径；`CPR_FORWARD_PORT`、`CPR_ADMIN_PORT` 可覆盖端口，`CPR_KEYS_ENV` 可覆盖 master key 的环境变量名。路由监听默认仅绑定 `127.0.0.1`；管理口固定绑定回环地址。不要将管理口直接暴露到公网。生产部署路径与数据库隔离方式见 [`docs/xdg-deployment.md`](docs/xdg-deployment.md)。
+`base_url` 是上游 URL 前缀，网关会在其后追加 `/v1/chat/completions`；例如 CCG 的 `/provider` 前缀，最终请求路径为 `/provider/v1/chat/completions`。`CPR_FORWARD_PORT`、`CPR_ADMIN_PORT` 可在启动时覆盖声明里的端口。路由监听默认仅绑定 `127.0.0.1`；管理口固定绑定回环地址。不要将管理口直接暴露到公网。改声明 = 改代码，须走发布流程（`npm run typecheck` + `node --test` + 假上游冒烟 + release 切换）。生产部署路径与数据库隔离方式见 [`docs/xdg-deployment.md`](docs/xdg-deployment.md)。
 
 开发启动：
 
@@ -130,7 +103,7 @@ npm test            # 等同 node --test
 ### 渐进类型化与模块职责
 
 - `lib/providers/opencode.ts` / `commandcode.ts` 是同一 `ProviderAdapter` 的两个真实实现：负责各家的会话头和 quota read。OCG 保留直连 `/usage`（浏览器 UA + 订阅 key）与代理 route-status（管理 key + `account` 匹配）；CCG 读取三个 `/alpha` 额度端点。`providers/index.ts` 集中注册家族，不把家族分支放进路由核。
-- `lib/protocols/chat-completions.ts` 是具体 Chat 实现：入口匹配、上游路径拼接、模型重映射、透明保留其他请求字段、JSON/SSE 用量观察。256 KiB 的有界旁路只供审计，不重写响应字节。`lib/translate.ts` 保留原调用入口，转到同一实现。
+- `lib/protocols/chat-completions.ts` 是具体 Chat 实现：入口匹配、上游路径拼接、模型重映射、透明保留其他请求字段、JSON/SSE 用量观察。256 KiB 的有界旁路只供审计，不重写响应字节。
 - `lib/contracts.ts` 类型覆盖后端身份/模型映射、会话身份、HTTP headers、额度窗口/快照，以及 provider/protocol 输入输出；第三方 JSON 从 `unknown` 检查后读取，不用 `any` 假装已验证。用量对象仍是开放字段集，token 数值与 cache 字段的校验继续由原审计层负责。
 - `server.ts` 继续负责 HTTP 生命周期、超时、取消、选路、钉死、重试、迁移与审计；`snapshots.ts` 继续负责轮询、去重、过期与降级状态，只将获取各家额度委托给 provider。没有改变持久化 schema、订阅 `name`、重试阈值或迁移策略。
 - 无会话头时，OCG 上游 session 使用路由已经解析的 fingerprint（无可指纹化消息时用 address），使上游缓存键与钉死/审计身份一致；有效统一头仍优先，旧 `x-opencode-session` 仍兼容，空统一头不覆盖有效旧头。CCG 不接收这两种会话头。

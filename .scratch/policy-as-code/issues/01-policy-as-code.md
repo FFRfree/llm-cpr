@@ -1,4 +1,4 @@
-# 14 — Policy-as-code：config.json 退役，声明+路由逻辑全部收进用户 policy class
+# 1 — Policy-as-code：config.json 退役，声明+路由逻辑全部收进用户 policy class
 
 **Status:** completed
 
@@ -43,3 +43,5 @@
 - 2026-11-17：撞墙测试初版直接注 `snapshots.values` 与快照轮询器赛跑（refresh 的 parseProxy 输出覆盖注入，exceeded 归 false），改走 provider 正常解析路径（upstream GET 回 proxy usage 载荷、rolling_percent=100）才稳。「快照状态注入」这个手法在 snapshots.start() 自动 refresh 的前提下不可靠，测试一律走假上游载荷。
 - 2026-11-17：`createGatewayServers` 保持同步签名（测试直传实例），PolicyStore 的异步首次加载放在 `startGateway`：先 `current()` 再构造、再 `attachPolicySource` 接上热重载。声明级热重载 = 实例身份变化 → `snapshotsFor()` 重建 UsageSnapshots（该类持 backends 数组引用，光换内容会漏）。
 - 2026-11-17：**未上线**。生产部署清单（须单独授权）：systemd unit 加 `CPR_POLICY_FILE=/root/.config/coding-plan-router/policy.ts`；建软链 policy.ts → 仓库 policies/mine.ts；release 仍 `git archive HEAD lib static package.json`（policies/ 不进 release，真身在仓库，靠软链生效）；切换前 `smoke-release.ts` 假上游冒烟；旧 config.json 保留原地作回滚保险，稳定一个周期后删。生产 DB 迁移（routing_note 列）由 UsageAudit 构造函数 ALTER 自动完成，无需停服脚本，但切换验证时要核对列已补齐。
+- 2026-11-18：本票从 `.scratch/coding-plan-router/issues/14-policy-as-code.md`（伞下编号 14）拆出为独立 feature 目录 `.scratch/policy-as-code/`，重编号为 1；决策与验收记录原样保留，见同目录 `spec.md`。
+- 2026-11-18：**设计被接替**——用户拍板「先做简单」，policy 文件加载机制（PolicyStore/mtime 热重载、软链、`CPR_POLICY_FILE`、`/api/policy`）由工单 `.scratch/inline-policy/` 退役：`mine.ts` 收进 `lib/policy/mine.ts` 随 release 发布，decide 契约保留。本票的契约与测试成果（每请求 decide、walled 标志位、模型覆盖、迁移记账、routing_note）全部存活；仅「文件加载/热重载」这一层实现作废。本部署清单作废，以 inline-policy 票 Comments 的简化清单为准。

@@ -1,5 +1,5 @@
-import { currentSnapshot, timestampMs } from './snapshots.ts';
-import type { Backend, Family, QuotaSnapshot } from './contracts.ts';
+import { currentSnapshot, timestampMs } from '../store/snapshots.ts';
+import type { Backend, Family, QuotaSnapshot } from '../contracts.ts';
 
 function pct(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;

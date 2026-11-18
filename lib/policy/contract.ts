@@ -1,7 +1,7 @@
 // Policy-as-code 契约：用户 policy 文件 import type 用的唯一入口。
 // 引擎侧硬护栏不在这里（模型支持校验、迁移冷却、探活、鉴权、账本），policy 只回答「去哪、用谁」。
-import type { Backend, Endpoint, Family, Model, QuotaSnapshot, RoutingConfig } from './contracts.ts';
-export type { Backend, Endpoint, Family, Model, QuotaSnapshot, RoutingConfig } from './contracts.ts';
+import type { Backend, Endpoint, Family, Model, QuotaSnapshot, RoutingConfig } from '../contracts.ts';
+export type { Backend, Endpoint, Family, Model, QuotaSnapshot, RoutingConfig } from '../contracts.ts';
 
 // 喂给 decide 的候选：已按「支持请求的模型」过滤；额度墙不是过滤而是标志位——
 // 钉死撞墙是合法决定（代价是原样吃 429/403 透传），内置路径（decide 返回 null）仍会过滤。
@@ -51,10 +51,5 @@ export interface RouterPolicy {
   decide?(ctx: DecisionCtx): Decision;
 }
 
-// 文件加载路径（PolicyStore）填充全部默认值；静态实例（测试直传）不经过这一步。
-export interface LoadedPolicy extends RouterPolicy {
-  listen: Endpoint;
-  admin: Endpoint;
-  masterKeyEnv: string;
-  identityHeader: string;
-}
+// 配置即代码后无「加载后补默认值」这一步；声明方（lib/policy/mine.ts）自己写全。
+// LoadedPolicy 曾是 PolicyStore 加载产物的形状，随其退役删除（2026-11-18）。

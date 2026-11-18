@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { UsageSnapshots } from '../lib/snapshots.ts';
+import { UsageSnapshots } from '../lib/store/snapshots.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Boundary: fixture JSON is untyped.

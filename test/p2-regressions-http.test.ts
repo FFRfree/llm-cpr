@@ -6,7 +6,7 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DatabaseSync } from 'node:sqlite';
-import { createGatewayServers } from '../lib/server.ts';
+import { createGatewayServers } from '../lib/http/server.ts';
 import type { TestContext } from 'node:test';
 import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';

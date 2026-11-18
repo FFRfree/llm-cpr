@@ -1,5 +1,5 @@
 import type { HeaderContext, Headers } from '../contracts.ts';
-import { endToEndHeaders } from '../headers.ts';
+import { endToEndHeaders } from '../http/headers.ts';
 
 export function requestHeaders({ headers, upstreamKey, identityHeader = 'x-session-id' }: HeaderContext): Headers {
   // Cross a credential/trust boundary with an allowlist, then install only the

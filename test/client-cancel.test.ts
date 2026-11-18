@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { createGatewayServers } from '../lib/server.ts';
+import { createGatewayServers } from '../lib/http/server.ts';
 
 const close = (server: http.Server): Promise<void> => new Promise<void>((resolve) => server.close(() => resolve()));
 

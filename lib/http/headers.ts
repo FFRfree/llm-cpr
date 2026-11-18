@@ -1,4 +1,4 @@
-import type { Headers } from './contracts.ts';
+import type { Headers } from '../contracts.ts';
 
 const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-connection', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'trailers', 'transfer-encoding', 'upgrade', 'host', 'content-length']);
 
