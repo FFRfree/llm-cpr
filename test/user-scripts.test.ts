@@ -233,7 +233,8 @@ test('upgrade：脏跟踪文件无条件拒绝且零副作用', () => {
 test('uninstall：停服务失败 → 拒绝继续，unit 与数据原样保留', () => {
   const f = makeFixture();
   const failStub = path.join(f.base, 'systemctl-fail.sh');
-  fs.writeFileSync(failStub, '#!/bin/sh\nexit 1\n');
+  // 服务在跑（is-active 成功）但 disable 失败——正好卡进新守卫的拒绝分支
+  fs.writeFileSync(failStub, '#!/bin/sh\ncase "$1" in disable) exit 1;; esac\nexit 0\n');
   fs.chmodSync(failStub, 0o755);
   fs.mkdirSync(f.env.CPR_UNIT_DIR, { recursive: true });
   fs.writeFileSync(path.join(f.env.CPR_UNIT_DIR, UNIT), '# dummy unit\n');
