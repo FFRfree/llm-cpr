@@ -1,6 +1,6 @@
 # 07 — 发布侧：Forgejo 远端、首个 tag、README 安装/升级文档
 
-**Status:** ready-for-agent
+**Status:** completed
 
 **目标：** 让「clone + 升级」真正可达。
 
@@ -25,3 +25,5 @@
 
 - 2026-11-18 进展：Forgejo 远端已建（`https://hermes-git.ffrfree.xyz:8443/ffrfree/coding-plan-router.git`，push-create 私有仓，master 基线 + user-scripts 分支已推）；README「安装/升级/卸载」章节与版本可见性（main.ts 启动日志报 commit + policy 来源）已随 commit ce8bf5b 落地；MR #1 在审。
 - 剩余：MR 批准合并后打首个 tag（打前先 git archive 快照 + smoke-release 冒烟）；`mine.ts` 真实订阅声明通用化另立工单（公开化前置，本仓保持 private）。
+- 2026-11-18 收尾：MR #1 经 review + 一次性 e2e 后合并（merge commit 375a43b）；打 tag 前照纪律出 `git archive` 快照（release 目录 `20261118-375a43b`，未切生产 symlink）+ `smoke-release.ts` 全绿，随后打 `v0.1.0` 推送并 `ls-remote` 核实（tag 对象 564dddf → 375a43b）。主仓 master pull 时 README.md 与工作树里的泛化 WIP 冲突一处，已按「上游新 step 1 + 泛化 step 2」合并解出，泛化改动保持未提交原样。
+- 验证：远端 master 与 tag 均在 Forgejo 上可见；clone 用户路径全链路（install→转发→记账→upgrade→卸载）已在 06 号票 e2e 记录中验证。
