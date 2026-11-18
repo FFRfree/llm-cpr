@@ -22,7 +22,7 @@
 
 ## 快速开始
 
-1. 克隆仓库后编辑 `lib/policy/mine.ts`——配置即代码：订阅声明与路由策略就在这个文件里，改它等于改代码（随 release 发布）。先从一份账号、一个模型开始，再扩展。
+1. 克隆仓库后编辑 `policy.local.ts`（没有就 `cp policy.example.ts policy.local.ts`）——配置即代码：订阅声明与路由策略就在这个文件里，改它等于改代码。它被 gitignore，升级永不冲突；`lib/policy/mine.ts` 是仓库自带的默认声明（作者的实际配置），没有 local 文件时用它。先从一份账号、一个模型开始，再扩展。
 2. 生成足够长的随机 master key；将其和后端凭据放在本机 `.env`，设置文件权限为仅当前用户可读（`chmod 600 .env`）。不要提交 `.env`。本仓库是开发环境示例；生产机的实际密钥放在 `/root/.config/coding-plan-router/.env`，部署布局见 [`docs/xdg-deployment.md`](docs/xdg-deployment.md)。
 3. 根据订阅家族设置每个 backend 的 `family`（`ocg` 或 `ccg`）、`base_url`、`key_env`；`name` 是持久会话映射和审计的稳定身份键，不应重命名；`account` 用于上游额度账号匹配，`alias` 只改显示。OCG 的 `base_url` 指向直连服务或兼容代理，CCG 指向其 OpenAI 兼容 Provider API。
 4. 在 `models` 中配置对客户端公开的统一 `id`，并在 `backends` 映射中填写每个家族的准确上游模型 ID。仅加入你已验证可用、且希望公开给客户端的模型。
@@ -59,6 +59,29 @@ node lib/main.ts
 curl -H "Authorization: Bearer $CPR_MASTER_KEY" \
   http://127.0.0.1:8741/v1/models
 ```
+
+## 安装 / 升级 / 卸载（cpr 脚本）
+
+安装走 clone（脚本随源码一起被你审阅，没有 curl 管道脚本）：
+
+```sh
+git clone <仓库地址> coding-plan-router && cd coding-plan-router
+node scripts/cpr.ts install          # 交互式：Node 版本检查 → 建 policy.local.ts →
+                                     # 生成 .env(随机 master key) → 写 systemd unit → 测试 → 问是否启动
+node scripts/cpr.ts doctor           # 只读体检：版本差、领先 commit、脏文件清单
+```
+
+升级（重启服务前一定交互确认，默认不重启）：
+
+```sh
+node scripts/cpr.ts upgrade          # 干净仓 fast-forward；升级后自动 node --test + 假上游冒烟
+```
+
+行为边界：存在未提交的**被跟踪文件**改动时升级无条件拒绝（点名列出，出路是你自己 commit / stash / discard——脚本不代做）；你的 policy 改动住 `policy.local.ts`，git 永远不碰它。若你 commit 过引擎代码（fork 用户），脚本会打印领先 commit 清单并在你确认后 rebase，撞冲突立即 `--abort` 原地还原，由你手工解冲突后全量测试。
+
+卸载：`node scripts/cpr.ts uninstall` 停服务、删 unit；数据库与 `.env` 永不静默删除（确认不要再加 `--purge`）；clone 目录自己删。
+
+启动日志第一行报当前 commit（`coding-plan-router <sha> — policy: policy.local.ts|lib/policy/mine.ts`），随时核对「磁盘版本 = 运行版本」。
 
 ## 路由行为
 
