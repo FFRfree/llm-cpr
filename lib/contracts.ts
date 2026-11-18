@@ -95,6 +95,12 @@ export interface RoutingConfig {
   long_session_min_requests?: number;
   upstream_timeout_ms?: number;
   snapshot_interval_ms?: number;
+  // 迁移冷却长度（默认 3_600_000）：迁移成功即入冷却，窗口内不再触发迁移决策。
+  migration_cooldown_ms?: number;
+  // 原地短重试（仅 429）：retry-after ≤ wall_retry_max_after_ms 时原地等重试，最多 wall_retry_max_attempts 次。
+  // 0 = 关闭原地重试（第一次撞墙直接进迁移决策点）。原地重试不落账本、不问 policy。
+  wall_retry_max_attempts?: number;
+  wall_retry_max_after_ms?: number;
 }
 export interface Endpoint {
   host: string;

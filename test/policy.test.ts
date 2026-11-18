@@ -156,3 +156,51 @@ test('invalid policy decisions (unknown backend / missing family map) are ignore
   const history = await rows(app, 's1');
   assert.match(String(history[0].routing_note), /^builtin:select->/); // 野目标回落内置
 });
+
+test('sticky-long guardrail preempts policy: a long session is not even consulted on the error path', async (t) => {
+  const errorCalls: DecisionCtx[] = [];
+  let firstBroken = false;
+  const app = await setup(t, [
+    { name: 'first', run: (_req, res) => { if (firstBroken) { res.writeHead(403).end('quota-403'); return; } res.writeHead(200, { 'content-type': 'application/json' }).end('{}'); } },
+    ok('second'),
+  ], (ctx) => { if (ctx.error) { errorCalls.push(ctx); return { backend: 'second' }; } return null; }, { routing: { long_session_min_requests: 2 } });
+  // 长会话：两笔成功后达到阈值 2
+  assert.equal((await chat(app.url, 'long')).status, 200);
+  assert.equal((await chat(app.url, 'long')).status, 200);
+  firstBroken = true;
+  const blocked = await chat(app.url, 'long');
+  assert.equal(blocked.status, 403); // 403 原样透传
+  assert.equal(await blocked.text(), 'quota-403');
+  assert.deepEqual(app.seen, ['first', 'first', 'first']); // 两笔成功 + 一笔注定失败的 403；无迁移、无 second
+  assert.equal(errorCalls.length, 0); // sticky-long 护栏前置：policy 不可见、不可覆写
+});
+
+test('recent health is injected per candidate from the in-memory tracker', async (t) => {
+  const seenCandidates: { name: string; recent: unknown }[][] = [];
+  let firstBroken = true;
+  const app = await setup(t, [
+    { name: 'first', run: (_req, res) => { if (firstBroken) { firstBroken = false; res.writeHead(500).end('boom'); return; } res.writeHead(200, { 'content-type': 'application/json' }).end('{}'); } },
+    ok('second'),
+  ], (ctx) => { seenCandidates.push(structuredClone(ctx.candidates.map(({ name, recent }) => ({ name, recent })))); return null; });
+  assert.equal((await chat(app.url, 's1')).status, 500); // first 报 500（非 403/429：直接透传并记账）
+  assert.equal((await chat(app.url, 's2')).status, 200);
+  assert.deepEqual(seenCandidates[0][0], { name: 'first', recent: undefined }); // 首次：窗口内无观察
+  assert.deepEqual(seenCandidates[1][0].name, 'first');
+  assert.equal((seenCandidates[1][0].recent as { fails: number; lastStatus: number }).fails, 1);
+  assert.equal((seenCandidates[1][0].recent as { fails: number; lastStatus: number }).lastStatus, 500);
+  assert.equal(seenCandidates[1][1].recent, undefined); // second 没有失败记录
+});
+
+test('routing.wall_retry_max_attempts=0 skips in-place retries and the error ctx carries the failed backend', async (t) => {
+  const errorCalls: DecisionCtx[] = [];
+  const app = await setup(t, [
+    quota('first', 429),
+    ok('second'),
+  ], (ctx) => { if (ctx.error) { errorCalls.push(structuredClone(ctx)); return { backend: 'second' }; } return null; },
+  { routing: { wall_retry_max_attempts: 0, wall_retry_max_after_ms: 2000 } });
+  const response = await chat(app.url, 's1', { model: 'm' });
+  assert.equal(response.status, 200);
+  assert.deepEqual(app.seen, ['first', 'second']); // 0 次原地重试：一次失败直接进迁移决策
+  assert.equal(errorCalls.length, 1);
+  assert.deepEqual(errorCalls[0].error, { backend: 'first', status: 429, retryAfterMs: null }); // retry-after 头没给 → null
+});

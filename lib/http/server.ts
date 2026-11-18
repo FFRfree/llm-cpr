@@ -14,7 +14,7 @@ import { builtinDecide } from '../policy/builtin-decide.ts';
 import { resolveListenEndpoints } from '../policy/config.ts';
 import { UsageAudit } from '../store/audit.ts';
 import type { AuditEntry, Backend, ChatBody, ChatUsage, Environment, Headers, Logger, Model, SnapshotView } from '../contracts.ts';
-import type { CandidateView, Decision, DecisionCtx, RouterPolicy } from '../policy/contract.ts';
+import type { BackendRecent, CandidateView, Decision, DecisionCtx, RouterPolicy } from '../policy/contract.ts';
 
 interface ForwardTimings {
   ttftMs: number | null;
@@ -225,6 +225,30 @@ async function firstHealthyBackend(backends: Backend[]): Promise<Backend | undef
   return undefined;
 }
 
+// 内存健康追踪：record() 记账路径顺手喂入，decide ctx 的 candidates[].recent 从这里取。
+// 只在内存里（重启归 undefined = 窗口内没观察到失败 ≠ 健康，观察盲区语义同快照未知）；零查询成本。
+const HEALTH_WINDOW_MS = 10 * 60_000;
+const HEALTH_RING_CAP = 50;
+function createHealthTracker() {
+  const rings = new Map<string, { ts: number; status: number }[]>();
+  return {
+    note(name: string, status: number, now = Date.now()): void {
+      // 499 = 客户端取消，与后端服务质量无关，不计入。
+      if (status < 400 || status === 499) return;
+      const ring = rings.get(name) ?? [];
+      ring.push({ ts: now, status });
+      if (ring.length > HEALTH_RING_CAP) ring.splice(0, ring.length - HEALTH_RING_CAP);
+      rings.set(name, ring);
+    },
+    view(name: string, now = Date.now()): BackendRecent | undefined {
+      const windowed = (rings.get(name) ?? []).filter((entry) => now - entry.ts < HEALTH_WINDOW_MS);
+      if (!windowed.length) return undefined;
+      const last = windowed[windowed.length - 1];
+      return { fails: windowed.length, lastStatus: last.status, lastErrorAt: last.ts };
+    },
+  };
+}
+
 export interface CreateGatewayOptions {
   env?: Environment;
   fetchImpl?: typeof fetch;
@@ -244,6 +268,8 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
   const identityStore = createIdentityStore(dbPath);
   const auditPath = env.CPR_USAGE_DB || path.join(path.dirname(dbPath), 'usage.db');
   const audit = new UsageAudit({ dbFile: auditPath, logger });
+  // decide ctx 的 candidates[].recent 数据源：record() 挂钩喂入。
+  const health = createHealthTracker();
   // 配置即代码：policy 为进程内静态实例（无热重载），快照轮询器随启动一次构建。
   const snapshots = new UsageSnapshots({ backends: policy.backends, env, intervalMs: policy.routing?.snapshot_interval_ms ?? 300_000, fetchImpl, logger });
 
@@ -275,6 +301,11 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
         if (res.destroyed) return;
       }
       const longSessionMin = Number(p.routing?.long_session_min_requests ?? 10);
+      // 数值参数兜底：validateConfig 校验声明，直传实例的测试不经它——非法值回落默认，不让 NaN 破坏比较。
+      const nonNeg = (value: number | undefined, fallback: number): number => { const n = Number(value); return Number.isFinite(n) && n >= 0 ? n : fallback; };
+      const migrationCooldownMs = nonNeg(p.routing?.migration_cooldown_ms, 3_600_000);
+      const wallRetryMaxAttempts = nonNeg(p.routing?.wall_retry_max_attempts, 3);
+      const wallRetryMaxAfterMs = nonNeg(p.routing?.wall_retry_max_after_ms, 2000);
       const configuredTimeout = Number(p.routing?.upstream_timeout_ms);
       const upstreamTimeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
         ? Math.min(300_000, Math.max(1, configuredTimeout)) : 120_000;
@@ -289,6 +320,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
           priority: Number(backend2.priority ?? 0),
           walled: Boolean(snapshot?.fiveHour?.exceeded) || Boolean(snapshot?.weekly?.exceeded),
           snapshot,
+          recent: health.view(backend2.name),
         };
       };
       const requestView = { model: requestedModel.id, chars: bytes.length, messages: Array.isArray(body.messages) ? body.messages.length : 0 };
@@ -314,7 +346,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       const ctx: DecisionCtx = {
         now: Date.now(),
         request: requestView,
-        session: { pin: pinnedName, requests: null, degraded: false },
+        session: { pin: pinnedName },
         candidates: candidates.map((candidate) => candidateView(current, candidate)),
       };
       {
@@ -392,38 +424,44 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
         if (!upstreamKey) return json(res, 500, { error: { message: `missing credential environment variable: ${active.key_env}`, type: 'configuration_error' } });
         const translated = chatCompletions.prepareRequest({ config: { models: p.models, identityHeader: identityHeaderOf(p) }, model: effectiveModel, body, headers: req.headers, backend: active, upstreamKey, identity });
         const translatedModel = translated.body.model;
-        const record: (status: number, payload: string | ChatUsage | null, timings?: ForwardTimings, noteOverride?: string | null) => void = (status, payload, timings, noteOverride) => audit.record({
-          ts: startedAt, identity: identity.key, identity_kind: identity.kind, subscription: active.name,
-          account: active.account ?? active.name, model: requestedModel.id, translated_model: typeof translatedModel === 'string' ? translatedModel : null,
-          path: req.url, status, ms: Date.now() - startedAt, ttft_ms: timings?.ttftMs, stream_ms: timings?.streamMs,
-          routing_note: noteOverride ?? attemptNote,
-        } satisfies AuditEntry, typeof payload === 'string' ? chatCompletions.responseUsage(payload) : payload);
+        const record: (status: number, payload: string | ChatUsage | null, timings?: ForwardTimings, noteOverride?: string | null) => void = (status, payload, timings, noteOverride) => {
+          audit.record({
+            ts: startedAt, identity: identity.key, identity_kind: identity.kind, subscription: active.name,
+            account: active.account ?? active.name, model: requestedModel.id, translated_model: typeof translatedModel === 'string' ? translatedModel : null,
+            path: req.url, status, ms: Date.now() - startedAt, ttft_ms: timings?.ttftMs, stream_ms: timings?.streamMs,
+            routing_note: noteOverride ?? attemptNote,
+          } satisfies AuditEntry, typeof payload === 'string' ? chatCompletions.responseUsage(payload) : payload);
+          health.note(active.name, status);
+        };
         const result = await forwardAttempt({ res, backend: active, body: JSON.stringify(translated.body), headers: translated.headers, startedAt, onComplete: record, timeoutMs: upstreamTimeoutMs });
         if (result.forwarded) return;
         if (res.destroyed) { record(499, null); return; }
         lastResult = result;
         if (result.status === 429) {
           const delay = retryAfterMs(result.headers['retry-after']);
-          if (delay !== null && delay <= 2000 && quotaRetries < 3) {
+          // 原地短重试：引擎自治，policy 不可见、不落账本。参数化见 routing.wall_retry_*。
+          if (delay !== null && delay <= wallRetryMaxAfterMs && quotaRetries < wallRetryMaxAttempts) {
             quotaRetries++;
             if (!await sleep(delay, res)) { record(499, null); return; }
             continue;
           }
         }
-        if ((result.status === 403 || result.status === 429) && !identityStore.coolingDown(identity.kind, identity.key)) {
-          // 出错重试也是一次 decide：带 error/active/session 轮数问 policy，null 交内置
-          // （长会话保缓存阈值、备选排序与探活）。1h 冷却是防抖护栏，policy 不可越过。
+        if ((result.status === 403 || result.status === 429) && !identityStore.coolingDown(identity.kind, identity.key, Date.now(), migrationCooldownMs)) {
+          // 迁移决策点。护栏前置（policy 不可见、不可覆写）：冷却已在入口条件拦掉；
+          // sticky-long 长会话保缓存：轮数达阈值的会话不迁移——换后端作废上游 prompt cache，
+          // 宁可让 agent 稍后重试原后端。账本读不出/降级也当长会话（宁保缓存的保守取舍）。
           const history = audit.sessionSummary(identity.key);
+          const stickyLong = longSessionMin > 0 && (history?.degraded === true
+            || typeof history?.requests !== 'number' || history.requests >= longSessionMin);
+          // 出错重试也是一次 decide：带 error 标记问 policy（刚失败的后端与状态码），null 交内置。
           const fresh = snaps.peek();
           const errorCtx: DecisionCtx = {
             now: Date.now(),
             request: requestView,
-            session: { pin: active.name, requests: history?.requests ?? null, degraded: history?.degraded === true },
+            session: { pin: active.name },
             candidates: candidates.map((candidate) => candidateView(fresh, candidate)),
-            active: active.name,
-            error: { status: result.status, retryAfterMs: retryAfterMs(result.headers['retry-after']) },
+            error: { backend: active.name, status: result.status, retryAfterMs: retryAfterMs(result.headers['retry-after']) },
           };
-          const decision = askPolicy(errorCtx);
           const migrateTo = async (target: Backend, note: string): Promise<void> => {
             // 观测盲区修复：迁移成功前先把失败那笔记进账本（旧行为直接 continue 跳过）。
             record(lastResult!.status, lastResult!.body.toString('utf8'), undefined, `${attemptNote ?? ''}|${note}`);
@@ -435,6 +473,8 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
           const giveUp = (note: string): void => {
             record(lastResult!.status, lastResult!.body.toString('utf8'), undefined, `${attemptNote ?? ''}|${note}`);
           };
+          if (stickyLong) { giveUp('builtin:sticky-long'); return passthroughError(res, lastResult!); }
+          const decision = askPolicy(errorCtx);
           if (decision === 'keep' || (decision !== null && typeof decision === 'object' && decision.backend === active.name)) {
             giveUp('policy:keep');
             return passthroughError(res, lastResult!);
@@ -447,10 +487,10 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
             }
             logger.warn?.('[policy] error-path decision unusable; falling back to builtin alternates');
           }
-          // 内置兜底：长会话阈值 → 备选月欠账排序 → 逐个探活。
+          // 内置兜底：备选月欠账排序 → 逐个探活（sticky-long 已被护栏前置处理）。
           let built;
           try {
-            built = builtinDecide(errorCtx, { backends: p.backends, model: requestedModel, snapshots: fresh.snapshots, longSessionMin });
+            built = builtinDecide(errorCtx, { backends: p.backends, model: requestedModel, snapshots: fresh.snapshots, longSessionMin, sessionUsage: { requests: history?.requests ?? null, degraded: history?.degraded === true } });
           } catch { built = { decision: 'keep' as const, note: 'builtin:error' }; }
           if (built.decision === 'keep') {
             giveUp(built.note ?? 'builtin:keep');

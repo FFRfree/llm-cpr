@@ -35,6 +35,15 @@ export function validateConfig(raw: unknown): GatewayConfig {
   // 决策面字段（原 PolicyStore 加载期校验，随 policy 内联并入启动校验）
   if (config.identity_header !== undefined && (typeof config.identity_header !== 'string' || !config.identity_header.trim())) throw new Error('identity_header must be a non-empty header name when set');
   if (config.decide !== undefined && typeof config.decide !== 'function') throw new Error('decide must be a function when set');
+  // routing 数值参数：非有限/负数一律拒启动（server 侧另有兜底回落默认，直传实例的测试不经这里）。
+  const routing = record(config.routing);
+  if (routing) {
+    for (const key of ['long_session_min_requests', 'snapshot_interval_ms', 'upstream_timeout_ms', 'migration_cooldown_ms', 'wall_retry_max_attempts', 'wall_retry_max_after_ms'] as const) {
+      const value = routing[key];
+      if (value === undefined) continue;
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error(`routing.${key} must be a non-negative finite number`);
+    }
+  }
   return config as unknown as GatewayConfig;
 }
 

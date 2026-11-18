@@ -12,6 +12,9 @@ export interface BuiltinOptions {
   model: Model;
   snapshots: Record<string, QuotaSnapshot | undefined>;
   longSessionMin: number;
+  // 错误路径的账本会话概要（长会话判定数据源）。正常路径不传——sticky-long 只在错误分支消费；
+  // server 的 sticky-long 前置护栏已经用同一数据源先行判断过（命中即不问 policy、也不到这里）。
+  sessionUsage?: { requests: number | null; degraded: boolean };
 }
 
 // orderedBackends：内置决定带完整有序候选，引擎沿它探活（与旧行为一致——逐个试到第一个健康者）。
@@ -22,19 +25,21 @@ export interface BuiltinDecision {
   orderedBackends?: Backend[];
 }
 
-export function builtinDecide(ctx: DecisionCtx, { backends, model, snapshots, longSessionMin }: BuiltinOptions): BuiltinDecision {
+export function builtinDecide(ctx: DecisionCtx, { backends, model, snapshots, longSessionMin, sessionUsage }: BuiltinOptions): BuiltinDecision {
   const pin = ctx.session.pin;
   if (ctx.error) {
     // 长会话保缓存：请求轮数达到阈值的会话不做额度迁移——换后端会作废上游 prompt cache，
     // 宁可让 agent 稍后重试原后端（阈值 routing.long_session_min_requests，默认 10，0 关闭）。
     // Missing/degraded history is not evidence that this is a short session.
-    const requestCount = ctx.session.requests;
-    const stickyLong = longSessionMin > 0 && (ctx.session.degraded === true
+    // 注：server 的 sticky-long 前置护栏已用同一数据源先行判断；走到这里的兜底分支通常已非长会话，
+    // 保留同一判定是为「直接调用 builtinDecide 的路径」保持独立正确。
+    const requestCount = sessionUsage?.requests;
+    const stickyLong = longSessionMin > 0 && (sessionUsage?.degraded === true
       || typeof requestCount !== 'number' || requestCount >= longSessionMin);
     if (stickyLong) return { decision: 'keep', note: 'builtin:sticky-long' };
     let alternates: Backend[] = [];
     try {
-      alternates = rankBackends({ backends: backends.filter((candidate) => candidate.name !== ctx.active), snapshots, model: model.backends });
+      alternates = rankBackends({ backends: backends.filter((candidate) => candidate.name !== ctx.error?.backend), snapshots, model: model.backends });
     } catch {}
     if (!alternates.length) return { decision: 'keep', note: 'builtin:no-alternate' };
     return { decision: { backend: alternates[0].name }, note: `builtin:migrate->${alternates[0].name}`, orderedBackends: alternates };
