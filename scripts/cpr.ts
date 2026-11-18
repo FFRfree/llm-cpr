@@ -18,7 +18,8 @@ import { spawnSync } from 'node:child_process';
 import readline from 'node:readline/promises';
 
 const BRAND = 'coding-plan-router';
-const UNIT_NAME = 'coding-plan-router.service';
+// unit 名可注入：端到端测试用独立名字（如 coding-plan-router-e2e）装在真 systemd 上，与生产 unit 错开。
+const UNIT_NAME = process.env.CPR_UNIT_NAME || 'coding-plan-router.service';
 
 interface RunResult { ok: boolean; out: string; err: string }
 
