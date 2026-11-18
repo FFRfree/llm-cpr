@@ -90,7 +90,7 @@ function upstreamOf(state: { branch: string | null }, root: string): string | nu
 
 function collectState(root: string, fetch: boolean): RepoState {
   let fetched = false;
-  if (git(['remote'], root).out.split('\n').includes('origin')) {
+  if (fetch && git(['remote'], root).out.split('\n').includes('origin')) {
     fetched = git(['fetch', '--tags', 'origin'], root).ok;
   }
   const head = git(['rev-parse', '--short', 'HEAD'], root).out || 'unknown';
@@ -197,6 +197,7 @@ async function doctor(): Promise<number> {
   console.log(`HEAD=${state.head}`);
   console.log(`TAG=${state.latestTag ?? 'none'}`);
   console.log(`FETCHED=${state.fetched ? 1 : 0}${state.fetched ? '' : '（无法与 origin 同步，以下落后数字不可信）'}`);
+  console.log('NOTE=会执行 git fetch --tags（更新本地远端引用与 tag，不改工作树）');
   console.log(`UPSTREAM=${state.upstream ?? 'none'}`);
   console.log(`BEHIND=${state.behind}`);
   console.log(`AHEAD=${state.ahead}`);
@@ -271,6 +272,10 @@ async function install(yes: boolean): Promise<number> {
     fs.writeFileSync(envFile, text, { mode: 0o600 });
     console.log(`cpr: 已生成 ${envFile}（已随机生成 CPR_MASTER_KEY；订阅 key 按 policy.local.ts 的 key_env 名补齐）`);
   }
+
+  // 数据目录必须先建：node:sqlite 打开库文件不会自动创建父目录，缺目录首次启动直接失败。
+  fs.mkdirSync(dataDir(), { recursive: true, mode: 0o700 });
+  console.log(`cpr: 数据目录 ${dataDir()} ✓`);
 
   const unitPath = path.join(unitDir(), UNIT_NAME);
   const content = unitFileContent(root);
@@ -384,7 +389,13 @@ async function upgrade(yes: boolean): Promise<number> {
 
 async function uninstall(yes: boolean, purge: boolean): Promise<number> {
   const stop = systemctl('disable', '--now', UNIT_NAME);
-  console.log(stop.ok ? `cpr: 服务已停并移除自启` : `cpr: systemctl disable 未成功（可能本就未安装）：${stop.err}`);
+  if (!stop.ok) {
+    console.error(`cpr: 停止/禁用服务失败：${stop.err}`);
+    console.error('cpr: 服务可能仍在运行或 systemd 不可用——为保护正在使用的数据库，拒绝继续卸载。');
+    console.error(`  排查后重试；手工口径：systemctl disable --now ${UNIT_NAME}`);
+    return 1;
+  }
+  console.log('cpr: 服务已停并移除自启');
   const unitPath = path.join(unitDir(), UNIT_NAME);
   if (fs.existsSync(unitPath)) {
     fs.rmSync(unitPath);

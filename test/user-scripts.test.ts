@@ -134,6 +134,7 @@ test('install --yes：写出 unit / .env(随机 master key) / policy.local.ts，
   assert.match(envText, /^CPR_MASTER_KEY=[0-9a-f]{48}$/m);
 
   assert.ok(fs.existsSync(path.join(f.work, 'policy.local.ts')));
+  assert.ok(fs.existsSync(f.env.CPR_DATA_DIR)); // 数据目录必须先建：SQLite 打不开缺父目录的库
 
   const calls = systemctlLog(f);
   assert.ok(calls.includes('daemon-reload'));
@@ -226,6 +227,24 @@ test('upgrade：脏跟踪文件无条件拒绝且零副作用', () => {
 });
 
 // ---- uninstall ----
+
+test('uninstall：停服务失败 → 拒绝继续，unit 与数据原样保留', () => {
+  const f = makeFixture();
+  const failStub = path.join(f.base, 'systemctl-fail.sh');
+  fs.writeFileSync(failStub, '#!/bin/sh\nexit 1\n');
+  fs.chmodSync(failStub, 0o755);
+  fs.mkdirSync(f.env.CPR_UNIT_DIR, { recursive: true });
+  fs.writeFileSync(path.join(f.env.CPR_UNIT_DIR, UNIT), '# dummy unit\n');
+  fs.mkdirSync(f.env.CPR_DATA_DIR, { recursive: true });
+  fs.writeFileSync(path.join(f.env.CPR_DATA_DIR, 'usage.db'), 'rows');
+
+  // --purge --yes 也不许在服务没停掉时动数据库
+  const r = cpr(f.work, ['uninstall', '--purge', '--yes'], { ...f.env, CPR_SYSTEMCTL: failStub });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /拒绝继续卸载/);
+  assert.ok(fs.existsSync(path.join(f.env.CPR_UNIT_DIR, UNIT)));
+  assert.equal(fs.readFileSync(path.join(f.env.CPR_DATA_DIR, 'usage.db'), 'utf8'), 'rows');
+});
 
 test('uninstall：删 unit、停服务，数据目录原样保留；--purge 需 --yes', () => {
   const f = makeFixture();
