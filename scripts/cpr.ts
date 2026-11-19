@@ -110,7 +110,7 @@ function relocateFromNodeModules(version: string): void {
   fs.rmSync(path.join(prefix, 'lib'), { recursive: true, force: true });
   fs.mkdirSync(path.join(prefix, 'bin'), { recursive: true });
   fs.rmSync(path.join(prefix, 'bin', 'cpr'), { force: true });
-  fs.symlinkSync('../app/scripts/cpr.ts', path.join(prefix, 'bin', 'cpr'), 'file');
+  fs.symlinkSync('../app/scripts/cpr.js', path.join(prefix, 'bin', 'cpr'), 'file'); // 指向 JS 引导器：不依赖 .ts 带 +x 位（真机升级实测的坑），任何环境都能跑
 }
 
 // 当前生效版本 = current 软链 basename；未安装 = null

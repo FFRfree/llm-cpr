@@ -445,6 +445,7 @@ test('bootstrap：从 node_modules 路径跑 .ts 被 Node 拒 → cpr.js 引导�
   assert.match(r.stdout, /MODE=bootstrap/); // current 未翻转（翻转归 install 过门后，bootstrap 只铺路）
   assert.ok(!fs.existsSync(path.join(f.env.CPR_APP_ROOT, 'versions', '0.1.0', 'lib'))); // node_modules 空壳已清
   assert.ok(fs.existsSync(path.join(engineOf(f, '0.1.0'), 'scripts', 'cpr.ts')));
+  assert.equal(fs.readlinkSync(path.join(f.env.CPR_APP_ROOT, 'versions', '0.1.0', 'bin', 'cpr')), '../app/scripts/cpr.js'); // bin 指 JS 引导器（工单 14：.ts 无执行位时软链照跑）
 });
 
 // ---- uninstall ----

@@ -42,7 +42,7 @@ if (!fs.existsSync(path.join(appDir, 'scripts', 'cpr.ts'))) {
   fs.rmSync(path.join(prefix, 'lib'), { recursive: true, force: true }); // npm 落盘的空壳与指向旧地址的 bin 软链一并清掉
   fs.mkdirSync(path.join(prefix, 'bin'), { recursive: true });
   fs.rmSync(path.join(prefix, 'bin', 'cpr'), { force: true }); // npm 自建的那条指向 node_modules 旧地址，作废重指
-  fs.symlinkSync('../app/scripts/cpr.ts', path.join(prefix, 'bin', 'cpr'), 'file');
+  fs.symlinkSync('../app/scripts/cpr.js', path.join(prefix, 'bin', 'cpr'), 'file'); // 指向 JS 引导器：不依赖 .ts 带 +x 位，且任何环境都能跑
   console.log(`cpr: 引擎就位 ${appDir}（已搬离 node_modules）`);
 }
 
