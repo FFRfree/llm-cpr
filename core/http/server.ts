@@ -298,7 +298,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
   };
   const dbPath = env.CPR_DB_FILE || policy.db_file || env.CPR_SESSIONS_DB || policy.sessions_db
     || defaultDbPath(env);
-  // v0.2.0：无显式路径时默认 ~/.cpr/data.db（defaultDbPath 含 CPR_DATA_DIR 接缝）。
+  // v0.2.0：无显式路径时默认 ~/.llm-cpr/data.db（defaultDbPath 含 CPR_DATA_DIR 接缝）。
   // 旧兜底「代码目录上两层」已废——release/npm 目录整体替换，旧兜底会让新进程安静开一套空库。
   // SQLite 打开库不自建父目录：写库路径的父目录由这里负责建。
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });

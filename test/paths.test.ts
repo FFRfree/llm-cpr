@@ -1,4 +1,4 @@
-// v0.2.0 路径层：~/.cpr 单目录默认 + CPR_* 接缝 + .env 加载器 + 引擎 DB 兜底落点。
+// v0.2.0 路径层：~/.llm-cpr 单目录默认 + CPR_* 接缝 + .env 加载器 + 引擎 DB 兜底落点。
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,16 +9,16 @@ import { configDir, dataDir, defaultDbPath, envFile } from '../core/paths.ts';
 import { loadDotEnv } from '../core/envfile.ts';
 import { createGatewayServers } from '../core/http/server.ts';
 
-test('paths：默认全部落 ~/.cpr（os.homedir() 口径）', () => {
+test('paths：默认全部落 ~/.llm-cpr（os.homedir() 口径）', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-paths-home-'));
   const prev = process.env.HOME;
   process.env.HOME = home;
   try {
     const env: NodeJS.ProcessEnv = {};
-    assert.equal(configDir(env), path.join(home, '.cpr'));
-    assert.equal(dataDir(env), path.join(home, '.cpr'));
-    assert.equal(defaultDbPath(env), path.join(home, '.cpr', 'data.db'));
-    assert.equal(envFile(env), path.join(home, '.cpr', '.env'));
+    assert.equal(configDir(env), path.join(home, '.llm-cpr'));
+    assert.equal(dataDir(env), path.join(home, '.llm-cpr'));
+    assert.equal(defaultDbPath(env), path.join(home, '.llm-cpr', 'data.db'));
+    assert.equal(envFile(env), path.join(home, '.llm-cpr', '.env'));
   } finally {
     if (prev === undefined) delete process.env.HOME;
     else process.env.HOME = prev;

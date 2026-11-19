@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// 配置即代码（v0.2.0）：声明与策略 = ~/.cpr/policy.ts（用户真身，CPR_CONFIG_DIR 接缝可挪）或 core/policy/mine.ts（内置默认）。
-// 存在 ~/.cpr/policy.ts 则优先；坏声明在此拒绝启动（退出码 1）。
+// 配置即代码（v0.2.0）：声明与策略 = ~/.llm-cpr/policy.ts（用户真身，CPR_CONFIG_DIR 接缝可挪）或 core/policy/mine.ts（内置默认）。
+// 存在 ~/.llm-cpr/policy.ts 则优先；坏声明在此拒绝启动（退出码 1）。
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -29,7 +29,7 @@ function bootVersion(): string {
 }
 
 try {
-  // v0.2.0：引擎自己加载 ~/.cpr/.env（前台直跑无 systemd 时也能拿到密钥）；CPR_ENV_FILE 接缝优先
+  // v0.2.0：引擎自己加载 ~/.llm-cpr/.env（前台直跑无 systemd 时也能拿到密钥）；CPR_ENV_FILE 接缝优先
   // （与探针脚本同语义），只填缺失键不覆盖真实环境变量。systemd 场景 EnvironmentFile 先到、此处成无害重复。
   const envPath = envFile();
   if (fs.existsSync(envPath)) {

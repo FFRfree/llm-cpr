@@ -1,7 +1,7 @@
-// ~/.cpr/policy.ts 的模板（v0.2.0 起用户声明住 ~/.cpr 单目录，不进 clone/release）：
-// cp policy.example.ts ~/.cpr/policy.ts 后在里面改。本文件只是起点，代码从不加载它；无 policy.ts 时用内置 core/policy/mine.ts。
+// ~/.llm-cpr/policy.ts 的模板（v0.2.0 起用户声明住 ~/.llm-cpr 单目录，不进 clone/release）：
+// cp policy.example.ts ~/.llm-cpr/policy.ts 后在里面改。本文件只是起点，代码从不加载它；无 policy.ts 时用内置 core/policy/mine.ts。
 // 铁律：backends[].name 是身份键（亲和事件与账本都存它），定下来绝不改；alias 只是显示名。
-// 类型补全：经 ~/.cpr/tsconfig.json 的 paths 指路（cpr install 生成）；字段含义见 core/policy/contract.ts。类型导入运行时被擦除，加载不依赖它。
+// 类型补全：经 ~/.llm-cpr/tsconfig.json 的 paths 指路（cpr install 生成）；字段含义见 core/policy/contract.ts。类型导入运行时被擦除，加载不依赖它。
 import type { RouterPolicy } from 'llm-cpr';
 
 export default class MyPolicy implements RouterPolicy {
