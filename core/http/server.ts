@@ -10,6 +10,7 @@ import { chatCompletions } from '../protocols/chat-completions.ts';
 import { resolveIdentity } from '../store/identity.ts';
 import { createSystemEventStore, type SystemEventStore, type RouteEventDetail } from '../store/events.ts';
 import { openDatabase } from '../store/db.ts';
+import { runMigrations } from '../store/migrate.ts';
 import { defaultDbPath } from '../paths.ts';
 import { UsageSnapshots, currentSnapshot } from '../store/snapshots.ts';
 import { rankBackends, monthlyDebtScore } from '../policy/selection.ts';
@@ -302,6 +303,11 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
   // SQLite 打开库不自建父目录：写库路径的父目录由这里负责建。
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = openDatabase(dbPath);
+  // v0.2.0 迁移三件套（工单 04）：版本机在启动路径——只升不降、有存量先备份、失败 fail-fast 拒启动。
+  const migration = runMigrations(db, { dbFile: dbPath });
+  if (migration.status !== 'current') {
+    logger.log?.(`schema: ${migration.status === 'fresh' ? '新库' : `v${migration.from}`} → v${migration.to}${migration.applied.length ? `（${migration.applied.join('、')}）` : ''}${migration.backupDir ? `；已备份 → ${migration.backupDir}` : ''}`);
+  }
   const audit = new UsageAudit({ db, logger });
   // 路由事件账：bind/rebind/hold/policy.error，归属与冷却全是它的派生查询。
   const events = createSystemEventStore(db, logger);
