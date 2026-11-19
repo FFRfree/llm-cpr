@@ -151,7 +151,21 @@ export function runMigrations(db: DatabaseSync, { dbFile, steps = STEPS, targetV
   if (version > targetVersion) {
     throw new Error(`库 schema 版本 ${version} 高于代码支持的 ${targetVersion}——库来自更新版本的 llm-cpr，请先升级代码（cpr upgrade）再启动`);
   }
-  if (version === targetVersion) return { status: 'current', from: version, to: version, applied: [] };
+  // 「已是最新版本」不等于「形状最新」：加法类新列走 applyBaseline 幂等补齐（列存在即跳过），
+  // 不占步骤号、不触发备份——纯 ADD COLUMN/CREATE INDEX IF NOT EXISTS，与历史上 openDatabase
+  // 每次开库跑基线的语义同权。漏掉这里的教训见 2026-11-19 生产火情：v1 老库开 0.3.0 直接
+  // `no column named capture_id` 拒启动（升级器冒烟用的是新库，测不出存量库缺列）。
+  if (version === targetVersion) {
+    db.exec('BEGIN');
+    try {
+      applyBaseline(db);
+      db.exec('COMMIT');
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch {}
+      throw new Error(`存量库补齐基线形状失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+    return { status: 'current', from: version, to: version, applied: [] };
+  }
 
   const fresh = version === 0 && !hasRequests(db) && isEmptyDb(db);
   let backupDir: string | undefined;

@@ -107,6 +107,45 @@ test('migrate：已是当前版本 → current 零动作、不再备份', () => 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// 生产火情回归（2026-11-19）：v1 存量库（user_version=1）缺后加的加法列（capture_id），
+// 「current 短路返回」让基线补列永远不跑 → audit INSERT 23 列 prepare 时炸、服务重启循环。
+// 修复：current 路径也跑一次幂等 applyBaseline。夹具按生产形状手搭（列齐 v1 但无 capture_id、
+// 有数据行、user_version=1），断言开库即补列、行无损、无备份动作。
+test('migrate：v1 存量库缺后加列 → current 路径幂等补齐（capture_id），行无损', () => {
+  const dir = freshDir();
+  const file = path.join(dir, 'data.db');
+  {
+    const db = new DatabaseSync(file);
+    // v1 形状 = BASELINE_SCHEMA 去掉 capture_id（当年生产库的真实形状）
+    db.exec(`CREATE TABLE requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+      tenant TEXT NOT NULL DEFAULT 'default', identity TEXT, identity_kind TEXT NOT NULL,
+      subscription TEXT, account TEXT, model TEXT, translated_model TEXT, path TEXT,
+      status INTEGER, ms INTEGER, prompt_tokens INTEGER, completion_tokens INTEGER,
+      cache_hit_tokens INTEGER, cache_miss_tokens INTEGER, cache_write_tokens INTEGER,
+      total_tokens INTEGER, cache_observed INTEGER NOT NULL DEFAULT 0, cache_outcome TEXT,
+      ttft_ms INTEGER, stream_ms INTEGER, usage_json TEXT
+    )`);
+    db.exec(`CREATE TABLE system_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+      tenant TEXT NOT NULL DEFAULT 'default', kind TEXT NOT NULL,
+      identity_kind TEXT, identity_hash TEXT, backend_name TEXT, request_id INTEGER, detail TEXT
+    )`);
+    db.exec("INSERT INTO requests (ts, identity, identity_kind, subscription, status, ms) VALUES (1, 'sess', 'session', 'sub', 200, 5)");
+    db.exec('PRAGMA user_version = 1');
+    db.close();
+  }
+  const db = openForServer(file);
+  const result = runMigrations(db, { dbFile: file });
+  assert.equal(result.status, 'current');
+  assert.equal(result.backupDir, undefined);
+  assert.ok(requestsColumns(db).has('capture_id')); // 补齐（INSERT 23 列才能 prepare）
+  db.prepare("INSERT INTO requests (ts, identity, identity_kind, subscription, status, ms, capture_id) VALUES (2, 'sess', 'session', 'sub', 200, 5, 'c-1')").run();
+  assert.equal(Number(db.prepare('SELECT COUNT(*) AS n FROM requests').get()!.n), 2); // 旧行无损
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('migrate：库版本高于代码 → 拒启动，且拒之前不碰结构（基线未跑）', () => {
   const dir = freshDir();
   const file = path.join(dir, 'data.db');
