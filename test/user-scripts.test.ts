@@ -128,6 +128,9 @@ test('install --yes：写出 unit / .env(随机 master key) / ~/.cpr policy 三�
   assert.ok(unit.includes(`WorkingDirectory=${f.work}`));
   assert.ok(unit.includes(`EnvironmentFile=${f.env.CPR_CONFIG_DIR}/.env`));
   assert.ok(unit.includes(`CPR_DB_FILE=${f.env.CPR_DATA_DIR}/data.db`));
+  // unit 必须显式传接缝（review P2 修正）：systemd 不继承安装命令的环境，缺了会静默加载另一份 policy
+  assert.ok(unit.includes(`Environment=CPR_CONFIG_DIR=${f.env.CPR_CONFIG_DIR}`));
+  assert.ok(unit.includes(`Environment=CPR_DATA_DIR=${f.env.CPR_DATA_DIR}`));
   assert.ok(unit.includes('ExecStart=') && unit.includes('core/main.ts'));
 
   const envFile = path.join(f.env.CPR_CONFIG_DIR, '.env');
@@ -138,6 +141,7 @@ test('install --yes：写出 unit / .env(随机 master key) / ~/.cpr policy 三�
   assert.ok(fs.existsSync(path.join(f.env.CPR_CONFIG_DIR, 'policy.example.ts')));
   assert.ok(fs.existsSync(path.join(f.env.CPR_CONFIG_DIR, 'policy.ts')));
   assert.ok(fs.existsSync(path.join(f.env.CPR_CONFIG_DIR, 'tsconfig.json')));
+  assert.ok(fs.existsSync(path.join(f.env.CPR_CONFIG_DIR, 'package.json'))); // {"type":"module"}：外置 policy 的 ESM 判定
   assert.ok(fs.existsSync(f.env.CPR_DATA_DIR)); // 数据目录必须先建：SQLite 打不开缺父目录的库
 
   const calls = systemctlLog(f);

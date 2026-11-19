@@ -302,8 +302,8 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
   // 旧兜底「代码目录上两层」已废——release/npm 目录整体替换，旧兜底会让新进程安静开一套空库。
   // SQLite 打开库不自建父目录：写库路径的父目录由这里负责建。
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  const db = openDatabase(dbPath);
-  // v0.2.0 迁移三件套（工单 04）：版本机在启动路径——只升不降、有存量先备份、失败 fail-fast 拒启动。
+  const db = openDatabase(dbPath, { baseline: false });
+  // v0.2.0 迁移三件套（工单 04）：版本机在启动路径——只升不降、有存量先备份（备份先于基线 DDL）、失败 fail-fast 拒启动。
   const migration = runMigrations(db, { dbFile: dbPath });
   if (migration.status !== 'current') {
     logger.log?.(`schema: ${migration.status === 'fresh' ? '新库' : `v${migration.from}`} → v${migration.to}${migration.applied.length ? `（${migration.applied.join('、')}）` : ''}${migration.backupDir ? `；已备份 → ${migration.backupDir}` : ''}`);

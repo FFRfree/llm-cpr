@@ -236,6 +236,8 @@ WorkingDirectory=${root}
 ExecStart=${process.execPath} core/main.ts
 EnvironmentFile=${config}/.env
 Environment=CPR_DB_FILE=${data}/data.db
+Environment=CPR_CONFIG_DIR=${config}
+Environment=CPR_DATA_DIR=${data}
 Restart=on_failure_placeholder
 RestartSec=3
 NoNewPrivileges=yes
@@ -273,6 +275,13 @@ async function install(yes: boolean): Promise<number> {
   }
   // 编辑器类型补全指路：policy 文件 `import type ... from 'llm-cpr'` 靠这份 tsconfig 的 paths 解析；
   // 类型导入运行时被擦除，缺它只影响编辑器提示不影响加载。幂等：已存在不重写。
+  // 同目录的 package.json {"type":"module"} 让 NodeNext 把外置 policy 判成 ESM（review P3 修正）。
+  const pkgPath = path.join(policyDir, 'package.json');
+  if (fs.existsSync(pkgPath)) console.log(`cpr: ${pkgPath} 已存在，保留现状`);
+  else {
+    fs.writeFileSync(pkgPath, `${JSON.stringify({ type: 'module' }, null, 2)}\n`);
+    console.log(`cpr: 已写 ${pkgPath}（{"type":"module"}——外置 policy 的 ESM 判定）`);
+  }
   const tsconfigPath = path.join(policyDir, 'tsconfig.json');
   if (fs.existsSync(tsconfigPath)) console.log(`cpr: ${tsconfigPath} 已存在，保留现状`);
   else {
@@ -281,6 +290,7 @@ async function install(yes: boolean): Promise<number> {
       compilerOptions: {
         target: 'ES2023', module: 'NodeNext', moduleResolution: 'NodeNext', strict: true, noEmit: true,
         allowImportingTsExtensions: true, erasableSyntaxOnly: true, verbatimModuleSyntax: true,
+        skipLibCheck: true,
         baseUrl: '.',
         paths: { 'llm-cpr': [contract] },
       },

@@ -76,9 +76,16 @@ export interface MigrationStep {
   up: (db: DatabaseSync) => void;
 }
 
-// 步骤表：第 1 版是基线标记（结构由 applyBaseline 保证），后续非幂等变更从 version 2 起追加。
-// 加法类新列仍进 applyBaseline（SCHEMA + ALTER 两半），不占步骤号；步骤号留给搬数/换表/破坏性变更。
-const STEPS: MigrationStep[] = [];
+// 步骤表：第 1 步是基线（双表 + 补列 + 索引，幂等——SCHEMA 管新建、PRAGMA table_info + ALTER 管旧库，
+// 沿用立仓以来的加列套路）。加法类新列继续改 applyBaseline（不占新步骤号）；
+// 非幂等重活（搬数/换表/破坏性）从 v2 起追加步骤，每步一个事务、完成即写 user_version，中断可续。
+// 基线只在迁移步骤里跑（server 走 openDatabase({baseline:false})）——备份先于任何结构变更（review P2 修正）。
+const STEPS: MigrationStep[] = [
+  {
+    name: 'baseline: 双表 + 补列 + 索引（幂等）',
+    up: (db) => { applyBaseline(db); },
+  },
+];
 
 export interface MigrationResult {
   status: 'fresh' | 'upgraded' | 'current';
@@ -98,24 +105,39 @@ function hasRequests(db: DatabaseSync): boolean {
   return tables.has('requests');
 }
 
-// fresh 判定在 applyBaseline 之后做（openDatabase 开库即建表），所以不能看「表存在」，
-// 要看「表里有没有行」：版本机之前的存量库必有数据；刚建的新库是空表。
+// fresh 判定在版本机里做（server 开库不带基线），看「两本账都没有行」：
+// 版本机之前的存量库必有数据；requests 为空但 system_events 有行也是存量（决策账本身是持久数据）。
 function isEmptyDb(db: DatabaseSync): boolean {
-  if (!hasRequests(db)) return true;
-  const row = db.prepare('SELECT COUNT(*) AS n FROM requests').get() as { n: number | bigint };
-  return Number(row.n) === 0;
+  const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((entry) => entry.name));
+  const countOf = (table: string): number => {
+    if (!tables.has(table)) return 0;
+    const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number | bigint };
+    return Number(row.n);
+  };
+  return countOf('requests') === 0 && countOf('system_events') === 0;
 }
 
-// 迁移前备份：WAL checkpoint + 拷贝 + integrity check。任何一环失败都抛（调用方 fail fast 拒启动）。
+// 迁移前备份：WAL checkpoint（busy 即拒，绝不带不完整快照继续）+ 拷贝 + 对**备份产物**做 integrity check。
+// 任何一环失败都抛（调用方 fail fast 拒启动）。
 function backupBeforeMigrate(db: DatabaseSync, dbFile: string): string {
-  db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  const ckpt = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get() as { busy?: number | bigint; log?: number; checkpointed?: number };
+  if (Number(ckpt.busy ?? 0) !== 0) {
+    throw new Error(`WAL checkpoint busy（${JSON.stringify(ckpt)}）——还有别的连接持着读快照，此刻备份会缺最新已提交数据；先停掉占用本库的进程再启动`);
+  }
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const dir = path.join(path.dirname(dbFile), 'backups', stamp);
   fs.mkdirSync(dir, { recursive: true });
-  fs.copyFileSync(dbFile, path.join(dir, path.basename(dbFile)));
-  const check = db.prepare('PRAGMA integrity_check').get() as { integrity_check?: unknown };
-  if (String(check.integrity_check) !== 'ok') {
-    throw new Error(`${dbFile} integrity_check 未通过（${String(check.integrity_check)}），拒绝迁移——库已原样保留，备份在 ${dir}`);
+  const copyPath = path.join(dir, path.basename(dbFile));
+  fs.copyFileSync(dbFile, copyPath);
+  // 校验的是备份产物本身（review P1 修正）：源库 integrity 不能证明拷贝可用。
+  const verify = new DatabaseSync(copyPath, { readOnly: true });
+  try {
+    const check = verify.prepare('PRAGMA integrity_check').get() as { integrity_check?: unknown };
+    if (String(check.integrity_check) !== 'ok') {
+      throw new Error(`迁移前备份 ${copyPath} integrity_check 未通过（${String(check.integrity_check)}）——库已原样保留，拒绝迁移`);
+    }
+  } finally {
+    verify.close();
   }
   return dir;
 }
@@ -127,7 +149,7 @@ export function runMigrations(db: DatabaseSync, { dbFile, steps = STEPS, targetV
   }
   if (version === targetVersion) return { status: 'current', from: version, to: version, applied: [] };
 
-  const fresh = version === 0 && isEmptyDb(db);
+  const fresh = version === 0 && !hasRequests(db) && isEmptyDb(db);
   let backupDir: string | undefined;
   if (!fresh) {
     // 有存量数据的库先备份再动（新库无物可失）。
@@ -135,35 +157,20 @@ export function runMigrations(db: DatabaseSync, { dbFile, steps = STEPS, targetV
   }
 
   const applied: string[] = [];
-  // 从 version+1 升到 targetVersion；基线（v1）是幂等标记，重放无害。
+  // 从 version+1 升到 targetVersion；steps[next-1] 对应版本 next（steps[0]=基线）。基线幂等，重放无害。
   for (let next = version + 1; next <= targetVersion; next += 1) {
-    const name = next === 1
-      ? 'baseline: 双表 + 补列 + 索引（幂等，由 openDatabase 的 applyBaseline 保证）'
-      : steps[next - 2]?.name;
-    if (next === 1) {
-      // 基线：结构由 openDatabase 的 applyBaseline 保证，这里只原子地写版本号。
-      db.exec('BEGIN');
-      try {
-        db.exec('PRAGMA user_version = 1');
-        db.exec('COMMIT');
-      } catch (error) {
-        db.exec('ROLLBACK');
-        throw new Error(`标记 schema v1 失败：${error instanceof Error ? error.message : String(error)}——事务已回滚${backupDir ? `，备份在 ${backupDir}` : ''}`);
-      }
-    } else {
-      const step = steps[next - 2];
-      if (!step) throw new Error(`内部错误：schema v${next} 缺步骤定义（targetVersion=${targetVersion}，步骤表只有 ${steps.length} 步）`);
-      db.exec('BEGIN');
-      try {
-        step.up(db);
-        db.exec(`PRAGMA user_version = ${next}`);
-        db.exec('COMMIT');
-      } catch (error) {
-        db.exec('ROLLBACK');
-        throw new Error(`迁移到 schema v${next}（${step.name}）失败：${error instanceof Error ? error.message : String(error)}——事务已回滚${backupDir ? `，备份在 ${backupDir}` : ''}`);
-      }
+    const step = steps[next - 1];
+    if (!step) throw new Error(`内部错误：schema v${next} 缺步骤定义（targetVersion=${targetVersion}，步骤表只有 ${steps.length} 步）`);
+    db.exec('BEGIN');
+    try {
+      step.up(db);
+      db.exec(`PRAGMA user_version = ${next}`);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw new Error(`迁移到 schema v${next}（${step.name}）失败：${error instanceof Error ? error.message : String(error)}——事务已回滚${backupDir ? `，备份在 ${backupDir}` : ''}`);
     }
-    applied.push(name ?? `schema v${next}`);
+    applied.push(step.name);
   }
   return { status: fresh ? 'fresh' : 'upgraded', from: version, to: targetVersion, applied, backupDir };
 }

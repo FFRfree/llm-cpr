@@ -8,8 +8,11 @@ export function loadDotEnv(file: string, target: NodeJS.ProcessEnv = process.env
   let text: string;
   try {
     text = fs.readFileSync(file, 'utf8');
-  } catch {
-    return 0; // 文件不存在 = 无事发生
+  } catch (error) {
+    // 只有「文件不存在」是无事发生；存在但读不出来（路径是目录、权限等）原样抛——
+    // 静默吞掉等于用户配错了 .env 却毫无提示（review P2 修正）。
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return 0;
+    throw error;
   }
   let loaded = 0;
   for (const rawLine of text.split('\n')) {

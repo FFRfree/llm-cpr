@@ -6,7 +6,7 @@ import { applyBaseline } from './migrate.ts';
 // 运行中写入失败仍走各 store 的降级路径（不阻塞转发）。
 // 基线结构（SCHEMA/补列/索引）在 migrate.ts 的 applyBaseline——版本机（user_version + 备份）由 server 启动时挂。
 
-export function openDatabase(dbFile: string): DatabaseSync {
+export function openDatabase(dbFile: string, { baseline = true }: { baseline?: boolean } = {}): DatabaseSync {
   const db = new DatabaseSync(dbFile);
   // 旧双库防线：指向旧 sessions.db（有 session_routes/identity_migrations 但无 requests）
   // 或旧 usage.db（requests 带 routing_note 列）时拒绝启动——否则会在旧库里静默建空表、
@@ -24,7 +24,9 @@ export function openDatabase(dbFile: string): DatabaseSync {
     }
   }
   db.exec('PRAGMA journal_mode=WAL');
-  // 基线结构（双表 + 补列 + 索引）收编进 migrate.ts 的 applyBaseline（工单 04）；版本机在 server.ts 启动时挂。
-  applyBaseline(db);
+  // 基线结构（双表 + 补列 + 索引）收编进 migrate.ts 的 applyBaseline（工单 04）。
+  // 默认仍在此处跑（直连入口：audit.ts 的 dbFile 路径与既有测试依赖此行为）；
+  // server 启动路径传 baseline:false，让基线在迁移步骤 1 里跑——备份先于任何结构变更（review P2 修正）。
+  if (baseline) applyBaseline(db);
   return db;
 }

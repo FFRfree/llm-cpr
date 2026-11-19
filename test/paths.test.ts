@@ -53,6 +53,8 @@ test('loadDotEnv：只填缺失键、剥配对引号、跳注释与非法行、�
   assert.equal(target.C_KEY, 'single');
   assert.equal(target.D_KEY, 'spaced');
   assert.equal(loadDotEnv(path.join(dir, 'nope.env'), target), 0);
+  // 读不了 ≠ 不存在：路径是目录时原样抛（review P2 修正），不当无事发生吞掉
+  assert.throws(() => loadDotEnv(dir, target), /EISDIR/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
