@@ -11,12 +11,16 @@
     "types": [
       "node"
     ],
+    "paths": {
+      "llm-cpr": ["./core/policy/contract.ts"]
+    },
     "skipLibCheck": false
   },
   "include": [
     "core/**/*.ts",
     "test/**/*.ts",
     "scripts/**/*.ts",
-    "type-tests/**/*.ts"
+    "type-tests/**/*.ts",
+    "policy.example.ts"
   ]
 }

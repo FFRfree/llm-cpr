@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// 配置即代码：声明与策略 = policy.local.ts（用户自定义，gitignored）或 core/policy/mine.ts（仓库默认）。
-// 存在 policy.local.ts 则优先；坏声明在此拒绝启动（退出码 1）。
+// 配置即代码（v0.2.0）：声明与策略 = ~/.cpr/policy.ts（用户真身，CPR_CONFIG_DIR 接缝可挪）或 core/policy/mine.ts（内置默认）。
+// 存在 ~/.cpr/policy.ts 则优先；坏声明在此拒绝启动（退出码 1）。
 import fs from 'node:fs';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { startGateway } from './http/server.ts';
 import { validateConfig } from './policy/config.ts';
-import { envFile } from './paths.ts';
+import { configDir, envFile } from './paths.ts';
 import { loadDotEnv } from './envfile.ts';
 import type { RouterPolicy } from './policy/contract.ts';
 
@@ -35,12 +36,12 @@ try {
     const loadedKeys = loadDotEnv(envPath);
     if (loadedKeys > 0) console.log(`env: ${envPath}（${loadedKeys} 键）`);
   }
-  const localUrl = new URL('../policy.local.ts', import.meta.url);
-  const source = fs.existsSync(localUrl) ? 'policy.local.ts' : 'core/policy/mine.ts';
+  const localPath = path.join(configDir(), 'policy.ts');
+  const source = fs.existsSync(localPath) ? localPath : 'core/policy/mine.ts';
   // 动态 import 用变量路径：文件存在与否已用 existsSync 判定，import 失败（语法错/坏 import）一律原样抛。
-  const loaded = source === 'policy.local.ts'
-    ? await import(localUrl.href)
-    : await import('./policy/mine.ts');
+  const loaded = source === 'core/policy/mine.ts'
+    ? await import('./policy/mine.ts')
+    : await import(pathToFileURL(localPath).href);
   const PolicyCtor = loaded.default as new () => RouterPolicy;
   const policy = new PolicyCtor();
   try {

@@ -4,4 +4,3 @@ config.json
 *.db
 *.db-shm
 *.db-wal
-/policy.local.ts

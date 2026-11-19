@@ -117,7 +117,7 @@ test('doctor：干净仓报告 BEHIND/AHEAD/DIRTY 结论行', () => {
 
 // ---- install ----
 
-test('install --yes：写出 unit / .env(随机 master key) / policy.local.ts，并 enable --now', () => {
+test('install --yes：写出 unit / .env(随机 master key) / ~/.cpr policy 三件套，并 enable --now', () => {
   const f = makeFixture();
   const r = cpr(f.work, ['install', '--yes'], f.env);
   assert.equal(r.status, 0, r.stderr + r.stdout);
@@ -135,7 +135,9 @@ test('install --yes：写出 unit / .env(随机 master key) / policy.local.ts，
   const envText = fs.readFileSync(envFile, 'utf8');
   assert.match(envText, /^CPR_MASTER_KEY=[0-9a-f]{48}$/m);
 
-  assert.ok(fs.existsSync(path.join(f.work, 'policy.local.ts')));
+  assert.ok(fs.existsSync(path.join(f.env.CPR_CONFIG_DIR, 'policy.example.ts')));
+  assert.ok(fs.existsSync(path.join(f.env.CPR_CONFIG_DIR, 'policy.ts')));
+  assert.ok(fs.existsSync(path.join(f.env.CPR_CONFIG_DIR, 'tsconfig.json')));
   assert.ok(fs.existsSync(f.env.CPR_DATA_DIR)); // 数据目录必须先建：SQLite 打不开缺父目录的库
 
   const calls = systemctlLog(f);
@@ -143,17 +145,17 @@ test('install --yes：写出 unit / .env(随机 master key) / policy.local.ts，
   assert.ok(calls.includes(`enable --now ${UNIT}`));
 });
 
-test('install 重复执行幂等：.env 与 policy.local.ts 不被重置', () => {
+test('install 重复执行幂等：.env 与 policy.ts 不被重置', () => {
   const f = makeFixture();
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
   const envBefore = fs.readFileSync(path.join(f.env.CPR_CONFIG_DIR, '.env'), 'utf8');
-  const localBefore = fs.readFileSync(path.join(f.work, 'policy.local.ts'), 'utf8');
+  const localBefore = fs.readFileSync(path.join(f.env.CPR_CONFIG_DIR, 'policy.ts'), 'utf8');
   const callsBefore = systemctlLog(f).length;
 
   const r = cpr(f.work, ['install', '--yes'], f.env);
   assert.equal(r.status, 0, r.stderr + r.stdout);
   assert.equal(fs.readFileSync(path.join(f.env.CPR_CONFIG_DIR, '.env'), 'utf8'), envBefore);
-  assert.equal(fs.readFileSync(path.join(f.work, 'policy.local.ts'), 'utf8'), localBefore);
+  assert.equal(fs.readFileSync(path.join(f.env.CPR_CONFIG_DIR, 'policy.ts'), 'utf8'), localBefore);
   assert.ok(systemctlLog(f).length > callsBefore); // daemon-reload 仍会执行
 });
 
@@ -318,8 +320,10 @@ async function bootMain(root: string, extra: Env): Promise<{ subscriptions: { na
       CPR_ADMIN_PORT: String(adminPort),
       CPR_SESSIONS_DB: path.join(dbs, 'sessions.db'),
       CPR_USAGE_DB: path.join(dbs, 'usage.db'),
-      // .env 加载器（v0.2.0）默认读 ~/.cpr/.env——钉到 tmp，保证测试 hermetic 不摸真家目录
+      // .env / policy 加载（v0.2.0）默认读 ~/.cpr——钉到 tmp，保证测试 hermetic 不摸真家目录；
+      // ...extra 收尾，个别测试可用自己的 CPR_CONFIG_DIR 覆盖（local policy 优先生效用例）。
       CPR_CONFIG_DIR: dbs,
+      ...extra,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -340,7 +344,7 @@ async function bootMain(root: string, extra: Env): Promise<{ subscriptions: { na
   throw new Error(`main.ts 未在时限内起来：${stdout}`);
 }
 
-test('main.ts：无 policy.local.ts 回落 core/policy/mine.ts', async () => {
+test('main.ts：无 ~/.cpr/policy.ts 回落 core/policy/mine.ts', async () => {
   const root = makeMainCopy('twin-stub');
   const { subscriptions, stdout, child } = await bootMain(root, {});
   try {
@@ -351,22 +355,24 @@ test('main.ts：无 policy.local.ts 回落 core/policy/mine.ts', async () => {
   }
 });
 
-test('main.ts：有 policy.local.ts 则优先生效', async () => {
+test('main.ts：有 ~/.cpr/policy.ts 则优先生效', async () => {
   const root = makeMainCopy('twin-stub');
-  fs.writeFileSync(path.join(root, 'policy.local.ts'), LOCAL_POLICY('local-stub'));
-  const { subscriptions, stdout, child } = await bootMain(root, {});
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-local-policy-'));
+  fs.writeFileSync(path.join(cfg, 'policy.ts'), LOCAL_POLICY('local-stub'));
+  const { subscriptions, stdout, child } = await bootMain(root, { CPR_CONFIG_DIR: cfg });
   try {
     assert.deepEqual(subscriptions.map((s) => s.name), ['local-stub']);
-    assert.match(stdout, /policy: policy\.local\.ts/);
+    assert.match(stdout, /policy: .*policy\.ts/);
   } finally {
     child.kill('SIGTERM');
   }
 });
 
-test('main.ts：坏 policy.local.ts 拒绝启动且报错指向该文件', () => {
+test('main.ts：坏 ~/.cpr/policy.ts 拒绝启动且报错指向该文件', () => {
   const root = makeMainCopy('twin-stub');
-  fs.writeFileSync(path.join(root, 'policy.local.ts'), 'export default class Bad { backends = []; models = [] }\n');
-  const r = spawnSync(process.execPath, ['core/main.ts'], { cwd: root, encoding: 'utf8' });
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-bad-policy-'));
+  fs.writeFileSync(path.join(cfg, 'policy.ts'), 'export default class Bad { backends = []; models = [] }\n');
+  const r = spawnSync(process.execPath, ['core/main.ts'], { cwd: root, encoding: 'utf8', env: { ...process.env, CPR_CONFIG_DIR: cfg } });
   assert.equal(r.status, 1);
-  assert.match(r.stderr ?? '', /policy\.local\.ts/);
+  assert.match(r.stderr ?? '', /policy\.ts/);
 });

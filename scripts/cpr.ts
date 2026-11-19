@@ -255,12 +255,38 @@ async function install(yes: boolean): Promise<number> {
   console.log(`cpr: Node ${node.have} ✓`);
 
   const example = path.join(root, 'policy.example.ts');
-  const local = path.join(root, 'policy.local.ts');
   if (!fs.existsSync(example)) die('仓库缺 policy.example.ts——clone 不完整，重新克隆');
-  if (fs.existsSync(local)) console.log('cpr: policy.local.ts 已存在，保留现状');
+  // v0.2.0：用户声明住 ~/.cpr（configDir 接缝），不进 clone/release——升级永不冲掉用户文件。
+  const policyDir = configDir();
+  fs.mkdirSync(policyDir, { recursive: true });
+  const exampleDest = path.join(policyDir, 'policy.example.ts');
+  if (fs.existsSync(exampleDest)) console.log(`cpr: ${exampleDest} 已存在，保留现状`);
   else {
-    fs.copyFileSync(example, local);
-    console.log('cpr: 已从模板创建 policy.local.ts——订阅声明在里面改（name 定了绝不改）');
+    fs.copyFileSync(example, exampleDest);
+    console.log(`cpr: 已写模板 ${exampleDest}`);
+  }
+  const local = path.join(policyDir, 'policy.ts');
+  if (fs.existsSync(local)) console.log(`cpr: ${local} 已存在，保留现状`);
+  else {
+    fs.copyFileSync(exampleDest, local);
+    console.log(`cpr: 已从模板创建 ${local}——订阅声明在里面改（name 定了绝不改）`);
+  }
+  // 编辑器类型补全指路：policy 文件 `import type ... from 'llm-cpr'` 靠这份 tsconfig 的 paths 解析；
+  // 类型导入运行时被擦除，缺它只影响编辑器提示不影响加载。幂等：已存在不重写。
+  const tsconfigPath = path.join(policyDir, 'tsconfig.json');
+  if (fs.existsSync(tsconfigPath)) console.log(`cpr: ${tsconfigPath} 已存在，保留现状`);
+  else {
+    const contract = path.join(root, 'core', 'policy', 'contract.ts');
+    fs.writeFileSync(tsconfigPath, `${JSON.stringify({
+      compilerOptions: {
+        target: 'ES2023', module: 'NodeNext', moduleResolution: 'NodeNext', strict: true, noEmit: true,
+        allowImportingTsExtensions: true, erasableSyntaxOnly: true, verbatimModuleSyntax: true,
+        baseUrl: '.',
+        paths: { 'llm-cpr': [contract] },
+      },
+      include: ['policy.ts', 'policy.example.ts'],
+    }, null, 2)}\n`);
+    console.log(`cpr: 已写 ${tsconfigPath}（类型补全指路）`);
   }
 
   const envFile = path.join(configDir(), '.env');
@@ -272,7 +298,7 @@ async function install(yes: boolean): Promise<number> {
     const masterKey = crypto.randomBytes(24).toString('hex');
     const text = base.replace(/^CPR_MASTER_KEY=.*$/m, `CPR_MASTER_KEY=${masterKey}`);
     fs.writeFileSync(envFile, text, { mode: 0o600 });
-    console.log(`cpr: 已生成 ${envFile}（已随机生成 CPR_MASTER_KEY；订阅 key 按 policy.local.ts 的 key_env 名补齐）`);
+    console.log(`cpr: 已生成 ${envFile}（已随机生成 CPR_MASTER_KEY；订阅 key 按 policy.ts 的 key_env 名补齐）`);
   }
 
   // 数据目录必须先建：node:sqlite 打开库文件不会自动创建父目录，缺目录首次启动直接失败。
