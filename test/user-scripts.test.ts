@@ -1,6 +1,6 @@
-// scripts/cpr.ts（doctor/install/upgrade/uninstall）+ main.ts policy 加载的用户侧验收。
-// 全部经临时 fixture git 仓 + 注入式 systemctl/测试命令运行，绝不触碰本机生产服务与真实 unit。
-// 隔离口径见 .scratch/user-scripts/issues/06-test-harness.md。
+// scripts/cpr.ts（doctor/install/upgrade/uninstall，v0.2.0 npm 形态）+ main.ts policy 加载的用户侧验收。
+// 全部经临时 fixture（最小包根拷贝）+ 注入式 systemctl/loginctl/npm stub 运行，绝不触碰本机生产服务与真实 unit。
+// 隔离口径见 .scratch/user-scripts/issues/06-test-harness.md；真 systemd 一次性 e2e 按惯例现场构造、不进常驻套件。
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
@@ -13,28 +13,18 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
-const SCRIPT = path.join(REPO, 'scripts', 'cpr.ts');
 const UNIT = 'llm-cpr.service';
 
 type Env = Record<string, string>;
 
-function git(dir: string, args: string[]): string {
-  const r = spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
-  assert.equal(r.status, 0, `git ${args.join(' ')} 失败：${r.stderr}`);
-  return (r.stdout ?? '').trim();
-}
+interface Fixture { base: string; work: string; env: Env }
 
-function commitAll(dir: string, message: string): void {
-  git(dir, ['add', '-A']);
-  git(dir, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', message]);
-}
-
-interface Fixture { base: string; work: string; origin: string; env: Env }
-
+// v0.2.0 npm 形态 fixture：最小包根拷贝（scripts/ + package.json + core stub），无 git。
+// npm stub 的 install 会把版本写进状态文件；systemctl stub 的 is-active 按状态文件判活——
+// 靠这对联动可以端到端复现「新版起不来 → 自动装回旧版 → 服务恢复」的回滚主线。
 function makeFixture(): Fixture {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-user-scripts-'));
   const work = path.join(base, 'work');
-  const origin = path.join(base, 'origin.git');
   fs.mkdirSync(work);
   fs.cpSync(path.join(REPO, 'scripts'), path.join(work, 'scripts'), { recursive: true });
   fs.cpSync(path.join(REPO, 'package.json'), path.join(work, 'package.json'));
@@ -42,31 +32,69 @@ function makeFixture(): Fixture {
   fs.mkdirSync(path.join(work, 'core', 'policy'), { recursive: true });
   fs.writeFileSync(path.join(work, 'core', 'main.ts'), '// fixture stub\n');
   fs.writeFileSync(path.join(work, 'policy.example.ts'), '// fixture 模板\n');
-  git(work, ['init', '-b', 'master']);
-  commitAll(work, 'init');
-  const bare = spawnSync('git', ['clone', '--bare', work, origin], { encoding: 'utf8' });
-  assert.equal(bare.status, 0, bare.stderr);
-  git(work, ['remote', 'add', 'origin', origin]);
+  // fixture 版本号：真实包是 0.0.0（发布前），fixture 统一起始 0.1.0 让升级用例有明确的「当前值」
+  const pkgPath = path.join(work, 'package.json');
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version: string };
+  pkg.version = '0.1.0';
+  fs.writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
 
-  const stub = path.join(base, 'systemctl-stub.sh');
-  fs.writeFileSync(stub, '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$CPR_SYSTEMCTL_LOG"\nexit 0\n');
-  fs.chmodSync(stub, 0o755);
+  const versionState = path.join(base, 'version-state');
+  fs.writeFileSync(versionState, '0.1.0\n');
+  const systemctlStub = path.join(base, 'systemctl-stub.sh');
+  fs.writeFileSync(systemctlStub, [
+    '#!/bin/sh',
+    'printf \'%s\\n\' "$*" >> "$CPR_SYSTEMCTL_LOG"',
+    'case " $* " in',
+    '  *" is-active "*)',
+    '    v=$(cat "$CPR_VERSION_STATE" 2>/dev/null || echo none)',
+    '    [ "$v" = "$CPR_BAD_VERSION" ] && exit 3',
+    '    exit 0 ;;',
+    'esac',
+    'exit 0',
+    '',
+  ].join('\n'));
+  fs.chmodSync(systemctlStub, 0o755);
+  const npmStub = path.join(base, 'npm-stub.sh');
+  fs.writeFileSync(npmStub, [
+    '#!/bin/sh',
+    'printf \'%s\\n\' "$*" >> "$CPR_NPM_LOG"',
+    'case " $* " in',
+    '  *" view "*) printf \'%s\\n\' "$CPR_NPM_LATEST"; exit 0 ;;',
+    '  *" install "*)',
+    '    for a in "$@"; do case "$a" in llm-cpr@*) printf \'%s\' "${a#llm-cpr@}" > "$CPR_VERSION_STATE";; esac; done',
+    '    exit 0 ;;',
+    'esac',
+    'exit 1',
+    '',
+  ].join('\n'));
+  fs.chmodSync(npmStub, 0o755);
+  const loginctlStub = path.join(base, 'loginctl-stub.sh');
+  fs.writeFileSync(loginctlStub, '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$CPR_LOGINCTL_LOG"\nexit 0\n');
+  fs.chmodSync(loginctlStub, 0o755);
   const env: Env = {
     // 接缝全集显式钉死：父进程若带着 CPR_*（如 e2e 的 CPR_UNIT_NAME）进来会污染 fixture 断言。
     CPR_UNIT_NAME: UNIT,
-    CPR_SYSTEMCTL: stub,
+    CPR_SYSTEMCTL: systemctlStub,
     CPR_SYSTEMCTL_LOG: path.join(base, 'systemctl.log'),
     CPR_UNIT_DIR: path.join(base, 'unit'),
     CPR_CONFIG_DIR: path.join(base, 'config'),
     CPR_DATA_DIR: path.join(base, 'data'),
-    CPR_TEST_CMD: 'node -e ""',
     CPR_SMOKE_CMD: 'true',
+    CPR_NPM: npmStub,
+    CPR_NPM_LOG: path.join(base, 'npm.log'),
+    CPR_NPM_LATEST: '0.2.0',
+    CPR_VERSION_STATE: versionState,
+    CPR_BAD_VERSION: 'never-matches',
+    CPR_LOGINCTL: loginctlStub,
+    CPR_LOGINCTL_LOG: path.join(base, 'loginctl.log'),
+    CPR_HEALTH_DELAY_MS: '10',
   };
-  return { base, work, origin, env };
+  return { base, work, env };
 }
 
 function cpr(work: string, args: string[], env: Env): { status: number; stdout: string; stderr: string } {
-  const r = spawnSync(process.execPath, [SCRIPT, ...args], { cwd: work, env: { ...process.env, ...env }, encoding: 'utf8' });
+  // 跑 fixture 拷贝里的 cpr.ts：v0.2.0 的包根按脚本自身位置推算（与 cwd 无关），拷贝即最小包根。
+  const r = spawnSync(process.execPath, [path.join(work, 'scripts', 'cpr.ts'), ...args], { cwd: work, env: { ...process.env, ...env }, encoding: 'utf8' });
   return { status: r.status ?? -1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }
 
@@ -75,21 +103,10 @@ function systemctlLog(fixture: Fixture): string[] {
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean) : [];
 }
 
-// 上游推进：从 origin 克隆一个工作副本，按需改文件，提交并推回。
-function upstreamCommit(fixture: Fixture, edit: (dir: string) => void): void {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-us-upstream-'));
-  const clone = spawnSync('git', ['clone', fixture.origin, dir], { encoding: 'utf8' });
-  assert.equal(clone.status, 0, clone.stderr);
-  git(dir, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'config', 'user.email', 't@t']);
-  git(dir, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'config', 'user.name', 't']);
-  edit(dir);
-  commitAll(dir, 'upstream change');
-  const push = spawnSync('git', ['-C', dir, 'push', 'origin', 'master'], { encoding: 'utf8' });
-  assert.equal(push.status, 0, push.stderr);
+function npmLog(fixture: Fixture): string[] {
+  const file = fixture.env.CPR_NPM_LOG;
+  return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean) : [];
 }
-
-const upstreamAddFile = (fixture: Fixture): void =>
-  upstreamCommit(fixture, (dir) => { fs.writeFileSync(path.join(dir, 'core', 'extra.ts'), '// upstream new\n'); });
 
 async function freePort(): Promise<number> {
   const server = net.createServer();
@@ -104,15 +121,25 @@ async function freePort(): Promise<number> {
 
 // ---- doctor ----
 
-test('doctor：干净仓报告 BEHIND/AHEAD/DIRTY 结论行', () => {
+test('doctor（npm 形态）：报告 PKGROOT/VERSION/LATEST/NEXT 结论行', () => {
   const f = makeFixture();
   const r = cpr(f.work, ['doctor'], f.env);
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /FETCHED=1/);
-  assert.match(r.stdout, /BEHIND=0/);
-  assert.match(r.stdout, /AHEAD=0/);
-  assert.match(r.stdout, /DIRTY=none/);
-  assert.match(r.stdout, /NEXT=已是最新/);
+  assert.ok(r.stdout.includes(`PKGROOT=${f.work}`));
+  assert.match(r.stdout, /MODE=npm/);
+  assert.match(r.stdout, /VERSION=0\.1\.0/);
+  assert.match(r.stdout, /LATEST=0\.2\.0/);
+  assert.match(r.stdout, /DB=.*（不存在/);
+  assert.match(r.stdout, /NEXT=有新版：cpr upgrade（当前 0\.1\.0 → 0\.2\.0）/);
+});
+
+test('doctor（clone 形态）：MODE=clone，NEXT 指向 git pull', () => {
+  const f = makeFixture();
+  fs.mkdirSync(path.join(f.work, '.git'));
+  const r = cpr(f.work, ['doctor'], f.env);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /MODE=clone/);
+  assert.match(r.stdout, /NEXT=clone 路线：git pull 自行升级/);
 });
 
 // ---- install ----
@@ -145,8 +172,11 @@ test('install --yes：写出 unit / .env(随机 master key) / ~/.cpr policy 三�
   assert.ok(fs.existsSync(f.env.CPR_DATA_DIR)); // 数据目录必须先建：SQLite 打不开缺父目录的库
 
   const calls = systemctlLog(f);
-  assert.ok(calls.includes('daemon-reload'));
-  assert.ok(calls.includes(`enable --now ${UNIT}`));
+  assert.ok(calls.includes('--user daemon-reload'));
+  assert.ok(calls.includes(`--user enable --now ${UNIT}`));
+  assert.ok(unit.includes('WantedBy=default.target')); // 用户级 unit 的自启目标是 default.target
+  const lingerLog = fs.existsSync(f.env.CPR_LOGINCTL_LOG) ? fs.readFileSync(f.env.CPR_LOGINCTL_LOG, 'utf8') : '';
+  assert.match(lingerLog, /enable-linger/); // install 顺手开 linger：登出后服务照跑
 });
 
 test('install 重复执行幂等：.env 与 policy.ts 不被重置', () => {
@@ -165,73 +195,57 @@ test('install 重复执行幂等：.env 与 policy.ts 不被重置', () => {
 
 // ---- upgrade ----
 
-test('upgrade：干净落后 → ff-only 前进，默认不重启', () => {
+// ---- upgrade（v0.2.0 npm 形态）----
+
+test('upgrade：clone 形态拒绝（引擎开发者走 git）', () => {
   const f = makeFixture();
-  upstreamAddFile(f);
-  const r = cpr(f.work, ['upgrade'], f.env);
-  assert.equal(r.status, 0, r.stderr + r.stdout);
-  assert.equal(git(f.work, ['rev-parse', '--short', 'HEAD']), git(f.work, ['rev-parse', '--short', 'origin/master']));
-  assert.match(r.stdout, /代码已到/);
-  assert.ok(!systemctlLog(f).some((line) => line.startsWith('restart')));
-});
-
-test('upgrade --yes：ff-only 后重启一次', () => {
-  const f = makeFixture();
-  upstreamAddFile(f);
-  const r = cpr(f.work, ['upgrade', '--yes'], f.env);
-  assert.equal(r.status, 0, r.stderr + r.stdout);
-  assert.deepEqual(systemctlLog(f).filter((line) => line.startsWith('restart')), [`restart ${UNIT}`]);
-});
-
-test('upgrade --yes：分叉（落后+领先）→ rebase 重放本地 commit', () => {
-  const f = makeFixture();
-  upstreamAddFile(f);
-  fs.writeFileSync(path.join(f.work, 'core', 'mine-extra.ts'), '// mine\n');
-  commitAll(f.work, 'mine change');
-  git(f.work, ['fetch', 'origin']);
-  assert.equal(Number(git(f.work, ['rev-list', '--count', 'HEAD..origin/master'])), 1);
-  assert.equal(Number(git(f.work, ['rev-list', '--count', 'origin/master..HEAD'])), 1);
-
-  const r = cpr(f.work, ['upgrade', '--yes'], f.env);
-  assert.equal(r.status, 0, r.stderr + r.stdout);
-  // rebase 后 HEAD 是重放出的新 commit（SHA ≠ origin/master）；断言祖先关系 + 双方内容都在。
-  assert.equal(git(f.work, ['rev-list', '--count', 'HEAD..origin/master']), '0');
-  assert.equal(git(f.work, ['rev-list', '--count', 'origin/master..HEAD']), '1');
-  assert.ok(fs.existsSync(path.join(f.work, 'core', 'mine-extra.ts'))); // 本地 commit 重放成功
-  assert.ok(fs.existsSync(path.join(f.work, 'core', 'extra.ts'))); // 上游 commit 也在
-});
-
-test('upgrade：rebase 撞冲突 → abort 原地还原、退出非零', () => {
-  const f = makeFixture();
-  const mainFile = path.join(f.work, 'core', 'main.ts');
-  // 上游把同一行改成 UPSTREAM，本地改成 LOCAL——rebase 必撞
-  upstreamCommit(f, (dir) => { fs.writeFileSync(path.join(dir, 'core', 'main.ts'), '// UPSTREAM\n'); });
-  fs.writeFileSync(mainFile, '// LOCAL\n');
-  commitAll(f.work, 'local change');
-  const headBefore = git(f.work, ['rev-parse', 'HEAD']);
-  const contentBefore = fs.readFileSync(mainFile, 'utf8');
-
+  fs.mkdirSync(path.join(f.work, '.git'));
   const r = cpr(f.work, ['upgrade', '--yes'], f.env);
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /abort 原地恢复/);
-  assert.match(r.stderr, /core\/main\.ts/);
-  assert.equal(git(f.work, ['rev-parse', 'HEAD']), headBefore); // HEAD 未动
-  assert.equal(fs.readFileSync(mainFile, 'utf8'), contentBefore); // 工作树逐字节还原
-  assert.equal(git(f.work, ['status', '--porcelain']).trim(), ''); // 干净如初
-  assert.ok(!fs.existsSync(path.join(f.work, '.git', 'rebase-merge')));
-  assert.ok(!fs.existsSync(path.join(f.work, '.git', 'rebase-apply')));
+  assert.match(r.stderr, /clone/);
+  assert.deepEqual(npmLog(f), []); // 零 npm 动作（拒绝发生在查 registry 之前，日志都可能不存在）
 });
 
-test('upgrade：脏跟踪文件无条件拒绝且零副作用', () => {
+test('upgrade：已是最新 → 零动作退出 0', () => {
   const f = makeFixture();
-  upstreamAddFile(f);
-  fs.writeFileSync(path.join(f.work, 'core', 'main.ts'), '// 半成品改动\n');
+  const r = cpr(f.work, ['upgrade', '--yes'], { ...f.env, CPR_NPM_LATEST: '0.1.0' });
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /已是最新（0\.1\.0）/);
+  assert.equal(fs.readFileSync(f.env.CPR_NPM_LOG, 'utf8').trim(), 'view llm-cpr version');
+  assert.deepEqual(systemctlLog(f), []); // 零 systemd 动作
+});
+
+test('upgrade --yes：npm 装新版 → restart → is-active 门通过', () => {
+  const f = makeFixture();
   const r = cpr(f.work, ['upgrade', '--yes'], f.env);
-  assert.equal(r.status, 1);
-  assert.match(r.stderr, /core\/main\.ts/);
-  assert.match(r.stderr, /git commit/); // 三条出路提示
-  assert.deepEqual(systemctlLog(f), []); // 没有任何 systemd 动作
-  assert.match(fs.readFileSync(path.join(f.work, 'core', 'main.ts'), 'utf8'), /半成品/); // 改动原样保留
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const npmLog = fs.readFileSync(f.env.CPR_NPM_LOG, 'utf8').split('\n').filter(Boolean);
+  assert.ok(npmLog.includes('view llm-cpr version'));
+  assert.ok(npmLog.includes('install -g llm-cpr@0.2.0'));
+  assert.ok(systemctlLog(f).includes(`--user restart ${UNIT}`));
+  assert.match(r.stdout, /完成。0\.1\.0 → 0\.2\.0，服务健康/);
+});
+
+test('upgrade --yes：新版起不来 → 自动装回旧版并恢复（回滚主线）', () => {
+  const f = makeFixture();
+  // CPR_BAD_VERSION=0.2.0：is-active 对「状态文件 = 0.2.0」判为非 active（systemctl stub 联动）
+  const r = cpr(f.work, ['upgrade', '--yes'], { ...f.env, CPR_BAD_VERSION: '0.2.0' });
+  assert.equal(r.status, 1); // 升级失败（尽管服务已恢复）
+  const npmLog = fs.readFileSync(f.env.CPR_NPM_LOG, 'utf8').split('\n').filter(Boolean);
+  assert.ok(npmLog.includes('install -g llm-cpr@0.2.0'));
+  assert.ok(npmLog.includes('install -g llm-cpr@0.1.0')); // 自动回滚装回旧版
+  assert.match(r.stderr, /未通过健康检查/);
+  assert.match(r.stderr, /已自动退回 0\.1\.0，服务已恢复/);
+  assert.equal(fs.readFileSync(f.env.CPR_VERSION_STATE, 'utf8'), '0.1.0'); // 磁盘上确实回到旧版
+});
+
+test('upgrade --to 0.0.5 --yes：跳过 registry 查询直装指定版', () => {
+  const f = makeFixture();
+  const r = cpr(f.work, ['upgrade', '--to', '0.0.5', '--yes'], f.env);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const npmLog = fs.readFileSync(f.env.CPR_NPM_LOG, 'utf8').split('\n').filter(Boolean);
+  assert.ok(!npmLog.some((line) => line.includes('view'))); // --to 不查 registry
+  assert.ok(npmLog.includes('install -g llm-cpr@0.0.5'));
 });
 
 // ---- uninstall ----
@@ -240,7 +254,7 @@ test('uninstall：停服务失败 → 拒绝继续，unit 与数据原样保留'
   const f = makeFixture();
   const failStub = path.join(f.base, 'systemctl-fail.sh');
   // 服务在跑（is-active 成功）但 disable 失败——正好卡进新守卫的拒绝分支
-  fs.writeFileSync(failStub, '#!/bin/sh\ncase "$1" in disable) exit 1;; esac\nexit 0\n');
+  fs.writeFileSync(failStub, '#!/bin/sh\ncase " $* " in *" disable "*) exit 1;; esac\nexit 0\n');
   fs.chmodSync(failStub, 0o755);
   fs.mkdirSync(f.env.CPR_UNIT_DIR, { recursive: true });
   fs.writeFileSync(path.join(f.env.CPR_UNIT_DIR, UNIT), '# dummy unit\n');
@@ -267,7 +281,7 @@ test('uninstall：删 unit、停服务，数据目录原样保留；--purge 需 
   let r = cpr(f.work, ['uninstall'], f.env);
   assert.equal(r.status, 0, r.stderr);
   assert.ok(!fs.existsSync(path.join(f.env.CPR_UNIT_DIR, UNIT)));
-  assert.ok(systemctlLog(f).includes(`disable --now ${UNIT}`));
+  assert.ok(systemctlLog(f).includes(`--user disable --now ${UNIT}`));
   assert.equal(fs.readFileSync(path.join(f.env.CPR_DATA_DIR, 'usage.db'), 'utf8'), 'rows');
   assert.equal(fs.readFileSync(path.join(f.env.CPR_CONFIG_DIR, '.env'), 'utf8'), 'CPR_MASTER_KEY=x\n');
 

@@ -1,36 +1,37 @@
 #!/usr/bin/env node
-// scripts/cpr.ts — llm-cpr 用户侧 doctor / install / upgrade / uninstall。
-// 约定：在 clone 根目录里运行；操作对象 = process.cwd()（与脚本文件位置无关）。
-// 安全边界：脚本永不 stash / commit / discard 用户的改动；脏跟踪文件一律拒绝升级；
-//   systemd 重启只在用户确认（y / --yes）后执行；uninstall 永不删数据库与 clone 目录。
+// scripts/cpr.ts — llm-cpr 用户侧 doctor / install / upgrade / uninstall（v0.2.0 npm 形态，ADR-0008）。
+// 运行形态：clone（node scripts/cpr.ts）或 npm 全局安装（bin cpr）——包根一律按本文件位置推算，与 cwd 无关。
+// 安全边界：升级失败自动装回旧版（加法迁移保「旧代码跑新库」）；重启只在用户确认（y / --yes）后执行；
+//   uninstall 永不静默删 ~/.cpr（数据/密钥红线）。
+// macOS：LaunchAgent 路线随版提供但标 experimental（无真机验证过 launchd 行为，doctor/文档口径一致）。
 // 测试接缝（未设置 = 生产行为，测试经临时目录 + stub 全隔离）：
-//   CPR_SYSTEMCTL   systemctl 可执行文件路径（stub 把 argv 记到 CPR_SYSTEMCTL_LOG）
-//   CPR_UNIT_DIR    unit 写入目录，默认 /etc/systemd/system
-//   CPR_CONFIG_DIR  .env 目录，默认 ~/.cpr（与 core/paths.ts 同源；CLI 保持自包含零依赖，两处并列改）
-//   CPR_DATA_DIR    数据目录，默认 ~/.cpr
-//   CPR_TEST_CMD    检查命令（sh -c，在仓根执行），默认 node --test
-//   CPR_SMOKE_CMD   冒烟命令（sh -c，在仓根执行），默认 = git archive 快照 + smoke-release.ts
+//   CPR_SYSTEMCTL        systemctl 路径（stub 把 argv 记到 CPR_SYSTEMCTL_LOG；Linux 下每条都带 --user）
+//   CPR_LOGINCTL         loginctl 路径（stub 记 argv 到 CPR_LOGINCTL_LOG；install 顺手 enable-linger）
+//   CPR_NPM              npm 路径（stub 记 argv 到 CPR_NPM_LOG；view/install 两类调用）
+//   CPR_UNIT_DIR         unit 写入目录，默认 Linux ~/.config/systemd/user / macOS ~/Library/LaunchAgents
+//   CPR_CONFIG_DIR       .env/policy 目录，默认 ~/.cpr（与 core/paths.ts 同源；CLI 保持自包含零依赖，两处并列改）
+//   CPR_DATA_DIR         数据目录，默认 ~/.cpr
+//   CPR_SMOKE_CMD        install 冒烟命令（sh -c，在包根执行）；缺省 = 引擎自举冒烟（临时 DB + 0 端口）
+//   CPR_HEALTH_DELAY_MS  upgrade 健康检查轮询间隔（默认 1000ms），测试钉小值加速
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import readline from 'node:readline/promises';
+import { fileURLToPath } from 'node:url';
 
 const BRAND = 'llm-cpr';
+const DARWIN = os.platform() === 'darwin';
 // unit 名可注入：端到端测试用独立名字（如 llm-cpr-e2e）装在真 systemd 上，与生产 unit 错开。
 // 后缀归一化：用户传裸名（不带 .service）时自动补上，否则 systemd 按 <名>.service 找不到 unit 文件。
 const unitNameRaw = process.env.CPR_UNIT_NAME || 'llm-cpr.service';
 const UNIT_NAME = unitNameRaw.endsWith('.service') ? unitNameRaw : `${unitNameRaw}.service`;
+// macOS LaunchAgent 的 label/plist（experimental）：与 Linux unit 名分开，launchctl 按 label 找。
+const DARWIN_LABEL = 'dev.llm-cpr';
+const DARWIN_PLIST = `${DARWIN_LABEL}.plist`;
 
 interface RunResult { ok: boolean; out: string; err: string }
-
-function git(args: readonly string[], cwd: string, { raw = false }: { raw?: boolean } = {}): RunResult {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
-  // raw=true 保留行首空白：porcelain 的状态列（如 " M"）以空格开头，trim 会吞掉路径首字符。
-  const out = r.stdout ?? '';
-  return { ok: r.status === 0, out: raw ? out.replace(/\n$/, '') : out.trim(), err: (r.stderr ?? '').trim() };
-}
 
 function sh(command: string, cwd: string): RunResult {
   const r = spawnSync('sh', ['-c', command], { cwd, encoding: 'utf8' });
@@ -42,86 +43,62 @@ function die(message: string): never {
   process.exit(1);
 }
 
-function repoRoot(): string {
-  const probe = git(['rev-parse', '--show-toplevel'], process.cwd());
-  if (!probe.ok) die('当前目录不是 git 仓库——请在 llm-cpr 的 clone 根目录里运行');
-  const root = probe.out;
-  if (!fs.existsSync(path.join(root, 'core', 'main.ts')) || !fs.existsSync(path.join(root, 'package.json'))) {
-    die('当前仓库不是 llm-cpr（缺 core/main.ts / package.json）');
+// 包根 = 本文件所在 scripts/ 的上一级（clone 根或 npm 全局包目录），与 cwd 无关。
+// fixture（最小仓拷贝）同构成立：scripts/ + package.json + core/main.ts 在同一根下。
+function pkgRoot(): string {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  if (!fs.existsSync(path.join(root, 'package.json')) || !fs.existsSync(path.join(root, 'core', 'main.ts'))) {
+    die(`包根不完整（${root} 缺 package.json / core/main.ts）——npm 安装损坏请 npm install -g llm-cpr 重装；clone 请在完整仓库里运行`);
   }
   return root;
 }
 
+function versionOf(root: string): string {
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as { version?: string };
+  return pkg.version ?? 'unknown';
+}
+
 // ---- 测试接缝 ----
 
-const unitDir = (): string => process.env.CPR_UNIT_DIR || '/etc/systemd/system';
+const unitDir = (): string =>
+  process.env.CPR_UNIT_DIR || (DARWIN ? path.join(os.homedir(), 'Library', 'LaunchAgents') : path.join(os.homedir(), '.config', 'systemd', 'user'));
 const configDir = (): string => process.env.CPR_CONFIG_DIR || path.join(os.homedir(), '.cpr');
 const dataDir = (): string => process.env.CPR_DATA_DIR || path.join(os.homedir(), '.cpr');
-const testCmd = (): string => process.env.CPR_TEST_CMD || 'node --test';
 
 function systemctl(...args: readonly string[]): RunResult {
   const bin = process.env.CPR_SYSTEMCTL || 'systemctl';
+  // v0.2.0 用户级服务：永远 --user、永不 sudo（ADR-0008）。
+  const r = spawnSync(bin, ['--user', ...args], { encoding: 'utf8' });
+  return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim() };
+}
+
+function loginctl(...args: readonly string[]): RunResult {
+  const bin = process.env.CPR_LOGINCTL || 'loginctl';
   const r = spawnSync(bin, args, { encoding: 'utf8' });
   return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim() };
 }
 
-// ---- 仓库状态盘点（只读） ----
-
-interface RepoState {
-  root: string;
-  head: string;
-  branch: string | null; // null = detached HEAD
-  upstream: string | null; // 如 origin/master
-  latestTag: string | null;
-  fetched: boolean;
-  behind: number;
-  ahead: number;
-  aheadCommits: string[];
-  dirty: string[]; // 被跟踪文件的未提交改动
-  untracked: string[];
+function runNpm(...args: readonly string[]): RunResult {
+  const bin = process.env.CPR_NPM || 'npm';
+  const r = spawnSync(bin, args, { encoding: 'utf8' });
+  return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim() };
 }
 
-function upstreamOf(state: { branch: string | null }, root: string): string | null {
-  const head = git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], root);
-  if (head.ok && head.out) return head.out;
-  for (const candidate of ['origin/' + (state.branch ?? ''), 'origin/master', 'origin/main']) {
-    if (candidate === 'origin/' || candidate === 'origin/null') continue;
-    if (git(['rev-parse', '--verify', '--quiet', candidate], root).ok) return candidate;
-  }
-  return null;
-}
+const npmLatest = (): string | null => {
+  const r = runNpm('view', BRAND, 'version');
+  return r.ok && r.out ? r.out.split('\n').at(-1)?.trim() || null : null;
+};
 
-function collectState(root: string, fetch: boolean): RepoState {
-  let fetched = false;
-  if (fetch && git(['remote'], root).out.split('\n').includes('origin')) {
-    fetched = git(['fetch', '--tags', 'origin'], root).ok;
-  }
-  const head = git(['rev-parse', '--short', 'HEAD'], root).out || 'unknown';
-  const branchLine = git(['symbolic-ref', '--short', 'HEAD'], root);
-  const branch = branchLine.ok ? branchLine.out : null;
-  const tagList = git(['for-each-ref', 'refs/tags', '--sort=-creatordate', '--format=%(refname:short)'], root).out;
-  const latestTag = tagList ? tagList.split('\n')[0] : null;
-  const state: RepoState = {
-    root, head, branch, latestTag, fetched,
-    upstream: null, behind: 0, ahead: 0, aheadCommits: [], dirty: [], untracked: [],
-  };
-  if (fetched) {
-    state.upstream = upstreamOf(state, root);
-    if (state.upstream) {
-      const behind = git(['rev-list', '--count', `HEAD..${state.upstream}`], root);
-      const ahead = git(['rev-list', '--count', `${state.upstream}..HEAD`], root);
-      state.behind = behind.ok ? Number(behind.out) || 0 : 0;
-      state.ahead = ahead.ok ? Number(ahead.out) || 0 : 0;
-      if (state.ahead > 0) state.aheadCommits = git(['log', '--oneline', `${state.upstream}..HEAD`], root).out.split('\n');
-    }
-  }
-  const porcelain = git(['status', '--porcelain'], root, { raw: true }).out.split('\n').filter(Boolean);
-  for (const line of porcelain) {
-    if (line.startsWith('??')) state.untracked.push(line.slice(3));
-    else state.dirty.push(line.slice(3));
-  }
-  return state;
-}
+const npmInstall = (version: string): RunResult => runNpm('install', '-g', `${BRAND}@${version}`);
+
+const launchctl = (...args: readonly string[]): RunResult => {
+  const bin = process.env.CPR_LAUNCHCTL || 'launchctl';
+  const r = spawnSync(bin, args, { encoding: 'utf8' });
+  return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim() };
+};
+
+// process.getuid 在 @types/node 里是「可能未定义」（Windows），launchd 只在 darwin 用，兜个默认。
+const uid = (): number => process.getuid?.() ?? 1000;
 
 function nodeRequirement(root: string): { ok: boolean; have: string; want: string } {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as { engines?: { node?: string } };
@@ -149,87 +126,47 @@ async function confirm(question: string, yes: boolean): Promise<boolean> {
   }
 }
 
-// ---- 检查：测试 + 冒烟（假上游，不碰真实订阅额度） ----
+// ---- 服务原语（Linux user unit / macOS LaunchAgent） ----
 
-function runChecks(root: string, { smoke = true }: { smoke?: boolean } = {}): boolean {
-  console.log(`cpr: 跑测试（${testCmd()}）...`);
-  const tests = sh(testCmd(), root);
-  if (!tests.ok) {
-    console.error(`cpr: 测试未通过：\n${tests.out}\n${tests.err}`);
-    return false;
+const unitPath = (): string => path.join(unitDir(), DARWIN ? DARWIN_PLIST : UNIT_NAME);
+
+function serviceActive(): boolean {
+  if (DARWIN) {
+    const r = launchctl('list');
+    return r.ok && r.out.split('\n').some((line) => line.includes(DARWIN_LABEL));
   }
-  if (!smoke) return true;
-  if (process.env.CPR_SMOKE_CMD) {
-    const smokeRun = sh(process.env.CPR_SMOKE_CMD, root);
-    if (!smokeRun.ok) {
-      console.error(`cpr: 冒烟未通过：\n${smokeRun.out}\n${smokeRun.err}`);
-      return false;
-    }
-    return true;
-  }
-  // 默认冒烟 = 当前 HEAD 的运行快照（git archive）+ 假上游冒烟，与发布纪律同一条验收线。
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-upgrade-smoke-'));
-  const tarball = path.join(dir, 'snapshot.tar');
-  const archive = git(['archive', '--format=tar', '--output', tarball, 'HEAD', 'core', 'static', 'package.json'], root);
-  if (!archive.ok) {
-    console.error(`cpr: 冒烟快照打包失败：${archive.err}`);
-    return false;
-  }
-  const extract = spawnSync('tar', ['-xf', tarball, '-C', dir], { encoding: 'utf8' });
-  if (extract.status !== 0) {
-    console.error(`cpr: 冒烟快照解包失败：${extract.stderr ?? ''}`);
-    return false;
-  }
-  const smokeRun = spawnSync(process.execPath, [path.join(root, 'scripts', 'xdg-deploy', 'smoke-release.ts'), dir], { cwd: root, encoding: 'utf8' });
-  if (smokeRun.status !== 0) {
-    console.error(`cpr: 冒烟未通过：\n${smokeRun.stdout ?? ''}\n${smokeRun.stderr ?? ''}`);
-    return false;
-  }
-  return true;
+  return systemctl('is-active', UNIT_NAME).ok; // exit 0 = active
 }
 
-// ---- doctor ----
-
-async function doctor(): Promise<number> {
-  const root = repoRoot();
-  const node = nodeRequirement(root);
-  const state = collectState(root, true);
-  console.log(`NODE=${node.have}${node.ok ? ' OK' : ` 不满足（要求 ${node.want}）`}`);
-  console.log(`REPO=${root}`);
-  console.log(`BRANCH=${state.branch ?? `detached@${state.head}`}`);
-  console.log(`HEAD=${state.head}`);
-  console.log(`TAG=${state.latestTag ?? 'none'}`);
-  console.log(`FETCHED=${state.fetched ? 1 : 0}${state.fetched ? '' : '（无法与 origin 同步，以下落后数字不可信）'}`);
-  console.log('NOTE=会执行 git fetch --tags（更新本地远端引用与 tag，不改工作树）');
-  console.log(`UPSTREAM=${state.upstream ?? 'none'}`);
-  console.log(`BEHIND=${state.behind}`);
-  console.log(`AHEAD=${state.ahead}`);
-  for (const c of state.aheadCommits) console.log(`AHEAD_COMMIT=${c}`);
-  console.log(`DIRTY=${state.dirty.length ? state.dirty.join(' ') : 'none'}`);
-  console.log(`UNTRACKED=${state.untracked.length ? state.untracked.join(' ') : 'none'}`);
-  console.log('--- 建议 ---');
-  if (state.dirty.length > 0) {
-    console.log('NEXT=拒绝升级：先处理脏跟踪文件（git commit / git stash / git checkout -- <file>，自己动手）');
-  } else if (state.behind === 0) {
-    console.log('NEXT=已是最新');
-  } else if (state.ahead > 0) {
-    console.log(`NEXT=fork 路线：git rebase ${state.upstream}；升级后必须 node --test 全量`);
-  } else {
-    console.log(`NEXT=git merge --ff-only ${state.upstream}（或直接跑 node scripts/cpr.ts upgrade）`);
-  }
-  return 0;
+function serviceRestart(): RunResult {
+  if (DARWIN) return launchctl('kickstart', '-k', `gui/${uid()}/${DARWIN_LABEL}`);
+  return systemctl('restart', UNIT_NAME);
 }
 
-// ---- install ----
+function serviceStart(): RunResult {
+  if (DARWIN) return launchctl('bootstrap', `gui/${uid()}`, unitPath());
+  return systemctl('enable', '--now', UNIT_NAME);
+}
+
+// 升级健康门：重启 → 轮询 is-active。engine fail-fast（坏 policy/迁移失败）会让 unit 进 failed 态，这里抓得住。
+async function serviceUpAfterRestart(): Promise<boolean> {
+  const restart = serviceRestart();
+  if (!restart.ok) return false;
+  const delayMs = Number(process.env.CPR_HEALTH_DELAY_MS ?? 1000);
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    if (serviceActive()) return true;
+  }
+  return false;
+}
+
+// ---- unit / plist 内容 ----
 
 function unitFileContent(root: string): string {
   const config = configDir();
   const data = dataDir();
   return `[Unit]
-Description=Coding Plan Router — LLM 订阅路由网关
-After=network-online.target
-Wants=network-online.target
-
+Description=llm-cpr — LLM 订阅路由网关
 [Service]
 Type=simple
 WorkingDirectory=${root}
@@ -240,24 +177,141 @@ Environment=CPR_CONFIG_DIR=${config}
 Environment=CPR_DATA_DIR=${data}
 Restart=on_failure_placeholder
 RestartSec=3
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=full
-ReadWritePaths=${data}
-
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 `.replace('Restart=on_failure_placeholder', 'Restart=on-failure');
 }
 
-async function install(yes: boolean): Promise<number> {
-  const root = repoRoot();
+// macOS experimental：EnvironmentFile 没有等价物，环境键直接进 plist。
+function plistFileContent(root: string): string {
+  const config = configDir();
+  const data = dataDir();
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>${DARWIN_LABEL}</string>
+  <key>ProgramArguments</key><array>
+    <string>${process.execPath}</string>
+    <string>${path.join(root, 'core', 'main.ts')}</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>EnvironmentVariables</key><dict>
+    <key>CPR_CONFIG_DIR</key><string>${config}</string>
+    <key>CPR_DATA_DIR</key><string>${data}</string>
+    <key>CPR_DB_FILE</key><string>${path.join(data, 'data.db')}</string>
+  </dict>
+</dict></plist>
+`;
+}
+
+// ---- install 冒烟 ----
+
+async function bootSmoke(root: string): Promise<boolean> {
+  if (process.env.CPR_SMOKE_CMD) {
+    const smokeRun = sh(process.env.CPR_SMOKE_CMD, root);
+    if (!smokeRun.ok) {
+      console.error(`cpr: 冒烟未通过：\n${smokeRun.out}\n${smokeRun.err}`);
+      return false;
+    }
+    return true;
+  }
+  // 默认 = 引擎自举冒烟：policy/.env 全按 ~/.cpr 真身（顺带验证模板与 .env 可用），
+  // 库与端口走临时值（CPR_DATA_DIR=tmp + 端口 0），不碰真实 data.db 与声明端口。
+  const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-install-smoke-'));
+  const child = spawn(process.execPath, [path.join(root, 'core', 'main.ts')], {
+    cwd: root,
+    env: { ...process.env, CPR_CONFIG_DIR: configDir(), CPR_DATA_DIR: tmpData, CPR_FORWARD_PORT: '0', CPR_ADMIN_PORT: '0' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let out = '';
+  let err = '';
+  const ok = await new Promise<boolean>((resolve) => {
+    let done = false;
+    const finish = (value: boolean): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      child.kill('SIGTERM');
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      console.error(`cpr: 冒烟超时（15s 内管理口未起来）：\n${out}\n${err}`);
+      finish(false);
+    }, 15_000);
+    child.stdout?.on('data', (chunk: Buffer) => {
+      out += String(chunk);
+      const match = /admin listening on (\S+)/.exec(out);
+      if (match) {
+        console.log(`cpr: 冒烟通过（${match[1]}）`);
+        finish(true);
+      }
+    });
+    child.stderr?.on('data', (chunk: Buffer) => { err += String(chunk); });
+    child.on('exit', () => {
+      console.error(`cpr: 冒烟进程提前退出：\n${out}\n${err}`);
+      finish(false);
+    });
+  });
+  fs.rmSync(tmpData, { recursive: true, force: true });
+  return ok;
+}
+
+// ---- doctor ----
+
+async function doctor(): Promise<number> {
+  const root = pkgRoot();
   const node = nodeRequirement(root);
-  if (!node.ok) die(`Node ${node.have} 不满足本仓要求 ${node.want}——先升级 Node 再安装`);
+  console.log(`NODE=${node.have}${node.ok ? ' OK' : ` 不满足（要求 ${node.want}）`}`);
+  console.log(`PKGROOT=${root}`);
+  const isClone = fs.existsSync(path.join(root, '.git'));
+  console.log(`MODE=${isClone ? 'clone（引擎开发者路线，升级走 git pull）' : 'npm'}`);
+  const current = versionOf(root);
+  console.log(`VERSION=${current}`);
+  const npmProbe = sh('npm --version', root);
+  console.log(`NPM=${npmProbe.ok ? npmProbe.out : '不可用（cpr upgrade 需要）'}`);
+  const latest = npmLatest();
+  console.log(`LATEST=${latest ?? '查询失败（离线？registry 不可达）'}`);
+  const unitFile = unitPath();
+  const unitExists = fs.existsSync(unitFile);
+  console.log(`UNIT=${serviceActive() ? 'active' : 'inactive/未装'}（${unitFile}${unitExists ? '' : '，文件不存在'}）`);
+  const dbFile = path.join(dataDir(), 'data.db');
+  let dbLine = `DB=${dbFile}（不存在——未启动过）`;
+  if (fs.existsSync(dbFile)) {
+    try {
+      const { DatabaseSync } = await import('node:sqlite');
+      const db = new DatabaseSync(dbFile, { readOnly: true });
+      const version = Number((db.prepare('PRAGMA user_version').get() as { user_version?: number }).user_version ?? 0);
+      db.close();
+      dbLine = `DB=${dbFile}（schema v${version}）`;
+    } catch (error) {
+      dbLine = `DB=${dbFile}（读取失败：${error instanceof Error ? error.message : String(error)}）`;
+    }
+  }
+  console.log(dbLine);
+  console.log(`POLICY=${fs.existsSync(path.join(configDir(), 'policy.ts')) ? path.join(configDir(), 'policy.ts') : '无（回落内置 mine）'}`);
+  console.log(`DATA=${dataDir()}${fs.existsSync(dataDir()) ? '' : '（不存在）'}`);
+  console.log('--- 建议 ---');
+  if (!node.ok) console.log(`NEXT=先升级 Node（要求 ${node.want}）`);
+  else if (!npmProbe.ok) console.log('NEXT=安装 npm（cpr upgrade 需要）');
+  else if (isClone) console.log('NEXT=clone 路线：git pull 自行升级（cpr upgrade 只服务 npm 安装）');
+  else if (latest && latest !== current) console.log(`NEXT=有新版：cpr upgrade（当前 ${current} → ${latest}）`);
+  else if (!unitExists) console.log('NEXT=服务未安装：cpr install');
+  else if (!serviceActive()) console.log(`NEXT=服务未在跑：systemctl --user enable --now ${UNIT_NAME}（或 cpr install）`);
+  else console.log('NEXT=一切正常');
+  return 0;
+}
+
+// ---- install ----
+
+async function install(yes: boolean): Promise<number> {
+  const root = pkgRoot();
+  const node = nodeRequirement(root);
+  if (!node.ok) die(`Node ${node.have} 不满足要求 ${node.want}——先升级 Node 再安装`);
   console.log(`cpr: Node ${node.have} ✓`);
 
   const example = path.join(root, 'policy.example.ts');
-  if (!fs.existsSync(example)) die('仓库缺 policy.example.ts——clone 不完整，重新克隆');
+  if (!fs.existsSync(example)) die('包缺 policy.example.ts——安装不完整，重装（npm）或重新 clone');
   // v0.2.0：用户声明住 ~/.cpr（configDir 接缝），不进 clone/release——升级永不冲掉用户文件。
   const policyDir = configDir();
   fs.mkdirSync(policyDir, { recursive: true });
@@ -300,7 +354,6 @@ async function install(yes: boolean): Promise<number> {
   }
 
   const envFile = path.join(configDir(), '.env');
-  fs.mkdirSync(configDir(), { recursive: true });
   if (fs.existsSync(envFile)) console.log(`cpr: ${envFile} 已存在，保留现状`);
   else {
     const exampleEnv = path.join(root, '.env.example');
@@ -315,43 +368,50 @@ async function install(yes: boolean): Promise<number> {
   fs.mkdirSync(dataDir(), { recursive: true, mode: 0o700 });
   console.log(`cpr: 数据目录 ${dataDir()} ✓`);
 
-  const unitPath = path.join(unitDir(), UNIT_NAME);
-  const content = unitFileContent(root);
+  // v0.2.0：用户级服务，不要 sudo（ADR-0008）。Linux systemctl --user + linger；macOS LaunchAgent（experimental）。
+  const unitFile = unitPath();
+  const content = DARWIN ? plistFileContent(root) : unitFileContent(root);
   fs.mkdirSync(unitDir(), { recursive: true });
-  if (fs.existsSync(unitPath)) {
-    if (fs.readFileSync(unitPath, 'utf8') === content) console.log(`cpr: ${unitPath} 内容一致，跳过`);
+  if (fs.existsSync(unitFile)) {
+    if (fs.readFileSync(unitFile, 'utf8') === content) console.log(`cpr: ${unitFile} 内容一致，跳过`);
     else {
-      if (!(await confirm(`${unitPath} 已存在且内容不同，覆盖？`, yes))) {
+      if (!(await confirm(`${unitFile} 已存在且内容不同，覆盖？`, yes))) {
         console.log('cpr: 未写 unit；请人工比对后重跑（旧文件不会被本命令改动）。');
         return 1;
       }
-      const backup = `${unitPath}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`;
-      fs.copyFileSync(unitPath, backup);
-      fs.writeFileSync(unitPath, content, { mode: 0o644 });
-      console.log(`cpr: 已覆盖 ${unitPath}（旧文件备份到 ${backup}）`);
+      const backup = `${unitFile}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      fs.copyFileSync(unitFile, backup);
+      fs.writeFileSync(unitFile, content, { mode: 0o644 });
+      console.log(`cpr: 已覆盖 ${unitFile}（旧文件备份到 ${backup}）`);
     }
   } else {
-    fs.writeFileSync(unitPath, content, { mode: 0o644 });
-    console.log(`cpr: 已写 ${unitPath}`);
+    fs.writeFileSync(unitFile, content, { mode: 0o644 });
+    console.log(`cpr: 已写 ${unitFile}`);
   }
-  const reload = systemctl('daemon-reload');
-  if (!reload.ok) console.error(`cpr: daemon-reload 失败：${reload.err}`);
+  if (DARWIN) {
+    console.log('cpr: macOS 路线为 experimental（launchd 未经真机验证，欢迎反馈 doctor 输出）');
+  } else {
+    const reload = systemctl('daemon-reload');
+    if (!reload.ok) console.error(`cpr: daemon-reload 失败：${reload.err}`);
+    // linger：让你登出后服务照跑（user unit 默认随会话停）。给自己开 linger 不需要 sudo。
+    const linger = loginctl('enable-linger');
+    if (!linger.ok) console.error(`cpr: enable-linger 失败（${linger.err}）——服务在你登录期间可用；要登出/重启后仍自跑，需 systemd 允许本用户 linger`);
+  }
 
-  console.log('cpr: 跑测试...');
-  if (!runChecks(root, { smoke: false })) {
-    console.error('cpr: 测试未通过——先解决再安装。');
+  if (!(await bootSmoke(root))) {
+    console.error('cpr: install 冒烟未通过——先解决再启动（服务未启动、unit 已就位）。');
     return 1;
   }
 
   if (await confirm('现在启动服务？（y/N）', yes)) {
-    const start = systemctl('enable', '--now', UNIT_NAME);
+    const start = serviceStart();
     if (!start.ok) {
-      console.error(`cpr: 启动失败：${start.err}（排查：journalctl -u ${UNIT_NAME} -n 50）`);
+      console.error(`cpr: 启动失败：${start.err}（排查：journalctl --user -u ${UNIT_NAME} -n 50）`);
       return 1;
     }
-    console.log(`cpr: 已启动。状态：systemctl status ${UNIT_NAME}`);
+    console.log(`cpr: 已启动。状态：systemctl --user status ${UNIT_NAME}`);
   } else {
-    console.log(`cpr: 未启动。之后手动：systemctl enable --now ${UNIT_NAME}`);
+    console.log(`cpr: 未启动。之后手动：systemctl --user enable --now ${UNIT_NAME}`);
   }
   console.log('cpr: 推理口/管理口端口以 policy 声明为准（默认 127.0.0.1:8741 / 8740；管理口只绑回环，看板经反代+SSO 暴露，绝不直接开公网）。');
   return 0;
@@ -359,68 +419,46 @@ async function install(yes: boolean): Promise<number> {
 
 // ---- upgrade ----
 
-async function upgrade(yes: boolean): Promise<number> {
-  const root = repoRoot();
-  const state = collectState(root, true);
-  if (!state.fetched) die('无法与 origin 同步（fetch 失败）——检查网络/远端后重试，升级拒绝在未知版本状态上进行');
-  if (!state.upstream) die('找不到 origin 上的基线分支（origin/HEAD 或 origin/master|main）——先推送或核对远端');
-  if (state.dirty.length > 0) {
-    console.error('cpr: 升级拒绝——存在未提交的被跟踪文件改动：');
-    for (const f of state.dirty) console.error(`  ${f}`);
-    console.error('  三条出路（自己动手，脚本不代做）：git commit ｜ git stash ｜ git checkout -- <file>');
+async function upgrade(yes: boolean, toVersion: string | undefined): Promise<number> {
+  const root = pkgRoot();
+  if (fs.existsSync(path.join(root, '.git'))) {
+    console.error('cpr: 这是 clone（引擎开发者路线）——cpr upgrade 只服务 npm 安装。clone 升级：git pull 后自行验证（node --test + 冒烟）。');
     return 1;
   }
-  if (state.behind === 0) {
-    console.log(`cpr: 已是最新（${state.head}${state.ahead > 0 ? `，领先 origin ${state.ahead} 个 commit` : ''}）`);
+  const current = versionOf(root);
+  const target = toVersion ?? npmLatest();
+  if (!target) die('查不到 npm registry 最新版（网络？）——重试，或用 cpr upgrade --to <版本> 指定目标');
+  if (target === current) {
+    console.log(`cpr: 已是最新（${current}）`);
     return 0;
   }
-
-  const oldHead = state.head;
-  let rebased = false;
-  if (state.ahead > 0) {
-    console.log(`cpr: 你领先 ${state.upstream} ${state.ahead} 个 commit：`);
-    for (const c of state.aheadCommits) console.log(`  ${c}`);
-    if (!(await confirm('尝试 rebase 到新版本？', yes))) {
-      console.log('cpr: 未做任何改动。手工路线：git rebase ' + state.upstream + '，解决后跑 node scripts/cpr.ts upgrade。');
-      return 0;
-    }
-    const rebase = git(['rebase', state.upstream], root);
-    if (!rebase.ok) {
-      const conflicts = git(['diff', '--name-only', '--diff-filter=U'], root).out;
-      git(['rebase', '--abort'], root);
-      console.error('cpr: rebase 撞冲突，已 abort 原地恢复（工作树回到升级前）。冲突文件：');
-      for (const f of conflicts.split('\n').filter(Boolean)) console.error(`  ${f}`);
-      console.error('  手工路线：git rebase ' + state.upstream + '，解冲突（注意丢弃 stash 来的旧副本）后跑 node --test 全量。');
-      return 1;
-    }
-    rebased = true;
-  } else if (state.branch === null) {
-    const target = state.latestTag ?? state.upstream;
-    const checkout = git(['checkout', target], root);
-    if (!checkout.ok) die(`checkout ${target} 失败：${checkout.err}`);
-  } else {
-    const merge = git(['merge', '--ff-only', state.upstream], root);
-    if (!merge.ok) die(`fast-forward 失败（分支 ${state.branch} 不可快进）：${merge.err}`);
+  console.log(`当前 ${current} → 目标 ${target}`);
+  if (!(await confirm(`安装 ${BRAND}@${target} 并重启服务？（重启会中断在途请求）`, yes))) {
+    console.log('cpr: 未做任何改动。');
+    return 0;
   }
-
-  const newHead = git(['rev-parse', '--short', 'HEAD'], root).out || 'unknown';
-  console.log(`cpr: 代码已到 ${newHead}${rebased ? '（本地 commit 已重放到新基线上）' : ''}`);
-  if (!runChecks(root)) {
-    console.error('cpr: 升级后检查未通过。回滚命令：');
-    console.error(state.branch === null ? `  git checkout ${oldHead}` : `  git reset --hard ${oldHead}`);
+  // DB 不由 CLI 备份：引擎启动路径的迁移三件套开库先备份（migrate.ts），单一来源；CLI 只负责换代码+重启+健康门。
+  const installNew = npmInstall(target);
+  if (!installNew.ok) {
+    console.error(`cpr: npm 安装失败：${installNew.err}\ncpr: 未动当前版本，服务未重启。`);
     return 1;
   }
-  if (await confirm(`重启 ${UNIT_NAME} 服务？（y/N）`, yes)) {
-    const restart = systemctl('restart', UNIT_NAME);
-    if (!restart.ok) {
-      console.error(`cpr: 重启失败：${restart.err}（排查：journalctl -u ${UNIT_NAME} -n 50）`);
-      return 1;
-    }
-    console.log(`cpr: 已重启。验证：启动日志应有当前 commit；管理口 /api/route/status 应返回订阅列表。`);
-  } else {
-    console.log('cpr: 未重启。改动在下次重启生效：systemctl restart ' + UNIT_NAME);
+  console.log(`cpr: 已装 ${BRAND}@${target}`);
+  if (await serviceUpAfterRestart()) {
+    console.log(`cpr: 完成。${current} → ${target}，服务健康。`);
+    console.log(`cpr: 验证：journalctl --user -u ${UNIT_NAME} 应有启动日志（版本/租户/schema 行）；管理口 /api/route/status 应返回订阅清单。`);
+    return 0;
   }
-  return 0;
+  // 失败自动回滚：加法迁移纪律保证「旧代码跑新库」不炸——回滚只换代码，数据不动。
+  console.error(`cpr: 新版 ${target} 未通过健康检查（systemd is-active 非 active）——自动装回 ${current}`);
+  const back = npmInstall(current);
+  if (back.ok && (await serviceUpAfterRestart())) {
+    console.error(`cpr: 已自动退回 ${current}，服务已恢复。新版失败原因：journalctl --user -u ${UNIT_NAME} -n 50`);
+    console.error(`cpr: 想重试：先看日志解决根因，再 cpr upgrade --to ${target}`);
+    return 1; // 升级失败（尽管服务已恢复）
+  }
+  console.error(`cpr: 回滚也失败了——服务可能停着。手工口径：npm install -g ${BRAND}@${current} 后 systemctl --user restart ${UNIT_NAME}`);
+  return 1;
 }
 
 // ---- uninstall ----
@@ -428,26 +466,26 @@ async function upgrade(yes: boolean): Promise<number> {
 async function uninstall(yes: boolean, purge: boolean): Promise<number> {
   // 守卫口径：只有服务确实在跑（is-active 成功）时，才强制要求 disable 成功——
   // 「unit 文件已不存在」的重复卸载/disable 必然报错，但那是合法状态，不该拦住后续清理。
-  const activeNow = systemctl('is-active', UNIT_NAME).ok;
+  const activeNow = serviceActive();
   if (activeNow) {
-    const stop = systemctl('disable', '--now', UNIT_NAME);
+    const stop = DARWIN ? launchctl('bootout', `gui/${uid()}/${DARWIN_LABEL}`) : systemctl('disable', '--now', UNIT_NAME);
     if (!stop.ok) {
       console.error(`cpr: 停止/禁用服务失败：${stop.err}`);
       console.error('cpr: 服务可能仍在运行或 systemd 不可用——为保护正在使用的数据库，拒绝继续卸载。');
-      console.error(`  排查后重试；手工口径：systemctl disable --now ${UNIT_NAME}`);
+      console.error(`  排查后重试；手工口径：systemctl --user disable --now ${UNIT_NAME}`);
       return 1;
     }
     console.log('cpr: 服务已停并移除自启');
   } else {
-    console.log(`cpr: 服务未在运行（${UNIT_NAME} 不存在或已停）——直接进入清理`);
+    console.log(`cpr: 服务未在运行（${DARWIN ? DARWIN_LABEL : UNIT_NAME} 不存在或已停）——直接进入清理`);
   }
-  const unitPath = path.join(unitDir(), UNIT_NAME);
-  if (fs.existsSync(unitPath)) {
-    fs.rmSync(unitPath);
-    systemctl('daemon-reload');
-    console.log(`cpr: 已删 ${unitPath}`);
+  const unitFile = unitPath();
+  if (fs.existsSync(unitFile)) {
+    fs.rmSync(unitFile);
+    if (!DARWIN) systemctl('daemon-reload');
+    console.log(`cpr: 已删 ${unitFile}`);
   } else {
-    console.log(`cpr: ${unitPath} 不存在`);
+    console.log(`cpr: ${unitFile} 不存在`);
   }
   for (const dir of [configDir(), dataDir()]) {
     console.log(`cpr: 保留 ${dir}${fs.existsSync(dir) ? '（数据/密钥原样未动）' : '（不存在）'}`);
@@ -466,25 +504,29 @@ async function uninstall(yes: boolean, purge: boolean): Promise<number> {
   } else {
     console.log('cpr: 数据与密钥未动；确认不要了再手动删，或加 --purge。');
   }
-  console.log('cpr: 源码是 git clone，目录脚本不删——不要了就自己删。');
+  console.log(`cpr: 代码包自己卸：npm uninstall -g ${BRAND}`);
   return 0;
 }
 
 // ---- 入口 ----
 
-const USAGE = '用法：node scripts/cpr.ts <doctor|install|upgrade|uninstall> [--yes] [--purge]';
+const USAGE = `用法：cpr <doctor|install|upgrade|uninstall> [--yes] [--purge] [--to <版本>]（clone 里：node scripts/cpr.ts …）`;
 
 const [command, ...flags] = process.argv.slice(2);
 const yes = flags.includes('--yes');
 const purge = flags.includes('--purge');
-const unknown = flags.filter((f) => f !== '--yes' && f !== '--purge');
+const toIndex = flags.indexOf('--to');
+if (toIndex >= 0 && !flags[toIndex + 1]) die(`--to 需要版本号。${USAGE}`);
+const toVersion = toIndex >= 0 ? flags[toIndex + 1] : undefined;
+const knownFlags = new Set(['--yes', '--purge', '--to']);
+const unknown = flags.filter((f, i) => !knownFlags.has(f) && !(toIndex >= 0 && i === toIndex + 1));
 if (unknown.length > 0) die(`未知参数：${unknown.join(' ')}。${USAGE}`);
 
 let exitCode: number;
 switch (command) {
   case 'doctor': exitCode = await doctor(); break;
   case 'install': exitCode = await install(yes); break;
-  case 'upgrade': exitCode = await upgrade(yes); break;
+  case 'upgrade': exitCode = await upgrade(yes, toVersion); break;
   case 'uninstall': exitCode = await uninstall(yes, purge); break;
   default: die(USAGE);
 }
