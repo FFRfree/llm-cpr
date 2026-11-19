@@ -94,7 +94,7 @@ CPR 现状：`core/protocols/` 只有 `chat-completions.ts`（OpenAI 兼容）�
 1. opt-in 粒度：**租户级**（会话级白名单未做，留后有需要再议）。
 2. 响应侧：**第一版不落**，turns 表留 `response_refs` 列占位；Responses 协议拼装需求
    出现时再做（届时才有真订阅）。
-3. 回放形态：**独立 CLI**（`scripts/replay-policy.ts`）——开发者动作 + 读侧慢查询，不上管理口。
+3. 回放：**实现后经用户拍板移除**（2026-11-19）——策略层稳定（内置评分+偏好钩子+内置兜底），改策略低频，沙盘不值当；票 02 留作决策记录，`core/policy/ctx.ts` 同源构造保留。
 4. 泄漏规则库：**自维护最小集**（`core/observability/leaks.ts`，known 正则 + assignment
    过熵值门槛；不引 gitleaks 代码，零依赖纪律）。
 5. item 模型粒度：**四类实体够用**；存储单元 = 消息条目（chat-completions 的 tool_calls

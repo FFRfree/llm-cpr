@@ -417,8 +417,8 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       const candidates: Backend[] = routeScope(tenantBackends, undefined, requestedModel);
       if (!candidates.length) return json(res, 400, { error: { message: 'model is not available on configured backends', type: 'invalid_request_error' } });
       const requestView = { model: requestedModel.id, chars: bytes.length, messages: Array.isArray(body.messages) ? body.messages.length : 0 };
-      // 决策点 ctx 同源构造（observability 票 02 抽取）：正常路由与改绑决策共用这一个工厂，
-      // 回放 harness（core/observability/replay.ts）吃同一构造器——沙盘测的就是真实决策环境。
+      // 决策点 ctx 同源构造（observability 票 02 抽取；回放沙盘 2026-11-19 经用户拍板移除，
+      // 同源构造器保留）：正常路由与改绑决策共用这一个工厂，别在别处手搓第二份。
       const buildCtx = (view: SnapshotView, now: number, affinity: string | undefined, error?: { backend: string; status: number; retryAfterMs: number | null }): DecisionCtx =>
         decisionCtx({ now, tenant: tenant.name, model: requestView.model, chars: requestView.chars, messages: requestView.messages, affinity, candidates, snapshots: view, health, error });
       // 硬护栏：policy 只能在支持该模型的候选里挑；返回野名字/缺映射的目标一律判非法、回落内置。

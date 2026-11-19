@@ -43,3 +43,7 @@ Blocked by: (resolved: 01)
   CLI 假夹具冒烟跑通。全量 `node --test` 182/182，typecheck 干净。
 - 没做的验证：快照有值路径（walled 分支）的重放精度；builtin 兜底不在回放内
   （decide null 交内置的那半边是引擎逻辑，回放只测 decide 差异）。
+- **2026-11-19 用户拍板移除本功能**：策略层是稳定两件套（内置月欠账评分 + 简单偏好钩子、
+  内置兜底接住坏钩子），用户不改大逻辑，回放低频到不值当；保留它=死代码（用户对
+  「重」极敏感）。core/observability/replay.ts、scripts/replay-policy.ts、test/replay.test.ts
+  已删；core/policy/ctx.ts 的同源 ctx 构造保留（server 重构收益独立存在）。票保留为决策记录。
