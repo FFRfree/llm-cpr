@@ -318,6 +318,8 @@ async function bootMain(root: string, extra: Env): Promise<{ subscriptions: { na
       CPR_ADMIN_PORT: String(adminPort),
       CPR_SESSIONS_DB: path.join(dbs, 'sessions.db'),
       CPR_USAGE_DB: path.join(dbs, 'usage.db'),
+      // .env 加载器（v0.2.0）默认读 ~/.cpr/.env——钉到 tmp，保证测试 hermetic 不摸真家目录
+      CPR_CONFIG_DIR: dbs,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

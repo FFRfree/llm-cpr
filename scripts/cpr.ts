@@ -6,8 +6,8 @@
 // 测试接缝（未设置 = 生产行为，测试经临时目录 + stub 全隔离）：
 //   CPR_SYSTEMCTL   systemctl 可执行文件路径（stub 把 argv 记到 CPR_SYSTEMCTL_LOG）
 //   CPR_UNIT_DIR    unit 写入目录，默认 /etc/systemd/system
-//   CPR_CONFIG_DIR  .env 目录，默认 ~/.config/coding-plan-router
-//   CPR_DATA_DIR    数据目录，默认 ~/.local/share/coding-plan-router
+//   CPR_CONFIG_DIR  .env 目录，默认 ~/.cpr（与 core/paths.ts 同源；CLI 保持自包含零依赖，两处并列改）
+//   CPR_DATA_DIR    数据目录，默认 ~/.cpr
 //   CPR_TEST_CMD    检查命令（sh -c，在仓根执行），默认 node --test
 //   CPR_SMOKE_CMD   冒烟命令（sh -c，在仓根执行），默认 = git archive 快照 + smoke-release.ts
 import crypto from 'node:crypto';
@@ -55,8 +55,8 @@ function repoRoot(): string {
 // ---- 测试接缝 ----
 
 const unitDir = (): string => process.env.CPR_UNIT_DIR || '/etc/systemd/system';
-const configDir = (): string => process.env.CPR_CONFIG_DIR || path.join(os.homedir(), '.config', BRAND);
-const dataDir = (): string => process.env.CPR_DATA_DIR || path.join(os.homedir(), '.local/share', BRAND);
+const configDir = (): string => process.env.CPR_CONFIG_DIR || path.join(os.homedir(), '.cpr');
+const dataDir = (): string => process.env.CPR_DATA_DIR || path.join(os.homedir(), '.cpr');
 const testCmd = (): string => process.env.CPR_TEST_CMD || 'node --test';
 
 function systemctl(...args: readonly string[]): RunResult {

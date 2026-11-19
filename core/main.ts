@@ -6,6 +6,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { startGateway } from './http/server.ts';
 import { validateConfig } from './policy/config.ts';
+import { envFile } from './paths.ts';
+import { loadDotEnv } from './envfile.ts';
 import type { RouterPolicy } from './policy/contract.ts';
 
 function messageOf(error: unknown): string {
@@ -26,6 +28,13 @@ function bootVersion(): string {
 }
 
 try {
+  // v0.2.0：引擎自己加载 ~/.cpr/.env（前台直跑无 systemd 时也能拿到密钥）；CPR_ENV_FILE 接缝优先
+  // （与探针脚本同语义），只填缺失键不覆盖真实环境变量。systemd 场景 EnvironmentFile 先到、此处成无害重复。
+  const envPath = envFile();
+  if (fs.existsSync(envPath)) {
+    const loadedKeys = loadDotEnv(envPath);
+    if (loadedKeys > 0) console.log(`env: ${envPath}（${loadedKeys} 键）`);
+  }
   const localUrl = new URL('../policy.local.ts', import.meta.url);
   const source = fs.existsSync(localUrl) ? 'policy.local.ts' : 'core/policy/mine.ts';
   // 动态 import 用变量路径：文件存在与否已用 existsSync 判定，import 失败（语法错/坏 import）一律原样抛。

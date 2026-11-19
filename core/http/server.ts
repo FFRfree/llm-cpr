@@ -10,6 +10,7 @@ import { chatCompletions } from '../protocols/chat-completions.ts';
 import { resolveIdentity } from '../store/identity.ts';
 import { createSystemEventStore, type SystemEventStore, type RouteEventDetail } from '../store/events.ts';
 import { openDatabase } from '../store/db.ts';
+import { defaultDbPath } from '../paths.ts';
 import { UsageSnapshots, currentSnapshot } from '../store/snapshots.ts';
 import { rankBackends, monthlyDebtScore } from '../policy/selection.ts';
 import { builtinDecide } from '../policy/builtin-decide.ts';
@@ -295,10 +296,11 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
     return authorized(req, masterKeyOf(policy)) ? DEFAULT_TENANT : null;
   };
   const dbPath = env.CPR_DB_FILE || policy.db_file || env.CPR_SESSIONS_DB || policy.sessions_db
-    || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'data.db');
-  // 单库两表（requests + system_events）：打开失败直接抛、拒绝起服务（fail fast，理由见 db.ts）。
-  // 注意：不显式写路径时默认落在代码目录上两层，release 目录每次发布整体替换——
-  // 生产 unit 必须显式设置 CPR_DB_FILE，否则新进程会安静地开一套空库而 systemd 仍 active。
+    || defaultDbPath(env);
+  // v0.2.0：无显式路径时默认 ~/.cpr/data.db（defaultDbPath 含 CPR_DATA_DIR 接缝）。
+  // 旧兜底「代码目录上两层」已废——release/npm 目录整体替换，旧兜底会让新进程安静开一套空库。
+  // SQLite 打开库不自建父目录：写库路径的父目录由这里负责建。
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = openDatabase(dbPath);
   const audit = new UsageAudit({ db, logger });
   // 路由事件账：bind/rebind/hold/policy.error，归属与冷却全是它的派生查询。
