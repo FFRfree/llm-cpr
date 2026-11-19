@@ -77,7 +77,7 @@ const adminPort = await freePort();
 // 配置即代码：冒烟不跑 release 的 main.ts（那是生产声明），用临时启动器直传假 policy。
 const launcher = path.join(tmpRoot, 'smoke-launcher.mjs');
 fs.writeFileSync(launcher, [
-  `import { startGateway } from ${JSON.stringify(path.join(releaseDir, 'lib', 'http', 'server.ts'))};`,
+  `import { startGateway } from ${JSON.stringify(path.join(releaseDir, 'core', 'http', 'server.ts'))};`,
   `await startGateway({`,
   `  master_key_env: 'CPR_MASTER_KEY',`,
   `  identity_header: 'x-session-id',`,
@@ -123,7 +123,7 @@ const waitReady = async (url: string, timeoutMs: number = 10_000): Promise<void>
 };
 
 try {
-  assert.ok(fs.existsSync(path.join(releaseDir, 'lib', 'main.ts')), `missing lib/main.ts in ${releaseDir}`);
+  assert.ok(fs.existsSync(path.join(releaseDir, 'core', 'main.ts')), `missing core/main.ts in ${releaseDir}`);
   assert.ok(fs.existsSync(path.join(releaseDir, 'static', 'dashboard.html')), `missing static/dashboard.html in ${releaseDir}`);
   // .ts 的模块类型由最近的 package.json 决定；缺了它就只能靠 Node 语法探测兜底。
   const manifest: unknown = JSON.parse(fs.readFileSync(path.join(releaseDir, 'package.json'), 'utf8'));

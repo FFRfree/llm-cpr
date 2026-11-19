@@ -39,8 +39,8 @@ function makeFixture(): Fixture {
   fs.cpSync(path.join(REPO, 'scripts'), path.join(work, 'scripts'), { recursive: true });
   fs.cpSync(path.join(REPO, 'package.json'), path.join(work, 'package.json'));
   fs.cpSync(path.join(REPO, '.env.example'), path.join(work, '.env.example'));
-  fs.mkdirSync(path.join(work, 'lib', 'policy'), { recursive: true });
-  fs.writeFileSync(path.join(work, 'lib', 'main.ts'), '// fixture stub\n');
+  fs.mkdirSync(path.join(work, 'core', 'policy'), { recursive: true });
+  fs.writeFileSync(path.join(work, 'core', 'main.ts'), '// fixture stub\n');
   fs.writeFileSync(path.join(work, 'policy.example.ts'), '// fixture 模板\n');
   git(work, ['init', '-b', 'master']);
   commitAll(work, 'init');
@@ -89,7 +89,7 @@ function upstreamCommit(fixture: Fixture, edit: (dir: string) => void): void {
 }
 
 const upstreamAddFile = (fixture: Fixture): void =>
-  upstreamCommit(fixture, (dir) => { fs.writeFileSync(path.join(dir, 'lib', 'extra.ts'), '// upstream new\n'); });
+  upstreamCommit(fixture, (dir) => { fs.writeFileSync(path.join(dir, 'core', 'extra.ts'), '// upstream new\n'); });
 
 async function freePort(): Promise<number> {
   const server = net.createServer();
@@ -128,7 +128,7 @@ test('install --yes：写出 unit / .env(随机 master key) / policy.local.ts，
   assert.ok(unit.includes(`WorkingDirectory=${f.work}`));
   assert.ok(unit.includes(`EnvironmentFile=${f.env.CPR_CONFIG_DIR}/.env`));
   assert.ok(unit.includes(`CPR_DB_FILE=${f.env.CPR_DATA_DIR}/data.db`));
-  assert.ok(unit.includes('ExecStart=') && unit.includes('lib/main.ts'));
+  assert.ok(unit.includes('ExecStart=') && unit.includes('core/main.ts'));
 
   const envFile = path.join(f.env.CPR_CONFIG_DIR, '.env');
   assert.ok(fs.existsSync(envFile));
@@ -180,7 +180,7 @@ test('upgrade --yes：ff-only 后重启一次', () => {
 test('upgrade --yes：分叉（落后+领先）→ rebase 重放本地 commit', () => {
   const f = makeFixture();
   upstreamAddFile(f);
-  fs.writeFileSync(path.join(f.work, 'lib', 'mine-extra.ts'), '// mine\n');
+  fs.writeFileSync(path.join(f.work, 'core', 'mine-extra.ts'), '// mine\n');
   commitAll(f.work, 'mine change');
   git(f.work, ['fetch', 'origin']);
   assert.equal(Number(git(f.work, ['rev-list', '--count', 'HEAD..origin/master'])), 1);
@@ -191,15 +191,15 @@ test('upgrade --yes：分叉（落后+领先）→ rebase 重放本地 commit', 
   // rebase 后 HEAD 是重放出的新 commit（SHA ≠ origin/master）；断言祖先关系 + 双方内容都在。
   assert.equal(git(f.work, ['rev-list', '--count', 'HEAD..origin/master']), '0');
   assert.equal(git(f.work, ['rev-list', '--count', 'origin/master..HEAD']), '1');
-  assert.ok(fs.existsSync(path.join(f.work, 'lib', 'mine-extra.ts'))); // 本地 commit 重放成功
-  assert.ok(fs.existsSync(path.join(f.work, 'lib', 'extra.ts'))); // 上游 commit 也在
+  assert.ok(fs.existsSync(path.join(f.work, 'core', 'mine-extra.ts'))); // 本地 commit 重放成功
+  assert.ok(fs.existsSync(path.join(f.work, 'core', 'extra.ts'))); // 上游 commit 也在
 });
 
 test('upgrade：rebase 撞冲突 → abort 原地还原、退出非零', () => {
   const f = makeFixture();
-  const mainFile = path.join(f.work, 'lib', 'main.ts');
+  const mainFile = path.join(f.work, 'core', 'main.ts');
   // 上游把同一行改成 UPSTREAM，本地改成 LOCAL——rebase 必撞
-  upstreamCommit(f, (dir) => { fs.writeFileSync(path.join(dir, 'lib', 'main.ts'), '// UPSTREAM\n'); });
+  upstreamCommit(f, (dir) => { fs.writeFileSync(path.join(dir, 'core', 'main.ts'), '// UPSTREAM\n'); });
   fs.writeFileSync(mainFile, '// LOCAL\n');
   commitAll(f.work, 'local change');
   const headBefore = git(f.work, ['rev-parse', 'HEAD']);
@@ -208,7 +208,7 @@ test('upgrade：rebase 撞冲突 → abort 原地还原、退出非零', () => {
   const r = cpr(f.work, ['upgrade', '--yes'], f.env);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /abort 原地恢复/);
-  assert.match(r.stderr, /lib\/main\.ts/);
+  assert.match(r.stderr, /core\/main\.ts/);
   assert.equal(git(f.work, ['rev-parse', 'HEAD']), headBefore); // HEAD 未动
   assert.equal(fs.readFileSync(mainFile, 'utf8'), contentBefore); // 工作树逐字节还原
   assert.equal(git(f.work, ['status', '--porcelain']).trim(), ''); // 干净如初
@@ -219,13 +219,13 @@ test('upgrade：rebase 撞冲突 → abort 原地还原、退出非零', () => {
 test('upgrade：脏跟踪文件无条件拒绝且零副作用', () => {
   const f = makeFixture();
   upstreamAddFile(f);
-  fs.writeFileSync(path.join(f.work, 'lib', 'main.ts'), '// 半成品改动\n');
+  fs.writeFileSync(path.join(f.work, 'core', 'main.ts'), '// 半成品改动\n');
   const r = cpr(f.work, ['upgrade', '--yes'], f.env);
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /lib\/main\.ts/);
+  assert.match(r.stderr, /core\/main\.ts/);
   assert.match(r.stderr, /git commit/); // 三条出路提示
   assert.deepEqual(systemctlLog(f), []); // 没有任何 systemd 动作
-  assert.match(fs.readFileSync(path.join(f.work, 'lib', 'main.ts'), 'utf8'), /半成品/); // 改动原样保留
+  assert.match(fs.readFileSync(path.join(f.work, 'core', 'main.ts'), 'utf8'), /半成品/); // 改动原样保留
 });
 
 // ---- uninstall ----
@@ -301,16 +301,16 @@ export default class LocalPolicy {
 
 function makeMainCopy(twinName: string): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-main-'));
-  fs.cpSync(path.join(REPO, 'lib'), path.join(root, 'lib'), { recursive: true });
+  fs.cpSync(path.join(REPO, 'core'), path.join(root, 'core'), { recursive: true });
   fs.writeFileSync(path.join(root, 'package.json'), '{"type":"module"}\n');
-  fs.writeFileSync(path.join(root, 'lib', 'policy', 'mine.ts'), TWIN_MINE.replace('twin-stub', twinName));
+  fs.writeFileSync(path.join(root, 'core', 'policy', 'mine.ts'), TWIN_MINE.replace('twin-stub', twinName));
   return root;
 }
 
 async function bootMain(root: string, extra: Env): Promise<{ subscriptions: { name: string }[]; stdout: string; child: ReturnType<typeof spawn> }> {
   const [forwardPort, adminPort] = await Promise.all([freePort(), freePort()]);
   const dbs = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-main-db-'));
-  const child = spawn(process.execPath, ['lib/main.ts'], {
+  const child = spawn(process.execPath, ['core/main.ts'], {
     cwd: root,
     env: {
       ...process.env, ...extra,
@@ -338,12 +338,12 @@ async function bootMain(root: string, extra: Env): Promise<{ subscriptions: { na
   throw new Error(`main.ts 未在时限内起来：${stdout}`);
 }
 
-test('main.ts：无 policy.local.ts 回落 lib/policy/mine.ts', async () => {
+test('main.ts：无 policy.local.ts 回落 core/policy/mine.ts', async () => {
   const root = makeMainCopy('twin-stub');
   const { subscriptions, stdout, child } = await bootMain(root, {});
   try {
     assert.deepEqual(subscriptions.map((s) => s.name), ['twin-stub']);
-    assert.match(stdout, /^llm-cpr \S+ — policy: lib\/policy\/mine\.ts/);
+    assert.match(stdout, /^llm-cpr \S+ — policy: core\/policy\/mine\.ts/);
   } finally {
     child.kill('SIGTERM');
   }
@@ -364,7 +364,7 @@ test('main.ts：有 policy.local.ts 则优先生效', async () => {
 test('main.ts：坏 policy.local.ts 拒绝启动且报错指向该文件', () => {
   const root = makeMainCopy('twin-stub');
   fs.writeFileSync(path.join(root, 'policy.local.ts'), 'export default class Bad { backends = []; models = [] }\n');
-  const r = spawnSync(process.execPath, ['lib/main.ts'], { cwd: root, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, ['core/main.ts'], { cwd: root, encoding: 'utf8' });
   assert.equal(r.status, 1);
   assert.match(r.stderr ?? '', /policy\.local\.ts/);
 });

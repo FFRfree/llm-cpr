@@ -9,9 +9,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { createGatewayServers } from '../lib/http/server.ts';
-import type { DecisionCtx, Decision, RouterPolicy } from '../lib/policy/contract.ts';
-import type { AuditRow, Backend } from '../lib/contracts.ts';
+import { createGatewayServers } from '../core/http/server.ts';
+import type { DecisionCtx, Decision, RouterPolicy } from '../core/policy/contract.ts';
+import type { AuditRow, Backend } from '../core/contracts.ts';
 
 const listen = async (server: http.Server): Promise<string> => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return `http://127.0.0.1:${(server.address() as AddressInfo).port}`; };
 const close = (server: http.Server): Promise<void> => new Promise<void>((resolve) => {

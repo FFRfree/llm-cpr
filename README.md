@@ -22,7 +22,7 @@
 
 ## 快速开始
 
-1. 克隆仓库后编辑 `policy.local.ts`（没有就 `cp policy.example.ts policy.local.ts`）——配置即代码：订阅声明与路由策略就在这个文件里，改它等于改代码。它被 gitignore，升级永不冲突；`lib/policy/mine.ts` 是仓库自带的默认声明（作者的实际配置），没有 local 文件时用它。先从一份账号、一个模型开始，再扩展。
+1. 克隆仓库后编辑 `policy.local.ts`（没有就 `cp policy.example.ts policy.local.ts`）——配置即代码：订阅声明与路由策略就在这个文件里，改它等于改代码。它被 gitignore，升级永不冲突；`core/policy/mine.ts` 是仓库自带的默认声明（作者的实际配置），没有 local 文件时用它。先从一份账号、一个模型开始，再扩展。
 2. 生成足够长的随机 master key；将其和后端凭据放在本机 `.env`，设置文件权限为仅当前用户可读（`chmod 600 .env`）。不要提交 `.env`。本仓库是开发环境示例；生产机的实际密钥放在配置目录（如 `~/.config/coding-plan-router/.env`），部署布局见 [`docs/deployment.md`](docs/deployment.md)。
 3. 根据订阅家族设置每个 backend 的 `family`（`ocg` 或 `ccg`）、`base_url`、`key_env`；`name` 是持久会话映射和审计的稳定身份键，不应重命名；`account` 用于上游额度账号匹配，`alias` 只改显示。OCG 的 `base_url` 指向直连服务或兼容代理，CCG 指向其 OpenAI 兼容 Provider API。
 4. 在 `models` 中配置对客户端公开的统一 `id`，并在 `backends` 映射中填写每个家族的准确上游模型 ID。仅加入你已验证可用、且希望公开给客户端的模型。
@@ -38,7 +38,7 @@ CPR_UPSTREAM_KEY=replace-with-your-provider-api-key
 # CPR_ADMIN_PORT=8740
 ```
 
-声明形状（`lib/policy/mine.ts` 内即是实例，不用写 JSON；上线前请核对你的订阅及上游模型 ID）：`master_key_env`、`listen`/`admin` 端口、`backends[]`（`name`/`family`/`alias`/`base_url`/`key_env`）与 `models[]`（对客户端公开的统一 `id` → 各家族真名映射）。完整真实示例直接看 `lib/policy/mine.ts`。
+声明形状（`core/policy/mine.ts` 内即是实例，不用写 JSON；上线前请核对你的订阅及上游模型 ID）：`master_key_env`、`listen`/`admin` 端口、`backends[]`（`name`/`family`/`alias`/`base_url`/`key_env`）与 `models[]`（对客户端公开的统一 `id` → 各家族真名映射）。完整真实示例直接看 `core/policy/mine.ts`。
 
 `backends[].alias` 是可选的看板显示名：后台各处（订阅卡标题、汇总、钉住会话、请求明细）优先显示它，家族一律用全名 `OpenCode Go` / `CommandCode GOAT`，卡片脚注保留内部名 `name` 便于对日志。不配 `alias` 时显示内部名。
 
@@ -50,7 +50,7 @@ CPR_UPSTREAM_KEY=replace-with-your-provider-api-key
 set -a
 . ./.env
 set +a
-node lib/main.ts
+node core/main.ts
 ```
 
 客户端配置为 OpenAI 兼容地址 `http://127.0.0.1:8741/v1`，API key 使用 `CPR_MASTER_KEY` 的值。请求需带 `Authorization: Bearer …`。例如：
@@ -81,7 +81,7 @@ node scripts/cpr.ts upgrade          # 干净仓 fast-forward；升级后自动 
 
 卸载：`node scripts/cpr.ts uninstall` 停服务、删 unit；数据库与 `.env` 永不静默删除（确认不要再加 `--purge`）；clone 目录自己删。
 
-启动日志第一行报当前 commit（`llm-cpr <sha> — policy: policy.local.ts|lib/policy/mine.ts`），随时核对「磁盘版本 = 运行版本」。
+启动日志第一行报当前 commit（`llm-cpr <sha> — policy: policy.local.ts|core/policy/mine.ts`），随时核对「磁盘版本 = 运行版本」。
 
 ## 路由行为
 
@@ -119,21 +119,21 @@ npm run typecheck   # 项目本地 tsc --noEmit；strict + erasableSyntaxOnly
 npm test            # 等同 node --test
 ```
 
-生产仍用 `node lib/main.ts`，不用编译或安装开发依赖；若用 npm 安装生产环境，可用 `npm ci --omit=dev`。`package-lock.json` 固定开发工具链，不依赖全局 `tsc`。
+生产仍用 `node core/main.ts`，不用编译或安装开发依赖；若用 npm 安装生产环境，可用 `npm ci --omit=dev`。`package-lock.json` 固定开发工具链，不依赖全局 `tsc`。
 
 测试只用公开配置、真实本机 HTTP、假凭据和可丢弃数据库，包含 main 入口、两家族会话头/额度端点、JSON/SSE 原字节透传、路由亲和与改绑、审计/看板，以及超时/取消/流式缓冲上限回归。不要连接生产账号、读取真实凭据或请求真实上游。`type-tests/` 只用于编译期正负类型契约，刻意放在 Node 测试自动发现目录之外。
 
 ### 渐进类型化与模块职责
 
-- `lib/providers/opencode.ts` / `commandcode.ts` 是同一 `ProviderAdapter` 的两个真实实现：负责各家的会话头和 quota read。OCG 保留直连 `/usage`（浏览器 UA + 订阅 key）与代理 route-status（管理 key + `account` 匹配）；CCG 读取三个 `/alpha` 额度端点。`providers/index.ts` 集中注册家族，不把家族分支放进路由核。
-- `lib/protocols/chat-completions.ts` 是具体 Chat 实现：入口匹配、上游路径拼接、模型重映射、透明保留其他请求字段、JSON/SSE 用量观察。256 KiB 的有界旁路只供审计，不重写响应字节。
-- `lib/contracts.ts` 类型覆盖后端身份/模型映射、会话身份、HTTP headers、额度窗口/快照，以及 provider/protocol 输入输出；第三方 JSON 从 `unknown` 检查后读取，不用 `any` 假装已验证。用量对象仍是开放字段集，token 数值与 cache 字段的校验继续由原审计层负责。
+- `core/providers/opencode.ts` / `commandcode.ts` 是同一 `ProviderAdapter` 的两个真实实现：负责各家的会话头和 quota read。OCG 保留直连 `/usage`（浏览器 UA + 订阅 key）与代理 route-status（管理 key + `account` 匹配）；CCG 读取三个 `/alpha` 额度端点。`providers/index.ts` 集中注册家族，不把家族分支放进路由核。
+- `core/protocols/chat-completions.ts` 是具体 Chat 实现：入口匹配、上游路径拼接、模型重映射、透明保留其他请求字段、JSON/SSE 用量观察。256 KiB 的有界旁路只供审计，不重写响应字节。
+- `core/contracts.ts` 类型覆盖后端身份/模型映射、会话身份、HTTP headers、额度窗口/快照，以及 provider/protocol 输入输出；第三方 JSON 从 `unknown` 检查后读取，不用 `any` 假装已验证。用量对象仍是开放字段集，token 数值与 cache 字段的校验继续由原审计层负责。
 - `server.ts` 继续负责 HTTP 生命周期、超时、取消、选路、亲和、重试、改绑与事件账；`snapshots.ts` 继续负责轮询、去重、过期与降级状态，只将获取各家额度委托给 provider。没有改变持久化 schema、订阅 `name`、重试阈值或改绑策略。
 - 无会话头时，OCG 上游 session 使用路由已经解析的 fingerprint（无可指纹化消息时用 address），使上游缓存键与亲和/审计身份一致；有效统一头仍优先，旧 `x-opencode-session` 仍兼容，空统一头不覆盖有效旧头。CCG 不接收这两种会话头。
 
-全仓 TypeScript：`lib/`、`test/`、`scripts/` 下只有 `.ts`，Node 原生类型擦除直接运行，没有构建步骤也没有运行时依赖。`npm run typecheck` 对这三处全部做 strict 静态检查；`type-tests/` 只放编译期正负类型契约，刻意放在 Node 测试自动发现目录之外。类型不代替运行时校验：配置、上游 JSON 与 SQLite 行仍从 `unknown` 检查后读取。
+全仓 TypeScript：`core/`、`test/`、`scripts/` 下只有 `.ts`，Node 原生类型擦除直接运行，没有构建步骤也没有运行时依赖。`npm run typecheck` 对这三处全部做 strict 静态检查；`type-tests/` 只放编译期正负类型契约，刻意放在 Node 测试自动发现目录之外。类型不代替运行时校验：配置、上游 JSON 与 SQLite 行仍从 `unknown` 检查后读取。
 
-未来 Responses/Messages 应作为 `lib/protocols/` 下独立的具体模块，先验证协议能力、状态归属、流事件和 usage 再接入路由；目前 `/v1/responses`、`/v1/messages` 仍返回 404，没有空适配器、跨协议转换或虚构能力声明。
+未来 Responses/Messages 应作为 `core/protocols/` 下独立的具体模块，先验证协议能力、状态归属、流事件和 usage 再接入路由；目前 `/v1/responses`、`/v1/messages` 仍返回 404，没有空适配器、跨协议转换或虚构能力声明。
 
 ## 安全与数据
 

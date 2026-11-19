@@ -1,11 +1,11 @@
 # Policy 用户指南：怎么写自己的路由策略
 
-> 本指南是 policy 编写的基准文档；契约正本 = `lib/policy/contract.ts`（类型以它为准）。
+> 本指南是 policy 编写的基准文档；契约正本 = `core/policy/contract.ts`（类型以它为准）。
 > 标注约定：**【现状】** = 已实现于工作树（2026-11-18 契约收敛 + affinity/rebind 词汇改版，全量测试通过）、随下次 release 生效；生产 release 切换前仍是旧契约旧词汇。术语看 GLOSSARY、决策记录看 ADR-0002/0006。
 
 ## 1. Policy 是什么
 
-你的策略就是一个 TS 类，住在 `/root/ffr-projects/llm-cpr/lib/policy/mine.ts`。它由两部分组成：
+你的策略就是一个 TS 类，住在 `/root/ffr-projects/llm-cpr/core/policy/mine.ts`。它由两部分组成：
 
 - **声明区**（backends/models/listen/routing…）：网关的静态配置，等价于旧 config.json。
 - **策略区**：唯一一个钩子 `decide(ctx)`。引擎在每个请求的选路点调用它，它回答「这次发给谁」；它不回答的部分由**内置逻辑**兜底（月欠账评分选新会话 / 长会话保亲和不改绑 / 尊重亲和）。

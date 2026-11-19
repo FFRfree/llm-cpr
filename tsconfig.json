@@ -14,7 +14,7 @@
     "skipLibCheck": false
   },
   "include": [
-    "lib/**/*.ts",
+    "core/**/*.ts",
     "test/**/*.ts",
     "scripts/**/*.ts",
     "type-tests/**/*.ts"

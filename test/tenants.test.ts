@@ -8,15 +8,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
-import { createGatewayServers } from '../lib/http/server.ts';
-import { openDatabase } from '../lib/store/db.ts';
-import { createSystemEventStore } from '../lib/store/events.ts';
-import { validateConfig } from '../lib/policy/config.ts';
+import { createGatewayServers } from '../core/http/server.ts';
+import { openDatabase } from '../core/store/db.ts';
+import { createSystemEventStore } from '../core/store/events.ts';
+import { validateConfig } from '../core/policy/config.ts';
 import type { TestContext } from 'node:test';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { Backend, GatewayConfig, Tenant } from '../lib/contracts.ts';
-import type { DecisionCtx, RouterPolicy } from '../lib/policy/contract.ts';
+import type { Backend, GatewayConfig, Tenant } from '../core/contracts.ts';
+import type { DecisionCtx, RouterPolicy } from '../core/policy/contract.ts';
 
 interface Seen { name: string; auth: string | undefined }
 
@@ -268,7 +268,7 @@ test('two tenants resolving to the same key value refuse to start (credential co
 });
 
 test('summary dedupes sessions by (tenant, identity); identity summary without tenant matches its requests scope', async (t: TestContext): Promise<void> => {
-  const { UsageAudit } = await import('../lib/store/audit.ts');
+  const { UsageAudit } = await import('../core/store/audit.ts');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-tenants-summary-'));
   const audit = new UsageAudit({ dbFile: path.join(dir, 'data.db') });
   // 同一 identity 两个租户 = 两个会话（review P2：COUNT(DISTINCT identity) 曾并成一个）

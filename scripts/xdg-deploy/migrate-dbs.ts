@@ -82,7 +82,7 @@ for (const file of [sessionsDb, usageDb]) {
   fs.chmodSync(backup, 0o600);
 }
 
-// 3) 建 data.db（schema 与 lib/store/db.ts 保持一致）
+// 3) 建 data.db（schema 与 core/store/db.ts 保持一致）
 const dest = new DatabaseSync(destDb);
 dest.exec('PRAGMA journal_mode=WAL');
 dest.exec(`

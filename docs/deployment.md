@@ -9,7 +9,7 @@
 | 开发源码 + Git | 任意仓库目录（下文 `$SRC`） | 只在这里改代码；不是运行目录 |
 | 正式运行代码 | `~/.local/lib/coding-plan-router/releases/<日期>-<短sha>/` | 从 `git archive` 出的发布副本，带 `RELEASE.txt` |
 | 当前生效版本 | `~/.local/lib/coding-plan-router/current` | 软链指向某个 release 目录 |
-| 运行声明（配置即代码） | 仓库 `lib/policy/mine.ts`，随 release 发布 | 改声明 = 改代码，走发布流程 |
+| 运行声明（配置即代码） | 仓库 `core/policy/mine.ts`，随 release 发布 | 改声明 = 改代码，走发布流程 |
 | 密钥环境变量 | `~/.config/coding-plan-router/.env` | chmod 600，生产唯一一份 |
 | 持久数据 | `~/.local/share/coding-plan-router/data.db`（含 `-wal`/`-shm`） | 唯一生效库：requests + system_events 双表 |
 | 迁移备份 | `~/.local/share/coding-plan-router/backups/<时间戳>/` | 迁移时的一致性快照 |
@@ -17,7 +17,7 @@
 
 `~/.local/lib` 不是 XDG 规范目录，是本项目选定的用户级运行代码位置；配置与数据分别遵循 XDG 的 `~/.config` 与 `~/.local/share`。
 
-配置即代码（见 [ADR-0001](adr/0001-configuration-as-code.md)）：订阅声明与路由策略在仓库 `lib/policy/mine.ts`，随 release 发布；仓库只放不含密钥的 `.env.example`，部署机复制成 `.env`（已被 `.gitignore` 排除）。部署机上唯一生效的声明是运行副本里随 `git archive` 发布的 `lib/policy/mine.ts`；在仓库改声明不影响线上，直到发布切换。运行代码是 TypeScript（`.ts`，靠 Node 原生类型擦除，无需构建），发布副本直接带 `lib/` 的 `.ts` 文件即可，前提 Node ≥ 22.18。
+配置即代码（见 [ADR-0001](adr/0001-configuration-as-code.md)）：订阅声明与路由策略在仓库 `core/policy/mine.ts`，随 release 发布；仓库只放不含密钥的 `.env.example`，部署机复制成 `.env`（已被 `.gitignore` 排除）。部署机上唯一生效的声明是运行副本里随 `git archive` 发布的 `core/policy/mine.ts`；在仓库改声明不影响线上，直到发布切换。运行代码是 TypeScript（`.ts`，靠 Node 原生类型擦除，无需构建），发布副本直接带 `core/` 的 `.ts` 文件即可，前提 Node ≥ 22.18。
 
 systemd 用**系统级** unit（`/etc/systemd/system/coding-plan-router.service`）即可，用户级目录不意味着 user service。运行时零第三方依赖，发布副本不需要 `node_modules`。
 
@@ -37,14 +37,14 @@ git status --short            # 确认要发布的提交，别把未提交改动
 SHA=$(git rev-parse --short HEAD)
 REL=$HOME/.local/lib/coding-plan-router/releases/$(date -u +%Y%m%d)-$SHA
 mkdir -p "$REL"
-git archive HEAD lib static package.json | tar -x -C "$REL"
+git archive HEAD core static package.json | tar -x -C "$REL"
 printf 'commit=%s\nnode=%s\npublished_at=%s\n' "$(git rev-parse HEAD)" "$(node -v)" "$(date -u +%FT%TZ)" > "$REL/RELEASE.txt"
 # 冒烟：本机假上游，临时目录，不碰真实订阅额度
 node scripts/xdg-deploy/smoke-release.ts "$REL"
 ln -sfn "$REL" $HOME/.local/lib/coding-plan-router/current   # 切换生效版本（重启后才真正生效）
 ```
 
-`git archive HEAD lib static package.json` 只取运行所需文件；`test/`、`tsconfig.json`、`package-lock.json` 不需要，运行时不读它们。`package.json` 必须带上：运行代码是 `.ts`，Node 按最近的 `package.json` 的 `"type": "module"` 判定为 ESM——发布目录里没有它就只能靠语法探测兜底。
+`git archive HEAD core static package.json` 只取运行所需文件；`test/`、`tsconfig.json`、`package-lock.json` 不需要，运行时不读它们。`package.json` 必须带上：运行代码是 `.ts`，Node 按最近的 `package.json` 的 `"type": "module"` 判定为 ESM——发布目录里没有它就只能靠语法探测兜底。
 
 ## 数据备份与迁移（双库 → data.db 合库）
 
@@ -66,7 +66,7 @@ node scripts/xdg-deploy/migrate-dbs.ts \
 
 ## systemd unit 要点
 
-`WorkingDirectory` 指 `current` 软链；`EnvironmentFile` 指 `~/.config/coding-plan-router/.env`；`CPR_DB_FILE` 显式写绝对路径；`ReadWritePaths` 限 `~/.local/share/coding-plan-router`；`ExecStart` 为 `node lib/main.ts`。配置即代码之后没有 `CPR_CONFIG_FILE`——声明随 release 走。
+`WorkingDirectory` 指 `current` 软链；`EnvironmentFile` 指 `~/.config/coding-plan-router/.env`；`CPR_DB_FILE` 显式写绝对路径；`ReadWritePaths` 限 `~/.local/share/coding-plan-router`；`ExecStart` 为 `node core/main.ts`。配置即代码之后没有 `CPR_CONFIG_FILE`——声明随 release 走。
 
 ## 切换与验证
 

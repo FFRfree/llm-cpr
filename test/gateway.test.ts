@@ -1,5 +1,5 @@
 import type { AddressInfo } from 'node:net';
-import type { Backend, GatewayConfig } from '../lib/contracts.ts';
+import type { Backend, GatewayConfig } from '../core/contracts.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import http from 'node:http';
@@ -7,11 +7,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { resolveListenEndpoints } from '../lib/policy/config.ts';
-import Mine from '../lib/policy/mine.ts';
+import { resolveListenEndpoints } from '../core/policy/config.ts';
+import Mine from '../core/policy/mine.ts';
 const policy = new Mine();
-import { chatCompletions } from '../lib/protocols/chat-completions.ts';
-import { createGatewayServers } from '../lib/http/server.ts';
+import { chatCompletions } from '../core/protocols/chat-completions.ts';
+import { createGatewayServers } from '../core/http/server.ts';
 
 const baseConfig = (baseUrl: string, family: Backend['family'] = 'ocg'): GatewayConfig => ({
   master_key_env: 'CPR_TEST_MASTER',

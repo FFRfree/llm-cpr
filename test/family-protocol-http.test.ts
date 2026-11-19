@@ -6,14 +6,14 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { createGatewayServers } from '../lib/http/server.ts';
-import type { Gateway } from '../lib/http/server.ts';
+import { createGatewayServers } from '../core/http/server.ts';
+import type { Gateway } from '../core/http/server.ts';
 import type { TestContext } from 'node:test';
 import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { ChildProcessByStdio } from 'node:child_process';
 import type { Readable } from 'node:stream';
-import type { AuditRow, Backend, QuotaSnapshot } from '../lib/contracts.ts';
+import type { AuditRow, Backend, QuotaSnapshot } from '../core/contracts.ts';
 
 interface InferenceBody extends Record<string, unknown> {
   model: string;
@@ -233,7 +233,7 @@ test('unchanged main entry runs native typed modules with disposable config and 
   // 配置即代码：子进程用临时启动器直传假 policy（不再经 CPR_POLICY_FILE 加载文件）。
   const launcher = path.join(dir, 'launcher.mjs');
   fs.writeFileSync(launcher, `
-    import { startGateway } from ${JSON.stringify(fileURLToPath(new URL('../lib/http/server.ts', import.meta.url)))};
+    import { startGateway } from ${JSON.stringify(fileURLToPath(new URL('../core/http/server.ts', import.meta.url)))};
     await startGateway({
       master_key_env: 'MASTER',
       models: [{ id: 'public-model', backends: { ocg: 'native-model' } }],

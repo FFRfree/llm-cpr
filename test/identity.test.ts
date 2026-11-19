@@ -3,9 +3,9 @@ import test from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveIdentity } from '../lib/store/identity.ts';
-import { openDatabase } from '../lib/store/db.ts';
-import { createSystemEventStore } from '../lib/store/events.ts';
+import { resolveIdentity } from '../core/store/identity.ts';
+import { openDatabase } from '../core/store/db.ts';
+import { createSystemEventStore } from '../core/store/events.ts';
 
 const request = (headers: Record<string, string> = {}, body: Record<string, unknown> = {}, remoteAddress: string = '127.0.0.1'): { headers: Record<string, string>; body: Record<string, unknown>; remoteAddress: string } => ({ headers, body, remoteAddress });
 

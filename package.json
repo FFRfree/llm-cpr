@@ -7,7 +7,7 @@
     "node": ">=22.18.0"
   },
   "scripts": {
-    "start": "node lib/main.ts",
+    "start": "node core/main.ts",
     "test": "node --test",
     "typecheck": "tsc --noEmit"
   },

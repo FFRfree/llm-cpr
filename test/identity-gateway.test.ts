@@ -1,5 +1,5 @@
 import type { AddressInfo } from 'node:net';
-import type { Backend, GatewayConfig } from '../lib/contracts.ts';
+import type { Backend, GatewayConfig } from '../core/contracts.ts';
 interface Seen { name: string; session: string | string[] | undefined }
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { createGatewayServers } from '../lib/http/server.ts';
+import { createGatewayServers } from '../core/http/server.ts';
 
 async function fakeBackend(name: string, seen: Seen[]): Promise<{ server: http.Server; url: string }> {
   const server = http.createServer(async (req, res) => {

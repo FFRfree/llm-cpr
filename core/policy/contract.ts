@@ -75,5 +75,5 @@ export interface RouterPolicy {
   decide?(ctx: DecisionCtx): Decision;
 }
 
-// 配置即代码后无「加载后补默认值」这一步；声明方（lib/policy/mine.ts）自己写全。
+// 配置即代码后无「加载后补默认值」这一步；声明方（core/policy/mine.ts）自己写全。
 // LoadedPolicy 曾是 PolicyStore 加载产物的形状，随其退役删除（2026-11-18）。

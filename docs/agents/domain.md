@@ -20,7 +20,7 @@ Single-context repo:
 ├── docs/adr/
 │   ├── 0001-....md
 │   └── 0002-....md
-└── lib/
+└── core/
 ```
 
 ## Existing domain material

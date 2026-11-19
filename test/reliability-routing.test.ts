@@ -3,17 +3,17 @@ import test from 'node:test';
 import type { TestContext } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import type { IncomingMessage, OutgoingHttpHeaders, Server, ServerResponse } from 'node:http';
-import type { AuditSummary, Backend, GatewayConfig, QuotaSnapshot, QuotaWindow, RoutingConfig, SessionSummary } from '../lib/contracts.ts';
-import type { Gateway } from '../lib/http/server.ts';
+import type { AuditSummary, Backend, GatewayConfig, QuotaSnapshot, QuotaWindow, RoutingConfig, SessionSummary } from '../core/contracts.ts';
+import type { Gateway } from '../core/http/server.ts';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
-import { createGatewayServers } from '../lib/http/server.ts';
-import { UsageSnapshots } from '../lib/store/snapshots.ts';
-import { rankBackends, monthlyDebtScore } from '../lib/policy/selection.ts';
-import { UsageAudit } from '../lib/store/audit.ts';
+import { createGatewayServers } from '../core/http/server.ts';
+import { UsageSnapshots } from '../core/store/snapshots.ts';
+import { rankBackends, monthlyDebtScore } from '../core/policy/selection.ts';
+import { UsageAudit } from '../core/store/audit.ts';
 
 interface UsageWindow { percent: number; resetsAt: string | null }
 interface Usage { rolling: UsageWindow; weekly: UsageWindow; monthly: UsageWindow }

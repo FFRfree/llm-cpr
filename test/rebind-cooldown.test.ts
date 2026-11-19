@@ -3,8 +3,8 @@ import test from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openDatabase } from '../lib/store/db.ts';
-import { createSystemEventStore } from '../lib/store/events.ts';
+import { openDatabase } from '../core/store/db.ts';
+import { createSystemEventStore } from '../core/store/events.ts';
 
 test('rebind cooldown remains active until one hour has elapsed; first bind does not arm it', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-cooldown-'));

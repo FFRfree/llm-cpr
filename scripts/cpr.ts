@@ -46,8 +46,8 @@ function repoRoot(): string {
   const probe = git(['rev-parse', '--show-toplevel'], process.cwd());
   if (!probe.ok) die('当前目录不是 git 仓库——请在 llm-cpr 的 clone 根目录里运行');
   const root = probe.out;
-  if (!fs.existsSync(path.join(root, 'lib', 'main.ts')) || !fs.existsSync(path.join(root, 'package.json'))) {
-    die('当前仓库不是 llm-cpr（缺 lib/main.ts / package.json）');
+  if (!fs.existsSync(path.join(root, 'core', 'main.ts')) || !fs.existsSync(path.join(root, 'package.json'))) {
+    die('当前仓库不是 llm-cpr（缺 core/main.ts / package.json）');
   }
   return root;
 }
@@ -170,7 +170,7 @@ function runChecks(root: string, { smoke = true }: { smoke?: boolean } = {}): bo
   // 默认冒烟 = 当前 HEAD 的运行快照（git archive）+ 假上游冒烟，与发布纪律同一条验收线。
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-upgrade-smoke-'));
   const tarball = path.join(dir, 'snapshot.tar');
-  const archive = git(['archive', '--format=tar', '--output', tarball, 'HEAD', 'lib', 'static', 'package.json'], root);
+  const archive = git(['archive', '--format=tar', '--output', tarball, 'HEAD', 'core', 'static', 'package.json'], root);
   if (!archive.ok) {
     console.error(`cpr: 冒烟快照打包失败：${archive.err}`);
     return false;
@@ -233,7 +233,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${root}
-ExecStart=${process.execPath} lib/main.ts
+ExecStart=${process.execPath} core/main.ts
 EnvironmentFile=${config}/.env
 Environment=CPR_DB_FILE=${data}/data.db
 Restart=on_failure_placeholder

@@ -4,11 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { createGatewayServers, startGateway } from '../lib/http/server.ts';
+import { createGatewayServers, startGateway } from '../core/http/server.ts';
 import type { TestContext } from 'node:test';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { AuditRow, GatewayConfig, QuotaSnapshot, SessionSummary } from '../lib/contracts.ts';
+import type { AuditRow, GatewayConfig, QuotaSnapshot, SessionSummary } from '../core/contracts.ts';
 
 interface RouteStatus {
   subscriptions: { name: string; snapshot: QuotaSnapshot & { fiveHour: { cap: number } } }[];
@@ -77,7 +77,7 @@ test('startGateway ignores configured public admin host and binds the admin list
 
 test('audit query functions return stable request, session and aggregate shapes', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-audit-query-'));
-  const { UsageAudit } = await import('../lib/store/audit.ts');
+  const { UsageAudit } = await import('../core/store/audit.ts');
   const audit = new UsageAudit({ dbFile: path.join(dir, 'usage.db') });
   audit.record({ ts: 1, identity: 's', identity_kind: 'session', subscription: 'sub' }, { prompt_tokens: 20, completion_tokens: 2, prompt_tokens_details: { cached_tokens: 0 } });
   assert.equal(audit.listRequests().length, 1);

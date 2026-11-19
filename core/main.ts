@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 配置即代码：声明与策略 = policy.local.ts（用户自定义，gitignored）或 lib/policy/mine.ts（仓库默认）。
+// 配置即代码：声明与策略 = policy.local.ts（用户自定义，gitignored）或 core/policy/mine.ts（仓库默认）。
 // 存在 policy.local.ts 则优先；坏声明在此拒绝启动（退出码 1）。
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -27,7 +27,7 @@ function bootVersion(): string {
 
 try {
   const localUrl = new URL('../policy.local.ts', import.meta.url);
-  const source = fs.existsSync(localUrl) ? 'policy.local.ts' : 'lib/policy/mine.ts';
+  const source = fs.existsSync(localUrl) ? 'policy.local.ts' : 'core/policy/mine.ts';
   // 动态 import 用变量路径：文件存在与否已用 existsSync 判定，import 失败（语法错/坏 import）一律原样抛。
   const loaded = source === 'policy.local.ts'
     ? await import(localUrl.href)
