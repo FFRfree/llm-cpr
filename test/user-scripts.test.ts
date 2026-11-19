@@ -114,7 +114,7 @@ function makeFixture(): Fixture {
 
 // 安装区里某版本的包根（断言用）
 function engineOf(f: Fixture, version: string): string {
-  return path.join(f.env.CPR_APP_ROOT, 'versions', version, 'lib', 'node_modules', '@ffrfree/llm-cpr');
+  return path.join(f.env.CPR_APP_ROOT, 'versions', version, 'app');
 }
 
 function cpr(work: string, args: string[], env: Env): { status: number; stdout: string; stderr: string } {
@@ -203,7 +203,7 @@ test('install --yes：写出 unit / .env(随机 master key) / ~/.llm-cpr policy 
   assert.equal(r.status, 0, r.stderr + r.stdout);
 
   const appRoot = f.env.CPR_APP_ROOT;
-  const engineLink = path.join(appRoot, 'current', 'lib', 'node_modules', '@ffrfree/llm-cpr');
+  const engineLink = path.join(appRoot, 'current', 'app');
   // 安装区三件套（工单 10）：版本目录 / current 软链 / 命令软链
   assert.ok(fs.existsSync(path.join(engineOf(f, '0.1.0'), 'package.json')));
   assert.equal(path.basename(fs.readlinkSync(f.env.CPR_CURRENT_LINK)), '0.1.0');
@@ -211,6 +211,8 @@ test('install --yes：写出 unit / .env(随机 master key) / ~/.llm-cpr policy 
   assert.ok(fs.lstatSync(binLink).isSymbolicLink());
   assert.equal(fs.readlinkSync(binLink), path.join(appRoot, 'current', 'bin', 'cpr'));
   assert.ok(npmLog(f).includes(`install -g --prefix ${path.join(appRoot, 'versions', '0.1.0')} @ffrfree/llm-cpr@0.1.0`));
+  // 工单 12：下载后必须搬离 node_modules（.ts 在那条路径下被 Node 拒跑），空壳一并清掉
+  assert.ok(!fs.existsSync(path.join(appRoot, 'versions', '0.1.0', 'lib')));
 
   const unitPath = path.join(f.env.CPR_UNIT_DIR, UNIT);
   assert.ok(fs.existsSync(unitPath));
@@ -422,6 +424,27 @@ test('upgrade --yes：新版目录全新 → 补丁重打在新版上', () => {
   assert.match(r.stdout, /已打用户补丁：user\.patch/);
   assert.match(fs.readFileSync(path.join(engineOf(f, '0.2.0'), 'core', 'main.ts'), 'utf8'), /patched by user/);
   assert.match(r.stdout, /完成。0\.1\.0 → 0\.2\.0，服务健康/);
+});
+
+test('bootstrap：从 node_modules 路径跑 .ts 被 Node 拒 → cpr.js 引导搬离后拉起（工单 12 真机火情回归）', () => {
+  const f = makeFixture();
+  // 模拟 npx/npm 全局的落盘形态：包整个住在 node_modules 树里
+  const pkgDir = path.join(f.base, 'npx-cache', 'node_modules', '@ffrfree', 'llm-cpr');
+  fs.mkdirSync(path.join(pkgDir, 'scripts'), { recursive: true });
+  fs.cpSync(path.join(REPO, 'scripts', 'cpr.js'), path.join(pkgDir, 'scripts', 'cpr.js'));
+  fs.cpSync(path.join(f.work, 'scripts', 'cpr.ts'), path.join(pkgDir, 'scripts', 'cpr.ts'));
+  fs.cpSync(path.join(f.work, 'package.json'), path.join(pkgDir, 'package.json'));
+  // 对照组：node_modules 路径下直接跑 .ts —— Node 拒绝类型擦除（2026-11-19 本机 v22.22.3 实测的火）
+  const direct = spawnSync(process.execPath, [path.join(pkgDir, 'scripts', 'cpr.ts'), 'doctor'], { encoding: 'utf8' });
+  assert.notEqual(direct.status, 0);
+  assert.match(direct.stderr ?? '', /ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING|node_modules/);
+  // 实验组：cpr.js 引导 → npm 下载（stub 落盘 node_modules，同真 npm）→ 搬离 → 从 app/ 拉起 .ts
+  const r = spawnSync(process.execPath, [path.join(pkgDir, 'scripts', 'cpr.js'), 'doctor'], { env: { ...process.env, ...f.env }, encoding: 'utf8' });
+  assert.equal(r.status, 0, (r.stderr ?? '') + (r.stdout ?? ''));
+  assert.ok(r.stdout?.includes(`PKGROOT=${engineOf(f, '0.1.0')}`)); // CLI 已从 app/ 里跑起来
+  assert.match(r.stdout, /MODE=bootstrap/); // current 未翻转（翻转归 install 过门后，bootstrap 只铺路）
+  assert.ok(!fs.existsSync(path.join(f.env.CPR_APP_ROOT, 'versions', '0.1.0', 'lib'))); // node_modules 空壳已清
+  assert.ok(fs.existsSync(path.join(engineOf(f, '0.1.0'), 'scripts', 'cpr.ts')));
 });
 
 // ---- uninstall ----

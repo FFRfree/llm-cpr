@@ -8,7 +8,7 @@
 | 角色 | 路径 | 说明 |
 | --- | --- | --- |
 | 用户资产 | `~/.llm-cpr/` | policy.ts / `.env`（chmod 600）/ data.db / backups/ / patches/——拷走即完整备份，升级永不碰 |
-| 代码安装区 | `~/.local/lib/llm-cpr/versions/<版本>/` + `current` 软链 | npm 只当下载器（`install -g --prefix`，scoped 包落 `lib/node_modules/@ffrfree/llm-cpr`）；版本保留当前+上一版垫背，更老的升级成功即清 |
+| 代码安装区 | `~/.local/lib/llm-cpr/versions/<版本>/` + `current` 软链 | npm 只当下载器（`install -g --prefix` 落 node_modules 后**立刻搬离**到 `versions/<v>/app`——Node 拒跑 node_modules 路径下的 .ts，工单 12）；版本保留当前+上一版垫背，更老的升级成功即清 |
 | 命令软链 | `~/.local/bin/cpr` → `current/bin/cpr` | 唯一免 sudo 默认进 PATH 的位置；不提供任何版本切换命令，`versions/` 是纯管道 |
 | 服务 unit | `~/.config/systemd/user/llm-cpr.service` | 用户级 systemd（macOS `~/Library/LaunchAgents`，experimental） |
 

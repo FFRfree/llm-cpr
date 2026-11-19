@@ -1,17 +1,18 @@
 {
   "name": "@ffrfree/llm-cpr",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "LLM 订阅路由网关：多 coding-plan 订阅统一入口，按会话亲和与月欠账调度，订阅声明即代码",
   "engines": {
     "node": ">=22.18.0"
   },
   "bin": {
-    "cpr": "scripts/cpr.ts"
+    "cpr": "scripts/cpr.js"
   },
   "files": [
     "core",
     "static",
+    "scripts/cpr.js",
     "scripts/cpr.ts",
     "policy.example.ts",
     ".env.example",

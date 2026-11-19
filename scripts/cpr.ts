@@ -92,9 +92,25 @@ const versionsDir = (): string => path.join(appRoot(), 'versions');
 const currentLink = (): string => path.join(appRoot(), 'current');
 const binDir = (): string => process.env.CPR_BIN_DIR || path.join(os.homedir(), '.local', 'bin');
 
-// 某版本的包根（npm -g --prefix 的实测落点：<prefix>/lib/node_modules/@ffrfree/llm-cpr + <prefix>/bin/cpr）
+// 某版本的包根（工单 12：Node 拒跑 node_modules 路径下的 .ts，npm 落盘后必须搬离到 versions/<v>/app）
 function versionRoot(version: string): string {
-  return path.join(versionsDir(), version, 'lib', 'node_modules', PKG);
+  return path.join(versionsDir(), version, 'app');
+}
+
+// 下载后搬迁：npm 的落盘形状是 <prefix>/lib/node_modules/@ffrfree/llm-cpr（.ts 在那里跑不起来，
+// ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING 本机实测）——rename 原子搬到 <prefix>/app，
+// 并把版本内 bin 软链重指 ../app/scripts/cpr.ts（npm 自建的那条指向旧地址，作废清理）。
+function relocateFromNodeModules(version: string): void {
+  const prefix = path.join(versionsDir(), version);
+  const src = path.join(prefix, 'lib', 'node_modules', PKG);
+  if (!fs.existsSync(path.join(src, 'package.json'))) die(`搬迁失败：${src} 缺包——中止，current 未动`);
+  fs.rmSync(versionRoot(version), { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(versionRoot(version)), { recursive: true });
+  fs.renameSync(src, versionRoot(version));
+  fs.rmSync(path.join(prefix, 'lib'), { recursive: true, force: true });
+  fs.mkdirSync(path.join(prefix, 'bin'), { recursive: true });
+  fs.rmSync(path.join(prefix, 'bin', 'cpr'), { force: true });
+  fs.symlinkSync('../app/scripts/cpr.ts', path.join(prefix, 'bin', 'cpr'), 'file');
 }
 
 // 当前生效版本 = current 软链 basename；未安装 = null
@@ -269,7 +285,7 @@ async function serviceUpAfterRestart(): Promise<boolean> {
 // 沙箱四行继承自 v0.1.0 生产 unit（review-2 P2 修复：05 重写时曾丢）——用户级不等于不设防；
 // ProtectSystem=full 罩住 /usr、/boot、/etc，引擎唯一可写面 = ReadWritePaths 的用户数据目录。
 function enginePath(): string {
-  return path.join(appRoot(), 'current', 'lib', 'node_modules', PKG);
+  return path.join(appRoot(), 'current', 'app');
 }
 
 function unitFileContent(): string {
@@ -461,11 +477,13 @@ async function install(yes: boolean): Promise<number> {
       console.error(`cpr: npm 下载失败：${installRun.err}\ncpr: 未做任何改动。`);
       return 1;
     }
+    // Node 拒跑 node_modules 路径下的 .ts（工单 12）——落盘后立刻搬离
+    relocateFromNodeModules(selfVersion);
     if (!fs.existsSync(path.join(engine, 'package.json'))) {
       console.error(`cpr: npm 声称装好但 ${engine} 缺包——prefix 落点异常，中止。`);
       return 1;
     }
-    console.log(`cpr: 已下载 ${BRAND}@${selfVersion} → ${engine}`);
+    console.log(`cpr: 已下载 ${PKG}@${selfVersion} → ${engine}`);
   }
 
   const example = path.join(root, 'policy.example.ts');
@@ -643,11 +661,13 @@ async function upgrade(yes: boolean, toVersion: string | undefined): Promise<num
       console.error(`cpr: npm 下载失败：${installNew.err}\ncpr: 未动当前版本，服务未重启。`);
       return 1;
     }
+    // Node 拒跑 node_modules 路径下的 .ts（工单 12）——落盘后立刻搬离
+    relocateFromNodeModules(target);
     if (!fs.existsSync(path.join(targetRoot, 'package.json'))) {
       console.error(`cpr: npm 声称装好但 ${targetRoot} 缺包——prefix 落点异常，中止（current 未动）。`);
       return 1;
     }
-    console.log(`cpr: 已下载 ${BRAND}@${target} → ${targetRoot}`);
+    console.log(`cpr: 已下载 ${PKG}@${target} → ${targetRoot}`);
   } else {
     console.log(`cpr: 版本目录已存在（${targetRoot}），复用`);
   }
