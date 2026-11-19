@@ -65,6 +65,14 @@ function versionOf(root: string): string {
   return pkg.version ?? 'unknown';
 }
 
+// 版本号白名单（review-2 P2）：--to 与一切参与路径拼接的版本号都要过这道门——
+// 含路径字符的值可把 npm --prefix 落到 versions/ 之外、把 current 指向安装区之外。
+const VERSION_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+function versionId(raw: string): string {
+  if (!VERSION_RE.test(raw)) die(`版本号不合法：${raw}（期望 x.y.z 形态，不带路径分隔符）`);
+  return raw;
+}
+
 // ---- 测试接缝 ----
 
 const unitDir = (): string =>
@@ -95,12 +103,16 @@ function installedVersion(): string | null {
 }
 
 // current 软链翻转：先建新链再 rename 换名——rename 原子，永不出现「没有 current」的窗口。
+// review-2 P2：唯一随机名防并发撞车（毫秒时间戳同名可互踩、rename 到别人的链）；翻转后核对目标再收工。
 function flipCurrent(version: string): void {
+  if (!VERSION_RE.test(version)) die(`版本号不合法：${version}`);
   fs.mkdirSync(versionsDir(), { recursive: true });
-  const tmp = `${currentLink()}.new-${Date.now()}`;
+  const tmp = `${currentLink()}.new-${crypto.randomUUID()}`;
   fs.rmSync(tmp, { force: true });
   fs.symlinkSync(`versions/${version}`, tmp, 'dir');
   fs.renameSync(tmp, currentLink());
+  const flipped = path.basename(fs.readlinkSync(currentLink()));
+  if (flipped !== version) die(`current 翻转异常：期望 ${version} 实指 ${flipped}——请检查 ${appRoot()}`);
 }
 
 // PATH 里有没有命令软链目录（XDG 规范原话：发行版应保证 ~/.local/bin 进 PATH）
@@ -250,6 +262,8 @@ async function serviceUpAfterRestart(): Promise<boolean> {
 // ---- unit / plist 内容 ----
 
 // unit 钉 current 软链（版本无关）：写一次，升级翻转软链后 restart 即用新版，unit 文件永不随版本重写。
+// 沙箱四行继承自 v0.1.0 生产 unit（review-2 P2 修复：05 重写时曾丢）——用户级不等于不设防；
+// ProtectSystem=full 罩住 /usr、/boot、/etc，引擎唯一可写面 = ReadWritePaths 的用户数据目录。
 function enginePath(): string {
   return path.join(appRoot(), 'current', 'lib', 'node_modules', BRAND);
 }
@@ -270,6 +284,10 @@ Environment=CPR_CONFIG_DIR=${config}
 Environment=CPR_DATA_DIR=${data}
 Restart=on-failure
 RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ReadWritePaths=${data}
 [Install]
 WantedBy=default.target
 `;
@@ -429,7 +447,7 @@ async function install(yes: boolean): Promise<number> {
   console.log(`cpr: Node ${node.have} ✓`);
 
   // ---- 代码落位（工单 10）：装进自家固定位置，npm 只当下载器 ----
-  const selfVersion = versionOf(root);
+  const selfVersion = versionId(versionOf(root));
   const engine = versionRoot(selfVersion);
   if (fs.existsSync(path.join(engine, 'package.json'))) {
     console.log(`cpr: 版本目录已存在（${engine}），跳过下载`);
@@ -444,28 +462,6 @@ async function install(yes: boolean): Promise<number> {
       return 1;
     }
     console.log(`cpr: 已下载 ${BRAND}@${selfVersion} → ${engine}`);
-  }
-  flipCurrent(selfVersion);
-  console.log(`cpr: current → ${selfVersion}`);
-  // 命令软链指 current（版本翻转不动它）；~/.local/bin 是免 sudo 唯一默认进 PATH 的位置（XDG 规范原话背书）。
-  const binLink = path.join(binDir(), 'cpr');
-  fs.mkdirSync(binDir(), { recursive: true });
-  const binStat = fs.lstatSync(binLink, { throwIfNoEntry: false });
-  if (!binStat) {
-    fs.symlinkSync(path.join(appRoot(), 'current', 'bin', 'cpr'), binLink, 'file');
-    console.log(`cpr: 已链 ${binLink} → current/bin/cpr`);
-  } else if (!binStat.isSymbolicLink() || fs.readlinkSync(binLink) !== path.join(appRoot(), 'current', 'bin', 'cpr')) {
-    console.error(`cpr: ${binLink} 已存在且不是本产品软链——不改，请人工确认后重跑。`);
-    return 1;
-  } else {
-    console.log(`cpr: 命令软链 ${binLink} 已就位`);
-  }
-  if (!binDirOnPath()) {
-    console.log(`cpr: 注意：当前 PATH 未含 ${binDir()}——把 export PATH="${binDir()}:$PATH" 写进 ~/.bashrc（或 ~/.zshrc）后重开终端；多数发行版登录后自动带上。`);
-  }
-  // bootstrap 副本（npx 缓存/npm 全局）只是搬运工：固定位置建成后它就功成身退。
-  if (path.resolve(root) !== path.resolve(engine)) {
-    console.log(`cpr: 本次运行副本来自 ${root}（npx 缓存或 npm 全局）——固定位置已建立，那份可删（npm rm -g ${BRAND}），npx 缓存会自动过期。`);
   }
 
   const example = path.join(root, 'policy.example.ts');
@@ -567,8 +563,33 @@ async function install(yes: boolean): Promise<number> {
   }
 
   if (!(await bootSmoke(engine))) {
-    console.error('cpr: install 冒烟未通过——先解决再启动（服务未启动、unit 已就位）。');
+    console.error('cpr: install 冒烟未通过——先解决再启动（服务未启动、unit 已就位、current 未切换）。');
     return 1;
+  }
+
+  // 全部验证过了才切换（review-2 P2：原实现先切后验，失败会把 current 留在未验证的版本上，
+  // 下次重启服务就悄悄跑上没验过的代码）。升级路径同纪律：冒烟过门才拨链。
+  flipCurrent(selfVersion);
+  console.log(`cpr: current → ${selfVersion}`);
+  // 命令软链指 current（版本翻转不动它）；~/.local/bin 是免 sudo 唯一默认进 PATH 的位置（XDG 规范原话背书）。
+  const binLink = path.join(binDir(), 'cpr');
+  fs.mkdirSync(binDir(), { recursive: true });
+  const binStat = fs.lstatSync(binLink, { throwIfNoEntry: false });
+  if (!binStat) {
+    fs.symlinkSync(path.join(appRoot(), 'current', 'bin', 'cpr'), binLink, 'file');
+    console.log(`cpr: 已链 ${binLink} → current/bin/cpr`);
+  } else if (!binStat.isSymbolicLink() || fs.readlinkSync(binLink) !== path.join(appRoot(), 'current', 'bin', 'cpr')) {
+    console.error(`cpr: ${binLink} 已存在且不是本产品软链——不改，请人工确认后重跑。`);
+    return 1;
+  } else {
+    console.log(`cpr: 命令软链 ${binLink} 已就位`);
+  }
+  if (!binDirOnPath()) {
+    console.log(`cpr: 注意：当前 PATH 未含 ${binDir()}——把 export PATH="${binDir()}:$PATH" 写进 ~/.bashrc（或 ~/.zshrc）后重开终端；多数发行版登录后自动带上。`);
+  }
+  // bootstrap 副本（npx 缓存/npm 全局）只是搬运工：固定位置建成后它就功成身退。
+  if (path.resolve(root) !== path.resolve(engine)) {
+    console.log(`cpr: 本次运行副本来自 ${root}（npx 缓存或 npm 全局）——固定位置已建立，那份可删（npm rm -g ${BRAND}），npx 缓存会自动过期。`);
   }
 
   if (await confirm('现在启动服务？（y/N）', yes)) {
@@ -598,8 +619,9 @@ async function upgrade(yes: boolean, toVersion: string | undefined): Promise<num
     console.error('cpr: 固定位置安装尚未建立（current 软链不存在）——先 cpr install。');
     return 1;
   }
-  const target = toVersion ?? npmLatest();
+  const target = toVersion ? versionId(toVersion) : npmLatest();
   if (!target) die('查不到 npm registry 最新版（网络？）——重试，或用 cpr upgrade --to <版本> 指定目标');
+  versionId(target); // registry 来的也过同一道白名单（review-2 P2：版本号参与路径拼接，不可信任到免检）
   if (target === current) {
     console.log(`cpr: 已是最新（${current}）`);
     return 0;
@@ -694,6 +716,12 @@ async function uninstall(yes: boolean, purge: boolean): Promise<number> {
     console.log('cpr: 服务已停并移除自启');
   } else {
     console.log(`cpr: 服务未在运行（${DARWIN ? DARWIN_LABEL : UNIT_NAME} 不存在或已停）——直接进入清理`);
+    // review-2 P2：inactive ≠ 未启用——unit 可能仍挂在 default.target.wants 里；删 unit 文件前先 disable 清自启链。
+    if (!DARWIN && fs.existsSync(unitPath())) {
+      const off = systemctl('disable', UNIT_NAME);
+      if (off.ok) console.log('cpr: 已 disable（清掉自启链接）');
+      else console.log(`cpr: disable 报错（${off.err}）——unit 可能本就未启用，继续`);
+    }
   }
   const unitFile = unitPath();
   if (fs.existsSync(unitFile)) {

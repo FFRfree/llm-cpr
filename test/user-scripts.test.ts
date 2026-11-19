@@ -240,6 +240,11 @@ test('install --yes：写出 unit / .env(随机 master key) / ~/.llm-cpr policy 
   assert.ok(calls.includes('--user daemon-reload'));
   assert.ok(calls.includes(`--user enable --now ${UNIT}`));
   assert.ok(unit.includes('WantedBy=default.target')); // 用户级 unit 的自启目标是 default.target
+  // review-2 P2：v0.1.0 生产 unit 的沙箱四行不得丢（05 重写曾漏）
+  assert.ok(unit.includes('NoNewPrivileges=yes'));
+  assert.ok(unit.includes('PrivateTmp=yes'));
+  assert.ok(unit.includes('ProtectSystem=full'));
+  assert.ok(unit.includes(`ReadWritePaths=${f.env.CPR_DATA_DIR}`)); // 引擎唯一可写面 = 用户数据目录
   const lingerLog = fs.existsSync(f.env.CPR_LOGINCTL_LOG) ? fs.readFileSync(f.env.CPR_LOGINCTL_LOG, 'utf8') : '';
   assert.match(lingerLog, /enable-linger/); // install 顺手开 linger：登出后服务照跑
 });
@@ -330,6 +335,35 @@ test('upgrade --to 0.0.5 --yes：跳过 registry 查询直装指定版', () => {
   assert.ok(!log.some((line) => line.includes('view'))); // --to 不查 registry
   assert.ok(log.some((line) => line.includes('llm-cpr@0.0.5')));
   assert.equal(path.basename(fs.readlinkSync(f.env.CPR_CURRENT_LINK)), '0.0.5');
+});
+
+test('upgrade --to 含路径字符的版本 → 白名单拒绝，零动作（review-2 P2）', () => {
+  const f = makeFixture();
+  assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
+  const r = cpr(f.work, ['upgrade', '--to', '../evil', '--yes'], f.env);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /版本号不合法/);
+  assert.equal(npmLog(f).filter((line) => line.includes('install')).length, 1); // 零新 npm 动作
+  assert.equal(path.basename(fs.readlinkSync(f.env.CPR_CURRENT_LINK)), '0.1.0'); // current 未动
+});
+
+test('install：补丁冲突 → current 未切换，不指向未验证版本（review-2 P2）', () => {
+  const f = makeFixture();
+  assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0); // 先装 0.1.0
+  fs.mkdirSync(f.env.CPR_PATCH_DIR, { recursive: true });
+  fs.writeFileSync(path.join(f.env.CPR_PATCH_DIR, 'conflict.patch'), '--- a/core/nope.ts\n+++ b/core/nope.ts\n@@ -1 +1 @@\n-x\n+y\n');
+  // 伪造「另一版本的 bootstrap 副本」（0.3.0）跑 install：补丁打不上必须拒切 current
+  const work2 = path.join(f.base, 'work2');
+  fs.cpSync(f.work, work2, { recursive: true });
+  const pkgPath = path.join(work2, 'package.json');
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version: string };
+  pkg.version = '0.3.0';
+  fs.writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+  const r = cpr(work2, ['install', '--yes'], { ...f.env, CPR_NPM_SOURCE: work2 });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /打不上当前包：conflict\.patch/);
+  // current 仍指 0.1.0（原验证过的完整品），绝不悄悄指向没验过的 0.3.0
+  assert.equal(path.basename(fs.readlinkSync(f.env.CPR_CURRENT_LINK)), '0.1.0');
 });
 
 // ---- 用户补丁（工单 09）----
