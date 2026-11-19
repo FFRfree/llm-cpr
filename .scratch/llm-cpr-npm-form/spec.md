@@ -15,7 +15,7 @@ v0.1.0 clone + git 升级对普通用户门槛高（要懂 git、systemd、XDG �
 - **迁移三件套**：`PRAGMA user_version` 有序步骤表内建启动路径（fail-fast）；**只做加法迁移**（破坏性走离线工具）；迁移前 WAL checkpoint + 备份 + integrity check。
 - **探新版只在用户交互时**：看板打开经管理口现查 npm registry（缓存 1h）、`cpr doctor`/`upgrade` 现查；进程绝不定期轮询。
 - **policy 落点外置**：`~/.cpr/policy.ts` 存在则优先，否则内置 `mine.ts`；policy 文件对引擎仅 `import type` 依赖（运行时零依赖已核实）。
-- **用户补丁（工单 09）**：`~/.cpr/patches/*.patch` 是 policy 契约之外的逃生门——install/upgrade 自动打到 npm 包上（探测式幂等），打不上=升级失败走回滚，doctor 显性报状态；零 npm 依赖走系统 patch 二进制。正门仍是 policy 钩子，补丁只救契约表达不了的引擎级诉求。
+- **用户补丁（工单 09，已完成 9e2a21c）**：`~/.cpr/patches/*.patch` 是 policy 契约之外的逃生门——install/upgrade 自动打到 npm 包上（探测式幂等），打不上=升级失败走回滚，doctor 显性报四态；零 npm 依赖走系统 patch 二进制。**实现坑留档：GNU patch 会自作主张翻转方向（四种方向组合全 exit 0），幂等判定必须读输出标记 `Reversed (or previously applied)`，退出码不可用**。正门仍是 policy 钩子，补丁只救契约表达不了的引擎级诉求。
 - 本机 VPS 终态切产品同款；**生产切换逐次授权**（含 root 跑 user unit 的 linger 姿势、看板域名换名，届时单独拍板）。
 
 ## 边界（第一版不做）
