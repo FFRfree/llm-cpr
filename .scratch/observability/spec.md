@@ -89,14 +89,19 @@ CPR 现状：`core/protocols/` 只有 `chat-completions.ts`（OpenAI 兼容）�
 数据在用户自己 VPS 上，但落盘=多了可被翻的磁盘面（备份、磁盘到手、未来误公开）。
 对策：opt-in 默认关 + 短 TTL + 超限跳过。**默认值是什么（尤其对外发布版本）要用户拍板。**
 
-## 开放问题（实现前找用户拍板或自行探索后给方案）
+## 开放问题（2026-11-19 实现 agent 落票时已定，回写如下）
 
-1. opt-in 粒度：租户级够不够？要不要会话级（按 x-session-id 白名单）？
-2. 响应侧落不落、怎么落（有界缓冲的成本 vs Responses 协议轨迹拼不全的代价）？
-3. 回放测试形态：独立 CLI（`cpr replay`？）还是管理口功能？
-4. 泄漏规则库：对齐 gitleaks 那套格式还是自维护最小集？
-5. 内部 item 模型粒度：统一 消息/工具调用/工具结果/缓存线索 四类实体够不够？
-6. 观测层要不要走「配置即代码」声明（开哪些分析、阈值写在 policy/mine.ts）？倾向要。
+1. opt-in 粒度：**租户级**（会话级白名单未做，留后有需要再议）。
+2. 响应侧：**第一版不落**，turns 表留 `response_refs` 列占位；Responses 协议拼装需求
+   出现时再做（届时才有真订阅）。
+3. 回放形态：**独立 CLI**（`scripts/replay-policy.ts`）——开发者动作 + 读侧慢查询，不上管理口。
+4. 泄漏规则库：**自维护最小集**（`core/observability/leaks.ts`，known 正则 + assignment
+   过熵值门槛；不引 gitleaks 代码，零依赖纪律）。
+5. item 模型粒度：**四类实体够用**；存储单元 = 消息条目（chat-completions 的 tool_calls
+   附在 assistant 消息上，独立成条的 tool_call 留给单列它的协议）。
+6. 观测层配置：**走配置即代码**（顶层 `capture: {ttl_days, max_body_bytes, privacy}` +
+   租户 `capture: true` 开关，validateConfig 校验拒坏声明）。
+7. （实现期新增）**对外发布版默认值仍待用户拍板**：现默认关 + TTL 14 天 + 5MB 上限。
 
 ## 交付面（粗粒度，实现 agent 自行细化）
 
