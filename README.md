@@ -27,7 +27,7 @@
 1. 首装一条命令（Linux/macOS，全程免 sudo）：
 
    ```sh
-   npx -y llm-cpr install
+   npx -y @ffrfree/llm-cpr install
    ```
 
    它做四件事：npm 把引擎下载进固定位置 `~/.local/lib/llm-cpr/`（npm 只是下载器，代码住哪我们自己定，ADR-0009）；建命令软链 `~/.local/bin/cpr`；在你的用户目录建 `~/.llm-cpr/`（policy 模板 + 随机 master key 的 `.env`，已 chmod 600）；写用户级 systemd unit、自举冒烟通过后启动。macOS 走 LaunchAgent（experimental）。

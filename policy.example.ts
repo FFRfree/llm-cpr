@@ -2,7 +2,7 @@
 // cp policy.example.ts ~/.llm-cpr/policy.ts 后在里面改。本文件只是起点，代码从不加载它；无 policy.ts 时用内置 core/policy/mine.ts。
 // 铁律：backends[].name 是身份键（亲和事件与账本都存它），定下来绝不改；alias 只是显示名。
 // 类型补全：经 ~/.llm-cpr/tsconfig.json 的 paths 指路（cpr install 生成）；字段含义见 core/policy/contract.ts。类型导入运行时被擦除，加载不依赖它。
-import type { RouterPolicy } from 'llm-cpr';
+import type { RouterPolicy } from '@ffrfree/llm-cpr';
 
 export default class MyPolicy implements RouterPolicy {
   // 客户端鉴权用的环境变量名（值放 .env，别写进任何被跟踪文件）。

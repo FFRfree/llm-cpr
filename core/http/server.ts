@@ -56,7 +56,7 @@ async function npmLatestCached(): Promise<string | null> {
   if (latestCache && Date.now() - latestCache.at < LATEST_TTL_MS) return latestCache.latest;
   let latest: string | null = null;
   try {
-    const res = await fetch(`${REGISTRY_BASE}/${PKG.name ?? 'llm-cpr'}/latest`, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`${REGISTRY_BASE}/${encodeURIComponent(PKG.name ?? '@ffrfree/llm-cpr')}/latest`, { signal: AbortSignal.timeout(5000) });
     if (res.ok) latest = ((await res.json()) as { version?: string }).version ?? null;
   } catch { latest = null; } // 离线/registry 不可达：徽标降级只报当前版，不影响端点本身
   latestCache = { at: Date.now(), latest };

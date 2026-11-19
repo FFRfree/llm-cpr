@@ -28,7 +28,11 @@ import { spawn, spawnSync } from 'node:child_process';
 import readline from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
-const BRAND = 'llm-cpr';
+const BRAND = 'llm-cpr'; // 身份面：unit 名（llm-cpr.service）与 launcher label 沿用短名
+// npm 包名（registry 面，工单 11）：scoped 名 = ffrfree 用户名空间——npm 允许用户直接以自己
+// 的用户名作 scope 发包，无需建 org（npm 也不允许 org 与现有用户名重名）。裸名 llm-cpr 留在
+// npmjs 不占，将来要发"去前缀"发行版随时可发（scoped 与裸名是两个独立包，可并存）。
+const PKG = '@ffrfree/llm-cpr';
 const DARWIN = os.platform() === 'darwin';
 // unit 名可注入：端到端测试用独立名字（如 llm-cpr-e2e）装在真 systemd 上，与生产 unit 错开。
 // 后缀归一化：用户传裸名（不带 .service）时自动补上，否则 systemd 按 <名>.service 找不到 unit 文件。
@@ -55,7 +59,7 @@ function die(message: string): never {
 function pkgRoot(): string {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   if (!fs.existsSync(path.join(root, 'package.json')) || !fs.existsSync(path.join(root, 'core', 'main.ts'))) {
-    die(`包根不完整（${root} 缺 package.json / core/main.ts）——安装损坏，重跑 npx -y llm-cpr install；clone 请在完整仓库里运行`);
+    die(`包根不完整（${root} 缺 package.json / core/main.ts）——安装损坏，重跑 npx -y ${PKG} install；clone 请在完整仓库里运行`);
   }
   return root;
 }
@@ -88,9 +92,9 @@ const versionsDir = (): string => path.join(appRoot(), 'versions');
 const currentLink = (): string => path.join(appRoot(), 'current');
 const binDir = (): string => process.env.CPR_BIN_DIR || path.join(os.homedir(), '.local', 'bin');
 
-// 某版本的包根（npm -g --prefix 的实测落点：<prefix>/lib/node_modules/llm-cpr + <prefix>/bin/cpr）
+// 某版本的包根（npm -g --prefix 的实测落点：<prefix>/lib/node_modules/@ffrfree/llm-cpr + <prefix>/bin/cpr）
 function versionRoot(version: string): string {
-  return path.join(versionsDir(), version, 'lib', 'node_modules', BRAND);
+  return path.join(versionsDir(), version, 'lib', 'node_modules', PKG);
 }
 
 // 当前生效版本 = current 软链 basename；未安装 = null
@@ -138,13 +142,13 @@ function runNpm(...args: readonly string[]): RunResult {
 }
 
 const npmLatest = (): string | null => {
-  const r = runNpm('view', BRAND, 'version');
+  const r = runNpm('view', PKG, 'version');
   return r.ok && r.out ? r.out.split('\n').at(-1)?.trim() || null : null;
 };
 
-// npm 只当下载器：装进自家版本目录（--prefix 实测形状：<prefix>/lib/node_modules/llm-cpr + <prefix>/bin/cpr）
+// npm 只当下载器：装进自家版本目录（--prefix 实测形状：<prefix>/lib/node_modules/@ffrfree/llm-cpr + <prefix>/bin/cpr）
 const npmInstall = (version: string): RunResult =>
-  runNpm('install', '-g', '--prefix', path.join(versionsDir(), version), `${BRAND}@${version}`);
+  runNpm('install', '-g', '--prefix', path.join(versionsDir(), version), `${PKG}@${version}`);
 
 // ---- 用户补丁（~/.llm-cpr/patches/*.patch，工单 09）----
 // 正门仍是 policy 钩子；补丁是契约表达不了的引擎级诉求的受控逃生门：
@@ -265,7 +269,7 @@ async function serviceUpAfterRestart(): Promise<boolean> {
 // 沙箱四行继承自 v0.1.0 生产 unit（review-2 P2 修复：05 重写时曾丢）——用户级不等于不设防；
 // ProtectSystem=full 罩住 /usr、/boot、/etc，引擎唯一可写面 = ReadWritePaths 的用户数据目录。
 function enginePath(): string {
-  return path.join(appRoot(), 'current', 'lib', 'node_modules', BRAND);
+  return path.join(appRoot(), 'current', 'lib', 'node_modules', PKG);
 }
 
 function unitFileContent(): string {
@@ -481,7 +485,7 @@ async function install(yes: boolean): Promise<number> {
     fs.copyFileSync(exampleDest, local);
     console.log(`cpr: 已从模板创建 ${local}——订阅声明在里面改（name 定了绝不改）`);
   }
-  // 编辑器类型补全指路：policy 文件 `import type ... from 'llm-cpr'` 靠这份 tsconfig 的 paths 解析；
+  // 编辑器类型补全指路：policy 文件 `import type ... from '@ffrfree/llm-cpr'` 靠这份 tsconfig 的 paths 解析；
   // 类型导入运行时被擦除，缺它只影响编辑器提示不影响加载。幂等：已存在不重写。
   // 同目录的 package.json {"type":"module"} 让 NodeNext 把外置 policy 判成 ESM（review P3 修正）。
   const pkgPath = path.join(policyDir, 'package.json');
@@ -500,7 +504,7 @@ async function install(yes: boolean): Promise<number> {
         allowImportingTsExtensions: true, erasableSyntaxOnly: true, verbatimModuleSyntax: true,
         skipLibCheck: true,
         baseUrl: '.',
-        paths: { 'llm-cpr': [contract] },
+        paths: { '@ffrfree/llm-cpr': [contract] },
       },
       include: ['policy.ts', 'policy.example.ts'],
     }, null, 2)}\n`);
@@ -589,7 +593,7 @@ async function install(yes: boolean): Promise<number> {
   }
   // bootstrap 副本（npx 缓存/npm 全局）只是搬运工：固定位置建成后它就功成身退。
   if (path.resolve(root) !== path.resolve(engine)) {
-    console.log(`cpr: 本次运行副本来自 ${root}（npx 缓存或 npm 全局）——固定位置已建立，那份可删（npm rm -g ${BRAND}），npx 缓存会自动过期。`);
+    console.log(`cpr: 本次运行副本来自 ${root}（npx 缓存或 npm 全局）——固定位置已建立，那份可删（npm rm -g ${PKG}），npx 缓存会自动过期。`);
   }
 
   if (await confirm('现在启动服务？（y/N）', yes)) {

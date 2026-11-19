@@ -8,7 +8,7 @@ v0.1.0 clone + git 升级对普通用户门槛高（要懂 git、systemd、XDG �
 
 ## 方案
 
-- **npm 单轨**（包 `llm-cpr`，registry 名已核空闲）+ clone 双轨留给引擎开发者；v0.1.0 视为零真人用户，v0.2.0 破坏性重来，不写 clone→npm 迁移。
+- **npm 单轨**（包 **`@ffrfree/llm-cpr`**——2026-11-19 scoped 化（工单 11）：scope = 用户 npm 用户名 `ffrfree`，无需建 org；裸名 `llm-cpr` 留 npmjs 不占；发布必须 `--access public`。bin 仍 `cpr`）+ clone 留给引擎开发者；v0.1.0 视为零真人用户，v0.2.0 破坏性重来，不写 clone→npm 迁移。
 - **`~/.llm-cpr` 单目录**（policy.ts / .env / data.db / backups/ / patches/；`os.homedir()` 三端同构；2026-11-19 从 `~/.cpr` 改名，ADR-0009）；`CPR_CONFIG_DIR`/`CPR_DATA_DIR` 接缝保留。
 - **代码安装区固定**（工单 10，ADR-0009）：`~/.local/lib/llm-cpr/versions/<v>/` + `current` 软链 + `~/.local/bin/cpr`；npm 只当下载器（`install -g --prefix`），与用户 node 装法解耦、单实例有构造保证；升级 = 下载新目录 → 打补丁 → 冒烟 → flip → 健康门，失败 = 软链拨回（零网络）；版本保留当前+上一版；unit 钉 current 永不随版本重写。
 - **用户级服务免 sudo**：Linux `systemctl --user` + install 顺手 `loginctl enable-linger`；macOS LaunchAgent。

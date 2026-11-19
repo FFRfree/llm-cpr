@@ -12,7 +12,7 @@
       "node"
     ],
     "paths": {
-      "llm-cpr": ["./core/policy/contract.ts"]
+      "@ffrfree/llm-cpr": ["./core/policy/contract.ts"]
     },
     "skipLibCheck": false
   },

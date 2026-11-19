@@ -8,13 +8,15 @@
 | 角色 | 路径 | 说明 |
 | --- | --- | --- |
 | 用户资产 | `~/.llm-cpr/` | policy.ts / `.env`（chmod 600）/ data.db / backups/ / patches/——拷走即完整备份，升级永不碰 |
-| 代码安装区 | `~/.local/lib/llm-cpr/versions/<版本>/` + `current` 软链 | npm 只当下载器（`install -g --prefix`）；版本保留当前+上一版垫背，更老的升级成功即清 |
+| 代码安装区 | `~/.local/lib/llm-cpr/versions/<版本>/` + `current` 软链 | npm 只当下载器（`install -g --prefix`，scoped 包落 `lib/node_modules/@ffrfree/llm-cpr`）；版本保留当前+上一版垫背，更老的升级成功即清 |
 | 命令软链 | `~/.local/bin/cpr` → `current/bin/cpr` | 唯一免 sudo 默认进 PATH 的位置；不提供任何版本切换命令，`versions/` 是纯管道 |
 | 服务 unit | `~/.config/systemd/user/llm-cpr.service` | 用户级 systemd（macOS `~/Library/LaunchAgents`，experimental） |
 
+npm 包名（2026-11-19 拍板，工单 11）：**`@ffrfree/llm-cpr`**——scope = ffrfree 的 npm 用户名空间，无需建 org（npm 也不允许 org 与现有用户名重名）；裸名 `llm-cpr` 留在 npmjs 不占，将来要发去前缀发行版随时可发（scoped 与裸名是两个独立包）。安装命令 `npx -y @ffrfree/llm-cpr install`；发布必须 `--access public`（scoped 默认按私有收费语义处理）。
+
 `~/.local/lib` 不是 XDG 规范目录，是本项目选定的用户级运行代码位置（与 Homebrew Cellar/opt、SDKMAN current 同款先例）；用户资产不用 XDG 三拆（`~/.config` + `~/.local/share`）而收进品牌点目录 `~/.llm-cpr`——理由见 ADR-0009「为什么不是别的」。
 
-安装 / 升级 / 卸载全部由 `cpr` 命令代劳（`npx -y llm-cpr install` 首装，全程免 sudo）。日常口径：
+安装 / 升级 / 卸载全部由 `cpr` 命令代劳（`npx -y @ffrfree/llm-cpr install` 首装，全程免 sudo）。日常口径：
 
 ```sh
 cpr doctor                 # 体检：NODE/MODE/VERSION/APPROOT/BIN/UNIT/DB/POLICY/PATCH + NEXT
@@ -46,8 +48,8 @@ npm 下载新版 → 独立版本目录（current/服务全不动）
 
 1. 版本纪律：加法迁移打 minor；搬数/换表打 major。`package.json` 版本号与 `core/store/migrate.ts` 的 `SCHEMA_VERSION` 对齐推进。
 2. 打 tag `v<x.y.z>` → `npm pack` 出 `.tgz`。
-3. **对产物跑假上游冒烟**（验的即发布的字节）：`node scripts/xdg-deploy/smoke-release.ts llm-cpr-<版本>.tgz`——启动、鉴权、换 key 转发、SSE 直通、记账、看板、单库落位全绿才算数。
-4. `npm publish`。介意第三方 registry 的自持路线：把自托管 Forgejo 挂成 npm registry，`--registry` 指过去即可，机制不变。
+3. **对产物跑假上游冒烟**（验的即发布的字节）：`node scripts/xdg-deploy/smoke-release.ts ffrfree-llm-cpr-<版本>.tgz`——启动、鉴权、换 key 转发、SSE 直通、记账、看板、单库落位全绿才算数。
+4. `npm publish --access public`——**scoped 包默认按私有处理（私有要付费账号），公开发布必须显式 `--access public`**，这条忘了会直接报错。介意第三方 registry 的自持路线：把自托管 Forgejo 挂成 npm registry，`--registry` 指过去即可，机制不变。
 
 ## 本机生产切换（阶段 3，逐次授权）
 

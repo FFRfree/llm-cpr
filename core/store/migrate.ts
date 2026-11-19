@@ -145,7 +145,7 @@ function backupBeforeMigrate(db: DatabaseSync, dbFile: string): string {
 export function runMigrations(db: DatabaseSync, { dbFile, steps = STEPS, targetVersion = SCHEMA_VERSION }: { dbFile: string; steps?: MigrationStep[]; targetVersion?: number }): MigrationResult {
   const version = userVersion(db);
   if (version > targetVersion) {
-    throw new Error(`库 schema 版本 ${version} 高于代码支持的 ${targetVersion}——库来自更新版本的 llm-cpr，请先升级代码（npm i -g llm-cpr@latest）再启动`);
+    throw new Error(`库 schema 版本 ${version} 高于代码支持的 ${targetVersion}——库来自更新版本的 llm-cpr，请先升级代码（cpr upgrade）再启动`);
   }
   if (version === targetVersion) return { status: 'current', from: version, to: version, applied: [] };
 

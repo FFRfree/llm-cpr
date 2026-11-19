@@ -32,7 +32,7 @@ async function makeRegistry(): Promise<RegistryStub> {
   let hits = 0;
   const server = http.createServer((req, res) => {
     hits += 1;
-    if (req.url === '/llm-cpr/latest') {
+    if (typeof req.url === 'string' && req.url.endsWith('llm-cpr/latest')) {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ version: '9.9.9' }));
       return;
@@ -68,7 +68,7 @@ async function bootEngine(registryUrl: string, extra: Record<string, string> = {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-ver-'));
   fs.cpSync(path.join(REPO, 'core'), path.join(root, 'core'), { recursive: true });
   // package.json 带 name/version：RUNTIME_VERSION 从这里读（server.ts 同源）
-  fs.writeFileSync(path.join(root, 'package.json'), `${JSON.stringify({ type: 'module', name: 'llm-cpr', version: '0.1.0' }, null, 2)}\n`);
+  fs.writeFileSync(path.join(root, 'package.json'), `${JSON.stringify({ type: 'module', name: '@ffrfree/llm-cpr', version: '0.1.0' }, null, 2)}\n`);
   fs.writeFileSync(path.join(root, 'core', 'policy', 'mine.ts'), TWIN_MINE);
   const [forwardPort, adminPort] = await Promise.all([freePort(), freePort()]);
   const dbs = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-ver-db-'));

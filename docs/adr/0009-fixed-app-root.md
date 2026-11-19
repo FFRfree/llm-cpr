@@ -26,7 +26,7 @@ v0.2.0 原 design：npm 包走 `npm install -g` 装进用户 node 环境的全�
 - **目录名统一 llm-cpr**（原 ~/.cpr 废弃）：包/仓库/unit/用户目录全同名；命令仍 `cpr`、环境变量仍 `CPR_*`（使用面短名、身份面全名，claude-code→claude 先例）。
 - **versions + current 软链**（Homebrew Cellar/opt、SDKMAN current 同款）：切换原子（先建新链再 rename）、回滚零网络瞬时（拨回上一版目录）、单实例有构造保证（一根 current、一个 bin 软链）。版本保留当前+上一版，更老的升级成功后顺手清。**不提供任何用户侧版本切换命令**——这是升级机器的可靠性零件，不是功能。
 - **升级顺序**：下载新版本目录（不动 current）→ 打用户补丁 → 临时库冒烟 → 全过才翻转 current → 重启健康门；补丁冲突/冒烟失败 = current 未切换、服务未动；健康门失败 = 软链拨回（零网络）。
-- **bootstrap**：`npx -y llm-cpr install` 首装，npx 副本用后即弃；npm 全局目录从头到尾不出现我们的副本。
+- **bootstrap**：`npx -y @ffrfree/llm-cpr install` 首装，npx 副本用后即弃；npm 全局目录从头到尾不出现我们的副本。
 - **unit 钉 current 软链**：写一次永不随版本重写，升级翻转软链后 restart 即用新版。
 
 ## 为什么不是别的
