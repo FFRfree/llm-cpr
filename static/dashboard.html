@@ -206,6 +206,19 @@ tr.detail-row th{color:var(--muted)}
   <tbody id="sessions"></tbody>
 </table>
 
+<h2>观测 · 正文捕获</h2>
+<div id="capture-status" class="muted" style="font-size:12px"></div>
+<table id="capture-tools-table" style="margin-top:10px">
+  <thead><tr><th>工具</th><th class="num">调用</th><th class="num">结果</th><th class="num">报错</th><th class="num">灌入字符</th><th class="num">≈tokens</th></tr></thead>
+  <tbody id="capture-tools"></tbody>
+</table>
+<div id="capture-loops" class="muted" style="font-size:12px;margin-top:8px"></div>
+<table id="capture-privacy-table" style="margin-top:10px">
+  <thead><tr><th>时间</th><th>租户</th><th>规则</th><th>位置</th><th>首次出现</th></tr></thead>
+  <tbody id="capture-privacy"></tbody>
+</table>
+<div id="capture-off" class="empty" style="display:none">正文捕获未开启（租户声明 capture: true 才落正文侧库）</div>
+
 <script>
 'use strict';
 const $=(s)=>document.querySelector(s);
@@ -376,6 +389,32 @@ async function showDetail(id,tenant){
   }catch(e){cell.textContent=`明细加载失败：${e.message}`;}
 }
 
+/* ---- 观测 · 正文捕获（读侧按需：状态 + 工具排行 + 泄漏命中） ---- */
+async function refreshObservability(){
+  let status;
+  try{ status=await fetch('/api/capture/status').then(r=>r.json()); }catch{ return; }
+  const on=status&&status.enabled!==false&&status.turns!==undefined;
+  $('#capture-off').style.display=on?'none':'';
+  if(!on)return;
+  const degraded=status.degraded?' · <span class="badge err">侧库降级，缺行不完整</span>':'';
+  $('#capture-status').innerHTML=`捕获 <b class="num">${status.turns}</b> 轮 · 唯一正文 <b class="num">${status.contents}</b> 条 · ${(status.bytes/1e6).toFixed(1)}MB${status.dropped?` · 丢弃 ${status.dropped} 轮`:''}${degraded}（TTL 保留期后自动清理；原文只进本机 capture.db）`;
+  const tools=await fetch(withTenant('/api/capture/tools?days=7')).then(r=>r.json()).catch(()=>null);
+  const rows=(tools?.tools||[]).slice(0,10).map(t=>
+    `<tr><td>${esc(t.tool)}</td><td class="num">${t.calls}</td><td class="num">${t.results}</td>`+
+    `<td class="num">${t.errors?`<span class="lost">${t.errors}</span>`:'0'}</td><td class="num">${t.result_chars}</td><td class="num">≈${t.result_tokens_est}</td></tr>`).join('');
+  $('#capture-tools').innerHTML=rows||'<tr><td colspan="6" class="empty">窗口内没有工具调用</td></tr>';
+  $('#capture-loops').innerHTML=(tools?.loops||[]).length
+    ?'⚠ 卡住候选（同工具同参数连续多轮）：'+(tools.loops).slice(0,3).map(l=>`${esc(l.identity)} · ${esc(l.tool)} ×${l.streak} 轮`).join('；'):'';
+  const privacy=await fetch(withTenant('/api/capture/privacy?limit=10')).then(r=>r.json()).catch(()=>null);
+  const hits=(privacy?.hits||[]).map(h=>{
+    const first=h.first_seen_turn;
+    return `<tr><td class="num">${fmtClock(h.ts)}</td><td>${esc(h.tenant)}</td><td><span class="badge warn">${esc(h.rule)}</span></td>`+
+      `<td>${esc(h.role||'?')} · 第 ${num(h.message_index)?h.message_index+1:'?'} 条</td>`+
+      `<td class="num">${first?`${esc(first.identity)} @ ${fmtClock(first.ts)}`:'<span class="muted">侧库已清理</span>'}</td></tr>`;
+  });
+  $('#capture-privacy').innerHTML=hits.join('')||'<tr><td colspan="5" class="empty">没有泄漏命中（从未保存过命中原文）</td></tr>';
+}
+
 /* ---- 主刷新循环 ---- */
 let timer=null;
 const fmtCountdown=(ms)=>ms<=0?'即将自动刷新':ms<60000?'<1 分后自动刷新':`${Math.ceil(ms/60000)} 分后自动刷新`;
@@ -415,6 +454,7 @@ async function refresh(){
     renderSessions(sessions.sessions);
     state.snap=status.snapshots||{};
     renderStatus();
+    refreshObservability();
     $('#err').textContent='';
   }catch(e){$('#err').textContent=`加载失败：${e.message}（将于下轮重试）`;}
   btn.disabled=false;

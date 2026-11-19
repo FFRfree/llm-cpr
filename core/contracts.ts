@@ -27,6 +27,9 @@ export interface Tenant {
   key_env: string;
   backends?: string[];
   models?: string[];
+  // 观测层 opt-in（observability 票 01）：true 才捕获该租户的请求正文（内容寻址侧库）。
+  // 默认关；未声明 tenants 的隐式 default 租户永不捕获。
+  capture?: boolean;
 }
 export interface RequestConfig {
   models: Model[];
@@ -132,6 +135,13 @@ export interface GatewayConfig extends RequestConfig {
   // 数据库单文件（流量账 requests + 事件账 system_events 共库）；旧名 sessions_db 仍被读取。
   db_file?: string;
   sessions_db?: string;
+  // 观测层全局参数（observability 票 01/04）：正文侧库的保留期与超限阈值。开关在租户上（capture）。
+  capture?: {
+    ttl_days?: number;         // 捕获轮次保留天数（默认 14）；0 = 不按龄清理
+    max_body_bytes?: number;   // 超限不落的请求体字节阈值（默认 5_000_000）；0 = 不设上限
+    // 泄漏取证（票 04）：额外豁免值前缀清单（自带 key 自动在白名单里，这里加测试用 key 等）。
+    privacy?: { extra_allow?: string[] };
+  };
 }
 
 // node:sqlite rows and HTTP payloads are untyped at the boundary; these are the
@@ -150,6 +160,9 @@ export interface AuditEntry {
   ms?: number | null;
   ttft_ms?: number | null;
   stream_ms?: number | null;
+  // 正文捕获锚点（observability 票 01）：capture.db turns.capture_id 同值。
+  // null = 未捕获（租户未 opt-in / 形状不符 / 超限 / 队列满丢弃 / 侧库降级缺行）。
+  capture_id?: string | null;
 }
 export interface AuditRow {
   id: number;
@@ -174,6 +187,7 @@ export interface AuditRow {
   cache_outcome: string | null;
   ttft_ms: number | null;
   stream_ms: number | null;
+  capture_id: string | null;
 }
 export interface CacheLossEvent {
   ts: number;

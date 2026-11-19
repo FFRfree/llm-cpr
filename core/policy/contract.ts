@@ -71,6 +71,12 @@ export interface RouterPolicy {
   identityHeader?: string;
   db_file?: string;
   sessions_db?: string;
+  // 观测层全局参数（observability 票 01/04）：正文侧库的保留期与超限阈值。开关在租户上（capture）。
+  capture?: {
+    ttl_days?: number;
+    max_body_bytes?: number;
+    privacy?: { extra_allow?: string[] };
+  };
   // 纯同步本地计算：禁 fetch/DB/长循环。抛错或返回非法值时该次决定回落内置并告警。
   decide?(ctx: DecisionCtx): Decision;
 }

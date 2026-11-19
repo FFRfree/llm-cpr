@@ -52,7 +52,8 @@ export class UsageAudit {
     // 打开即 fail fast（声明在 db.ts）：合并库后「账本不可用」不再是可以静默跑路由的状态。
     // 打开与语句准备阶段的任何失败都直接抛，启动入口据此拒绝起服务；运行中写入失败才走降级。
     this.db = db ?? openDatabase(String(dbFile));
-    this.insert = this.db.prepare(`INSERT INTO requests(ts,tenant,identity,identity_kind,subscription,account,model,translated_model,path,status,ms,prompt_tokens,completion_tokens,cache_hit_tokens,cache_miss_tokens,cache_write_tokens,total_tokens,cache_observed,cache_outcome,ttft_ms,stream_ms,usage_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    // 列清单 23 个、占位符 23 个（capture_id 收官；改列后必须重数——手数必错，见 AGENTS 加列套路）。
+    this.insert = this.db.prepare(`INSERT INTO requests(ts,tenant,identity,identity_kind,subscription,account,model,translated_model,path,status,ms,prompt_tokens,completion_tokens,cache_hit_tokens,cache_miss_tokens,cache_write_tokens,total_tokens,cache_observed,cache_outcome,ttft_ms,stream_ms,usage_json,capture_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   }
 
   // 无兜底写入：供「账本行 + 事件行同事务成对落地」的路径使用，任何一步抛错即整体回滚。
@@ -65,7 +66,7 @@ export class UsageAudit {
       entry.account ?? null, entry.model ?? null, entry.translated_model ?? null, entry.path ?? null, entry.status ?? null, entry.ms ?? null,
       tokens.prompt_tokens, tokens.completion_tokens, tokens.cache_hit_tokens, tokens.cache_miss_tokens, tokens.cache_write_tokens,
       tokens.total_tokens, tokens.cache_observed ? 1 : 0, outcome, ms(entry.ttft_ms), ms(entry.stream_ms),
-      usage && typeof usage === 'object' ? JSON.stringify(usage) : null);
+      usage && typeof usage === 'object' ? JSON.stringify(usage) : null, entry.capture_id ?? null);
     return Number(info.lastInsertRowid);
   }
 
