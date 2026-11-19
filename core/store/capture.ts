@@ -427,9 +427,12 @@ export class CaptureStore {
   // 同哈希的条数（prompt cache 前缀连续性的代理指标）；first_diff = 第一条分歧的位置与角色；
   // chars_delta 供与哈希结论互校。归因（改绑/压缩/改提示词）由端点层合并事件账做，措辞「证据指向」。
   // limit 在 SQL 层限行（review P1：长会话全量读取会拖住同进程转发），取最新 N 轮再逆序恢复升序。
-  cacheChain(tenant: string, identity: string, limit = 100): CacheChainEntry[] {
+  cacheChain(tenant: string | undefined, identity: string, limit = 100): CacheChainEntry[] {
     const count = Math.max(2, Math.min(500, Math.trunc(Number(limit) || 100)));
-    const rows = (this.#db.prepare('SELECT id,capture_id,ts,message_count,bytes,refs FROM turns WHERE tenant=? AND identity=? ORDER BY ts DESC, id DESC LIMIT ?').all(tenant, identity, count) as unknown as Array<{ id: number; capture_id: string; ts: number; message_count: number; bytes: number; refs: string }>).reverse();
+    const rawRows = tenant === undefined
+      ? this.#db.prepare('SELECT id,capture_id,ts,message_count,bytes,refs FROM turns WHERE identity=? ORDER BY ts DESC, id DESC LIMIT ?').all(identity, count)
+      : this.#db.prepare('SELECT id,capture_id,ts,message_count,bytes,refs FROM turns WHERE tenant=? AND identity=? ORDER BY ts DESC, id DESC LIMIT ?').all(tenant, identity, count);
+    const rows = (rawRows as unknown as Array<{ id: number; capture_id: string; ts: number; message_count: number; bytes: number; refs: string }>).reverse();
     const chain: CacheChainEntry[] = [];
     let previous: { id: number; ts: number; refs: string[]; message_count: number; bytes: number } | null = null;
     for (const row of rows) {
@@ -459,14 +462,20 @@ export class CaptureStore {
   // 工具/skill 分析（票 05）：窗口内逐轮解析正文聚合。读侧按需（默认 7 天 / 最多 500 轮），
   // 大窗口是刻意的慢查询，不进热路径。报错口径：工具结果内容以 Error: 前缀开头、
   // 或为 JSON 且顶层含 error 字段——下游重试在请求侧不可见，不在口径内。
-  toolStats({ tenant, identity, days = 7, maxTurns = 500, now = Date.now() }: { tenant: string; identity?: string; days?: number; maxTurns?: number; now?: number }): ToolStatsReport {
+  toolStats({ tenant, identity, days = 7, maxTurns = 500, now = Date.now() }: { tenant?: string; identity?: string; days?: number; maxTurns?: number; now?: number }): ToolStatsReport {
     const since = now - Math.max(1, Math.min(90, days)) * 86_400_000;
     const cap = Math.max(10, Math.min(2000, Math.trunc(maxTurns)));
     // 取窗口内最新 cap 条再正序聚合（review P2：ASC+LIMIT 截断会把最新轮排掉，
     // 分析拿旧数据冒充全窗口）。截断状态与实际覆盖起点随报告给出。
-    const rowsRaw = (identity === undefined
-      ? this.#db.prepare('SELECT id,capture_id,ts,identity,refs FROM turns WHERE tenant=? AND ts>=? ORDER BY ts DESC, id DESC LIMIT ?').all(tenant, since, cap)
-      : this.#db.prepare('SELECT id,capture_id,ts,identity,refs FROM turns WHERE tenant=? AND identity=? AND ts>=? ORDER BY ts DESC, id DESC LIMIT ?').all(tenant, identity, since, cap)) as unknown as Array<{ id: number; capture_id: string; ts: number; identity: string | null; refs: string }>;
+    const query = tenant === undefined
+      ? (identity === undefined
+        ? this.#db.prepare('SELECT id,capture_id,ts,identity,refs FROM turns WHERE ts>=? ORDER BY ts DESC, id DESC LIMIT ?')
+        : this.#db.prepare('SELECT id,capture_id,ts,identity,refs FROM turns WHERE identity=? AND ts>=? ORDER BY ts DESC, id DESC LIMIT ?'))
+      : (identity === undefined
+        ? this.#db.prepare('SELECT id,capture_id,ts,identity,refs FROM turns WHERE tenant=? AND ts>=? ORDER BY ts DESC, id DESC LIMIT ?')
+        : this.#db.prepare('SELECT id,capture_id,ts,identity,refs FROM turns WHERE tenant=? AND identity=? AND ts>=? ORDER BY ts DESC, id DESC LIMIT ?'));
+    const args = tenant === undefined ? (identity === undefined ? [since, cap] : [identity, since, cap]) : (identity === undefined ? [tenant, since, cap] : [tenant, identity, since, cap]);
+    const rowsRaw = query.all(...(args as never[])) as unknown as Array<{ id: number; capture_id: string; ts: number; identity: string | null; refs: string }>;
     const rows = rowsRaw.reverse();
     const bodies = new Map<string, string | null>(); // 内容缓存：同哈希一轮内/跨轮只取一次
     const body = (hash: string): string | null => {

@@ -745,27 +745,30 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
     }
     // 缓存取证（票 03）：需 identity（会话从 /api/audit/sessions 挑）。输出相邻轮对比链，
     // 并把时间窗口内的 route.rebind 事件并排进每一轮——归因措辞是「证据指向」，不下断言。
+    // tenant 缺省 = 全租户（identity 由调用方指定，缺省写死 'default' 会查空）。
     if (url.pathname === '/api/capture/cache-forensics') {
       if (!capture) return json(res, 404, { error: { message: 'capture is not enabled for any tenant', type: 'not_found_error' } });
       const identity = url.searchParams.get('identity');
-      const tenant = url.searchParams.get('tenant') ?? 'default';
+      const tenant = url.searchParams.get('tenant') ?? undefined;
       if (!identity) return json(res, 400, { error: { message: 'identity query parameter is required (pick a session from /api/audit/sessions)', type: 'invalid_request_error' } });
       const limitParam = Number(url.searchParams.get('limit') ?? 100);
       const chain = capture.cacheChain(tenant, identity, Number.isFinite(limitParam) ? limitParam : undefined);
       const rebinds = events.listEvents({ kind: 'route.rebind', tenant, limit: 500 })
         .map((event) => ({ ts: event.ts, backend: event.backend_name, detail: event.detail ? JSON.parse(event.detail) as Record<string, unknown> : {} }));
       return json(res, 200, {
-        tenant, identity, chain,
+        tenant: tenant ?? null, identity, chain,
         rebinds,
         // 哈希结论与 chars 口径互校的说明随响应给出（票 03 验收「不一致要能解释」）：
         hint: 'common_prefix 骤降 ↔ 前缀断裂（证据指向改绑/改提示词/插消息，以同时间窗 rebind 与 first_diff_role 定位）；chars_delta 与 common_prefix 不一致时以哈希结论为准（chars 还受非消息字段影响）',
       });
     }
     // 工具/skill 分析（票 05）：读侧聚合，按需慢查询（默认 7 天 / 500 轮上限）。
+    // tenant 缺省 = 全租户合计（与 /api/audit/* 口径一致；review 后修正——缺省写死 'default'
+    // 会让多租户部署的看板永远空表）。
     if (url.pathname === '/api/capture/tools') {
       if (!capture) return json(res, 404, { error: { message: 'capture is not enabled for any tenant', type: 'not_found_error' } });
       return json(res, 200, capture.toolStats({
-        tenant: url.searchParams.get('tenant') ?? 'default',
+        tenant: url.searchParams.get('tenant') ?? undefined,
         identity: url.searchParams.get('identity') ?? undefined,
         days: Number(url.searchParams.get('days') ?? 7),
         maxTurns: Number(url.searchParams.get('max_turns') ?? 500),
