@@ -150,6 +150,44 @@ test('cache forensics: chain reports common prefix, first divergence position an
   assert.equal((await fetch(`${app.adminUrl}/api/capture/cache-forensics?tenant=main`)).status, 400);
 });
 
+test('cache forensics limit is enforced in SQL and returns the LATEST turns in ascending order (review P1 regression)', async (t: TestContext): Promise<void> => {
+  const fake = await fakeBackend('first', []);
+  t.after(async () => await close(fake.server));
+  const app = await start(t, [{ name: 'main', key_env: 'K_MAIN', capture: true }], [fake.url]);
+  for (const q of ['q1', 'q2', 'q3', 'q4']) {
+    assert.equal((await chat(app.forwardUrl, 'main-key', JSON.stringify({ model: 'm', messages: [{ role: 'system', content: 's' }, { role: 'user', content: q }] }), { 'x-session-id': 'chain-limit' })).status, 200);
+  }
+  await settle();
+  const forensics = await fetch(`${app.adminUrl}/api/capture/cache-forensics?tenant=main&identity=chain-limit&limit=3`).then((r) => r.json()) as { chain: Array<{ id: number; prev_id: number | null }> };
+  assert.equal(forensics.chain.length, 3);
+  // 最新 3 轮（丢最旧一轮）且升序：首条 prev 为 null（它前面那轮不在窗口里）。
+  assert.equal(forensics.chain[0].prev_id, null);
+  assert.ok(forensics.chain[0].id < forensics.chain[1].id && forensics.chain[1].id < forensics.chain[2].id);
+  assert.equal(forensics.chain[1].prev_id, forensics.chain[0].id);
+});
+
+test('tool stats keeps the NEWEST turns when truncating and reports coverage honestly (review P2 regression)', async (t: TestContext): Promise<void> => {
+  const fake = await fakeBackend('first', []);
+  t.after(async () => await close(fake.server));
+  const app = await start(t, [{ name: 'main', key_env: 'K_MAIN', capture: true }], [fake.url]);
+  for (const [index, name] of ['early_tool', ...Array(10).fill('late_tool')].entries()) {
+    const raw = JSON.stringify({ model: 'm', messages: [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'c', type: 'function', function: { name, arguments: '{}' } }] },
+      { role: 'tool', tool_call_id: 'c', content: 'r' },
+    ] });
+    assert.equal((await chat(app.forwardUrl, 'main-key', raw, { 'x-session-id': 'tools-cap' })).status, 200);
+    void index;
+  }
+  await settle();
+  const stats = await fetch(`${app.adminUrl}/api/capture/tools?tenant=main&max_turns=10`).then((r) => r.json()) as { turns_scanned: number; turns_truncated: boolean; covered_since: number | null; tools: Array<{ tool: string; calls: number }> };
+  assert.equal(stats.turns_scanned, 10);
+  assert.equal(stats.turns_truncated, true);
+  assert.ok(stats.covered_since !== null);
+  // 截断保留的是最新两轮：late_tool 在、early_tool 不在。
+  assert.deepEqual(stats.tools.map((entry) => entry.tool), ['late_tool']);
+});
+
 test('tool analytics: calls, error rate, context bulk ranking and stuck-loop candidates', async (t: TestContext): Promise<void> => {
   const fake = await fakeBackend('first', []);
   t.after(async () => await close(fake.server));

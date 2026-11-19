@@ -125,6 +125,9 @@ export interface ToolStatsEntry {
 export interface ToolStatsReport {
   window: { since: number; until: number; days: number };
   turns_scanned: number;
+  // 撞轮次上限时为 true：窗口内更旧轮次没扫，实际覆盖看 covered_since（review P2）。
+  turns_truncated: boolean;
+  covered_since: number | null;
   content_misses: number;
   tools: ToolStatsEntry[];
   // scope = day（by_day）或 identity（by_session）。
@@ -423,12 +426,13 @@ export class CaptureStore {
   // 缓存取证（票 03）：同 (tenant, identity) 轮序相邻对比。common_prefix = 与上一轮逐位
   // 同哈希的条数（prompt cache 前缀连续性的代理指标）；first_diff = 第一条分歧的位置与角色；
   // chars_delta 供与哈希结论互校。归因（改绑/压缩/改提示词）由端点层合并事件账做，措辞「证据指向」。
+  // limit 在 SQL 层限行（review P1：长会话全量读取会拖住同进程转发），取最新 N 轮再逆序恢复升序。
   cacheChain(tenant: string, identity: string, limit = 100): CacheChainEntry[] {
     const count = Math.max(2, Math.min(500, Math.trunc(Number(limit) || 100)));
-    const rows = this.#db.prepare('SELECT id,capture_id,ts,message_count,bytes,refs FROM turns WHERE tenant=? AND identity=? ORDER BY ts ASC, id ASC').all(tenant, identity) as unknown as Array<{ id: number; capture_id: string; ts: number; message_count: number; bytes: number; refs: string }>;
+    const rows = (this.#db.prepare('SELECT id,capture_id,ts,message_count,bytes,refs FROM turns WHERE tenant=? AND identity=? ORDER BY ts DESC, id DESC LIMIT ?').all(tenant, identity, count) as unknown as Array<{ id: number; capture_id: string; ts: number; message_count: number; bytes: number; refs: string }>).reverse();
     const chain: CacheChainEntry[] = [];
     let previous: { id: number; ts: number; refs: string[]; message_count: number; bytes: number } | null = null;
-    for (const row of rows.slice(-count)) {
+    for (const row of rows) {
       const refs = JSON.parse(row.refs) as string[];
       const entry: CacheChainEntry = { id: row.id, capture_id: row.capture_id, ts: row.ts, bytes: row.bytes, message_count: row.message_count,
         prev_id: null, prev_ts: null, common_prefix: refs.length, first_diff_index: null, first_diff_role: null, chars_delta: null, prev_message_count: null };
@@ -458,9 +462,12 @@ export class CaptureStore {
   toolStats({ tenant, identity, days = 7, maxTurns = 500, now = Date.now() }: { tenant: string; identity?: string; days?: number; maxTurns?: number; now?: number }): ToolStatsReport {
     const since = now - Math.max(1, Math.min(90, days)) * 86_400_000;
     const cap = Math.max(10, Math.min(2000, Math.trunc(maxTurns)));
-    const rows = (identity === undefined
-      ? this.#db.prepare('SELECT id,capture_id,ts,identity,refs FROM turns WHERE tenant=? AND ts>=? ORDER BY ts ASC, id ASC LIMIT ?').all(tenant, since, cap)
-      : this.#db.prepare('SELECT id,capture_id,ts,identity,refs FROM turns WHERE tenant=? AND identity=? AND ts>=? ORDER BY ts ASC, id ASC LIMIT ?').all(tenant, identity, since, cap)) as unknown as Array<{ id: number; capture_id: string; ts: number; identity: string | null; refs: string }>;
+    // 取窗口内最新 cap 条再正序聚合（review P2：ASC+LIMIT 截断会把最新轮排掉，
+    // 分析拿旧数据冒充全窗口）。截断状态与实际覆盖起点随报告给出。
+    const rowsRaw = (identity === undefined
+      ? this.#db.prepare('SELECT id,capture_id,ts,identity,refs FROM turns WHERE tenant=? AND ts>=? ORDER BY ts DESC, id DESC LIMIT ?').all(tenant, since, cap)
+      : this.#db.prepare('SELECT id,capture_id,ts,identity,refs FROM turns WHERE tenant=? AND identity=? AND ts>=? ORDER BY ts DESC, id DESC LIMIT ?').all(tenant, identity, since, cap)) as unknown as Array<{ id: number; capture_id: string; ts: number; identity: string | null; refs: string }>;
+    const rows = rowsRaw.reverse();
     const bodies = new Map<string, string | null>(); // 内容缓存：同哈希一轮内/跨轮只取一次
     const body = (hash: string): string | null => {
       if (bodies.has(hash)) return bodies.get(hash)!;
@@ -552,7 +559,10 @@ export class CaptureStore {
     }).sort((a, b) => b.chars - a.chars).slice(0, 200);
     return {
       window: { since, until: now, days },
-      turns_scanned: rows.length, content_misses: scansFailed,
+      turns_scanned: rows.length,
+      turns_truncated: rowsRaw.length >= cap, // 撞上限 = 窗口内还有更旧轮次没扫
+      covered_since: rows.length ? rows[0].ts : null, // 实际覆盖起点（截断时 ≠ window.since）
+      content_misses: scansFailed,
       tools: toolRows, by_day: split(byDay), by_session: split(bySession), loops,
     };
   }
