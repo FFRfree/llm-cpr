@@ -88,6 +88,8 @@ function makeFixture(): Fixture {
     CPR_LOGINCTL: loginctlStub,
     CPR_LOGINCTL_LOG: path.join(base, 'loginctl.log'),
     CPR_HEALTH_DELAY_MS: '10',
+    // 用户补丁（工单 09）：目录钉 tmp；patch 用系统真二进制（Linux 标配）
+    CPR_PATCH_DIR: path.join(base, 'patches'),
   };
   return { base, work, env };
 }
@@ -106,6 +108,23 @@ function systemctlLog(fixture: Fixture): string[] {
 function npmLog(fixture: Fixture): string[] {
   const file = fixture.env.CPR_NPM_LOG;
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean) : [];
+}
+
+// 用真 diff 生成一个可打的补丁（对 fixture 包内 rel 文件从 before 改到 after），避免手写 hunk 出错。
+function writeUserPatch(fixture: Fixture, name: string, rel: string, before: string, after: string): void {
+  const aDir = path.join(fixture.base, 'diff-a');
+  const bDir = path.join(fixture.base, 'diff-b');
+  fs.mkdirSync(path.join(aDir, path.dirname(rel)), { recursive: true });
+  fs.mkdirSync(path.join(bDir, path.dirname(rel)), { recursive: true });
+  fs.writeFileSync(path.join(aDir, rel), before);
+  fs.writeFileSync(path.join(bDir, rel), after);
+  const d = spawnSync('diff', ['-u', path.join(aDir, rel), path.join(bDir, rel)], { encoding: 'utf8' });
+  assert.equal(d.status, 1, 'diff 应报差异（status 1）');
+  const text = (d.stdout ?? '')
+    .replace(/^--- .*$/m, `--- a/${rel}`)
+    .replace(/^\+\+\+ .*$/m, `+++ b/${rel}`);
+  fs.mkdirSync(fixture.env.CPR_PATCH_DIR, { recursive: true });
+  fs.writeFileSync(path.join(fixture.env.CPR_PATCH_DIR, name), `${text}\n`);
 }
 
 async function freePort(): Promise<number> {
@@ -243,9 +262,65 @@ test('upgrade --to 0.0.5 --yes：跳过 registry 查询直装指定版', () => {
   const f = makeFixture();
   const r = cpr(f.work, ['upgrade', '--to', '0.0.5', '--yes'], f.env);
   assert.equal(r.status, 0, r.stderr + r.stdout);
-  const npmLog = fs.readFileSync(f.env.CPR_NPM_LOG, 'utf8').split('\n').filter(Boolean);
-  assert.ok(!npmLog.some((line) => line.includes('view'))); // --to 不查 registry
-  assert.ok(npmLog.includes('install -g llm-cpr@0.0.5'));
+  const log = fs.readFileSync(f.env.CPR_NPM_LOG, 'utf8').split('\n').filter(Boolean);
+  assert.ok(!log.some((line) => line.includes('view'))); // --to 不查 registry
+  assert.ok(log.includes('install -g llm-cpr@0.0.5'));
+});
+
+// ---- 用户补丁（工单 09）----
+
+test('install：~/.cpr/patches 自动打到包上，重跑幂等跳过不重复打', () => {
+  const f = makeFixture();
+  writeUserPatch(f, 'user.patch', 'core/main.ts', '// fixture stub\n', '// fixture stub\n// patched by user\n');
+  const r = cpr(f.work, ['install', '--yes'], f.env);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /已打用户补丁：user\.patch/);
+  assert.match(fs.readFileSync(path.join(f.work, 'core', 'main.ts'), 'utf8'), /patched by user/);
+  // 幂等：再 install，补丁已应用 → 探测跳过，不会打第二遍
+  const r2 = cpr(f.work, ['install', '--yes'], f.env);
+  assert.equal(r2.status, 0, r2.stderr + r2.stdout);
+  assert.match(r2.stdout, /幂等跳过：user\.patch/);
+  assert.equal(fs.readFileSync(path.join(f.work, 'core', 'main.ts'), 'utf8').match(/patched by user/g)?.length, 1);
+});
+
+test('doctor：PATCH 三态探测（无 / 未应用 / 已应用），探测不改文件', () => {
+  const f = makeFixture();
+  let r = cpr(f.work, ['doctor'], f.env);
+  assert.match(r.stdout, /PATCH=无/);
+  writeUserPatch(f, 'user.patch', 'core/main.ts', '// fixture stub\n', '// fixture stub\n// patched by user\n');
+  r = cpr(f.work, ['doctor'], f.env);
+  assert.match(r.stdout, /PATCH=未应用（user\.patch）/);
+  assert.equal(fs.readFileSync(path.join(f.work, 'core', 'main.ts'), 'utf8'), '// fixture stub\n'); // 探测只读
+  assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
+  r = cpr(f.work, ['doctor'], f.env);
+  assert.match(r.stdout, /PATCH=已应用（user\.patch）/);
+});
+
+test('upgrade --yes：补丁与新版本冲突 → 升级失败自动回滚，旧版上如实报打不上', () => {
+  const f = makeFixture();
+  // 冲突补丁：目标文件在包里不存在，正向反向 dry-run 都不过
+  fs.mkdirSync(f.env.CPR_PATCH_DIR, { recursive: true });
+  fs.writeFileSync(path.join(f.env.CPR_PATCH_DIR, 'conflict.patch'), '--- a/core/nope.ts\n+++ b/core/nope.ts\n@@ -1 +1 @@\n-x\n+y\n');
+  const r = cpr(f.work, ['upgrade', '--yes'], f.env);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /补丁与新版本冲突，未打上：conflict\.patch/);
+  assert.match(r.stderr, /升级失败（补丁冲突/);
+  assert.match(r.stderr, /已自动退回 0\.1\.0，服务已恢复/);
+  assert.match(r.stderr, /旧版上补丁也打不上（conflict\.patch）/);
+  const log = fs.readFileSync(f.env.CPR_NPM_LOG, 'utf8').split('\n').filter(Boolean);
+  assert.ok(log.includes('install -g llm-cpr@0.2.0'));
+  assert.ok(log.includes('install -g llm-cpr@0.1.0')); // 自动回滚
+  assert.equal(fs.readFileSync(f.env.CPR_VERSION_STATE, 'utf8'), '0.1.0'); // 磁盘回到旧版
+});
+
+test('upgrade --yes：包未变时补丁探测为已应用 → 跳过并照常完成升级', () => {
+  const f = makeFixture();
+  writeUserPatch(f, 'user.patch', 'core/main.ts', '// fixture stub\n', '// fixture stub\n// patched by user\n');
+  assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
+  const r = cpr(f.work, ['upgrade', '--yes'], f.env);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /幂等跳过：user\.patch/);
+  assert.match(r.stdout, /完成。0\.1\.0 → 0\.2\.0，服务健康/);
 });
 
 // ---- uninstall ----

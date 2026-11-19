@@ -8,6 +8,8 @@
 //   CPR_SYSTEMCTL        systemctl 路径（stub 把 argv 记到 CPR_SYSTEMCTL_LOG；Linux 下每条都带 --user）
 //   CPR_LOGINCTL         loginctl 路径（stub 记 argv 到 CPR_LOGINCTL_LOG；install 顺手 enable-linger）
 //   CPR_NPM              npm 路径（stub 记 argv 到 CPR_NPM_LOG；view/install 两类调用）
+//   CPR_PATCH_DIR        用户补丁目录，默认 ~/.cpr/patches（fixture 钉 tmp）
+//   CPR_PATCH_BIN        patch 二进制路径（默认系统 patch；fixture 用真二进制）
 //   CPR_UNIT_DIR         unit 写入目录，默认 Linux ~/.config/systemd/user / macOS ~/Library/LaunchAgents
 //   CPR_CONFIG_DIR       .env/policy 目录，默认 ~/.cpr（与 core/paths.ts 同源；CLI 保持自包含零依赖，两处并列改）
 //   CPR_DATA_DIR         数据目录，默认 ~/.cpr
@@ -90,6 +92,50 @@ const npmLatest = (): string | null => {
 };
 
 const npmInstall = (version: string): RunResult => runNpm('install', '-g', `${BRAND}@${version}`);
+
+// ---- 用户补丁（~/.cpr/patches/*.patch，工单 09）----
+// 正门仍是 policy 钩子；补丁是契约表达不了的引擎级诉求的受控逃生门：
+// 零 npm 依赖（系统 patch 二进制，Linux/macOS 标配）、状态显性化、打不上=失败绝不静默。
+
+const patchDir = (): string => process.env.CPR_PATCH_DIR || path.join(os.homedir(), '.cpr', 'patches');
+
+function runPatch(args: readonly string[]): RunResult {
+  const bin = process.env.CPR_PATCH_BIN || 'patch';
+  // --batch：永不交互提问，拿不准一律算失败（探测语义成立的前提）。
+  const r = spawnSync(bin, ['--batch', ...args], { encoding: 'utf8' });
+  return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim() };
+}
+
+interface PatchProbe { pending: string[]; applied: string[]; conflicts: string[] }
+
+// 探测（只读不改文件）——必须读输出标记而不是退出码：
+//   GNU patch 会自作主张翻转方向（已打文件上正向跑自动 -R、原始文件上反向跑自动忽略 -R，四种组合全 exit 0）。
+//   唯一可靠信号：正向 dry-run 输出里出现 "Reversed (or previously applied)" = 已打；干净通过 = 未打；非零 = 冲突。
+function probeUserPatches(root: string): PatchProbe {
+  const probe: PatchProbe = { pending: [], applied: [], conflicts: [] };
+  const dir = patchDir();
+  if (!fs.existsSync(dir)) return probe;
+  for (const name of fs.readdirSync(dir).filter((entry) => entry.endsWith('.patch')).sort()) {
+    const forward = runPatch(['--dry-run', '-d', root, '-p1', '-i', path.join(dir, name)]);
+    const combined = `${forward.out}\n${forward.err}`;
+    if (!forward.ok) probe.conflicts.push(name);
+    else if (/Reversed \(or previously applied\)|Unreversed patch detected/.test(combined)) probe.applied.push(name);
+    else probe.pending.push(name);
+  }
+  return probe;
+}
+
+// 应用：只真打「探测判为 pending」的补丁——dry-run 失败的从不真打，保证不会半截应用。
+function applyUserPatches(root: string): { applied: string[]; skipped: string[]; conflicts: string[] } {
+  const probe = probeUserPatches(root);
+  const applied: string[] = [];
+  for (const name of probe.pending) {
+    const real = runPatch(['-d', root, '-p1', '-i', path.join(patchDir(), name)]);
+    if (real.ok) applied.push(name);
+    else probe.conflicts.push(name);
+  }
+  return { applied, skipped: probe.applied, conflicts: probe.conflicts };
+}
 
 const launchctl = (...args: readonly string[]): RunResult => {
   const bin = process.env.CPR_LAUNCHCTL || 'launchctl';
@@ -290,12 +336,21 @@ async function doctor(): Promise<number> {
   }
   console.log(dbLine);
   console.log(`POLICY=${fs.existsSync(path.join(configDir(), 'policy.ts')) ? path.join(configDir(), 'policy.ts') : '无（回落内置 mine）'}`);
+  const patchProbe = probeUserPatches(root);
+  const patchCount = patchProbe.pending.length + patchProbe.applied.length + patchProbe.conflicts.length;
+  const patchState = patchCount === 0 ? '无'
+    : patchProbe.conflicts.length > 0 ? `冲突（${patchProbe.conflicts.join('、')}）`
+      : patchProbe.pending.length > 0 ? `未应用（${patchProbe.pending.join('、')}）`
+        : `已应用（${patchProbe.applied.join('、')}）`;
+  console.log(`PATCH=${patchState}`);
   console.log(`DATA=${dataDir()}${fs.existsSync(dataDir()) ? '' : '（不存在）'}`);
   console.log('--- 建议 ---');
   if (!node.ok) console.log(`NEXT=先升级 Node（要求 ${node.want}）`);
   else if (!npmProbe.ok) console.log('NEXT=安装 npm（cpr upgrade 需要）');
   else if (isClone) console.log('NEXT=clone 路线：git pull 自行升级（cpr upgrade 只服务 npm 安装）');
+  else if (patchProbe.conflicts.length > 0) console.log('NEXT=补丁与当前版本冲突：对包内目标文件重新做 diff，更新 ~/.cpr/patches/ 后重跑 cpr install');
   else if (latest && latest !== current) console.log(`NEXT=有新版：cpr upgrade（当前 ${current} → ${latest}）`);
+  else if (patchProbe.pending.length > 0) console.log('NEXT=补丁未应用：重跑 cpr install（幂等，会打补丁并冒烟）');
   else if (!unitExists) console.log('NEXT=服务未安装：cpr install');
   else if (!serviceActive()) console.log(`NEXT=服务未在跑：systemctl --user enable --now ${UNIT_NAME}（或 cpr install）`);
   else console.log('NEXT=一切正常');
@@ -398,6 +453,16 @@ async function install(yes: boolean): Promise<number> {
     if (!linger.ok) console.error(`cpr: enable-linger 失败（${linger.err}）——服务在你登录期间可用；要登出/重启后仍自跑，需 systemd 允许本用户 linger`);
   }
 
+  // 用户补丁（工单 09）：~/.cpr/patches/*.patch 打到包上（幂等）；打不上拒绝继续。
+  // 打上之后再冒烟——冒烟验证的是补丁后的引擎，不是 npm 原样字节。
+  const patched = applyUserPatches(root);
+  if (patched.applied.length > 0) console.log(`cpr: 已打用户补丁：${patched.applied.join('、')}`);
+  if (patched.skipped.length > 0) console.log(`cpr: 补丁已应用过，幂等跳过：${patched.skipped.join('、')}`);
+  if (patched.conflicts.length > 0) {
+    console.error(`cpr: 用户补丁打不上当前包：${patched.conflicts.join('、')}——对当前版本文件重新做 diff 更新补丁后再 install；服务未启动。`);
+    return 1;
+  }
+
   if (!(await bootSmoke(root))) {
     console.error('cpr: install 冒烟未通过——先解决再启动（服务未启动、unit 已就位）。');
     return 1;
@@ -444,20 +509,41 @@ async function upgrade(yes: boolean, toVersion: string | undefined): Promise<num
     return 1;
   }
   console.log(`cpr: 已装 ${BRAND}@${target}`);
+  // 用户补丁（工单 09）：npm 换包整体重置包目录，升级后必须重打；打不上=升级失败走回滚——
+  // 用户的定制行为不能静默消失，宁可停在旧版等修。
+  const patched = applyUserPatches(root);
+  if (patched.applied.length > 0) console.log(`cpr: 已打用户补丁：${patched.applied.join('、')}`);
+  if (patched.skipped.length > 0) console.log(`cpr: 补丁已应用过，幂等跳过：${patched.skipped.join('、')}`);
+  if (patched.conflicts.length > 0) {
+    console.error(`cpr: 用户补丁与新版本冲突，未打上：${patched.conflicts.join('、')}（包保持 npm 原样）`);
+    return await rollbackAfterFailedUpgrade(root, current, `补丁冲突（${patched.conflicts.join('、')}）——对补丁目标在新版文件上重新 diff，更新 ~/.cpr/patches/ 后重试`);
+  }
   if (await serviceUpAfterRestart()) {
     console.log(`cpr: 完成。${current} → ${target}，服务健康。`);
     console.log(`cpr: 验证：journalctl --user -u ${UNIT_NAME} 应有启动日志（版本/租户/schema 行）；管理口 /api/route/status 应返回订阅清单。`);
     return 0;
   }
-  // 失败自动回滚：加法迁移纪律保证「旧代码跑新库」不炸——回滚只换代码，数据不动。
-  console.error(`cpr: 新版 ${target} 未通过健康检查（systemd is-active 非 active）——自动装回 ${current}`);
+  return await rollbackAfterFailedUpgrade(root, current, '未通过健康检查（systemd is-active 非 active）');
+}
+
+// 升级失败回滚（健康门/补丁冲突共用）：装回旧版 → 旧版上重打补丁 → 重启健康门。
+// 回滚只换代码不动数据——加法迁移纪律保证「旧代码跑新库」不炸。
+async function rollbackAfterFailedUpgrade(root: string, current: string, reason: string): Promise<number> {
+  console.error(`cpr: 升级失败（${reason}）——自动装回 ${current}`);
   const back = npmInstall(current);
-  if (back.ok && (await serviceUpAfterRestart())) {
-    console.error(`cpr: 已自动退回 ${current}，服务已恢复。新版失败原因：journalctl --user -u ${UNIT_NAME} -n 50`);
-    console.error(`cpr: 想重试：先看日志解决根因，再 cpr upgrade --to ${target}`);
+  if (!back.ok) {
+    console.error(`cpr: 回滚 npm 安装失败——服务可能停着。手工口径：npm install -g ${BRAND}@${current} 后 systemctl --user restart ${UNIT_NAME}`);
+    return 1;
+  }
+  const rePatched = applyUserPatches(root);
+  if (rePatched.applied.length > 0) console.log(`cpr: 旧版上重打用户补丁：${rePatched.applied.join('、')}`);
+  if (rePatched.conflicts.length > 0) console.error(`cpr: 注意：旧版上补丁也打不上（${rePatched.conflicts.join('、')}）——定制行为缺失；修补丁后重跑 cpr install`);
+  if (await serviceUpAfterRestart()) {
+    console.error(`cpr: 已自动退回 ${current}，服务已恢复。失败原因：journalctl --user -u ${UNIT_NAME} -n 50`);
+    console.error('cpr: 解决根因后重试：cpr upgrade');
     return 1; // 升级失败（尽管服务已恢复）
   }
-  console.error(`cpr: 回滚也失败了——服务可能停着。手工口径：npm install -g ${BRAND}@${current} 后 systemctl --user restart ${UNIT_NAME}`);
+  console.error(`cpr: 回滚后服务仍未起来——手工口径：journalctl --user -u ${UNIT_NAME} -n 50；npm install -g ${BRAND}@${current} && systemctl --user restart ${UNIT_NAME}`);
   return 1;
 }
 
