@@ -2,8 +2,9 @@
 // 发布副本冒烟：用本机假上游验证一份运行副本能起、能转发、能钉会话、能记账、能出看板。
 // 不触碰真实订阅额度；全部读写落在临时目录。
 //
-// 用法： node scripts/xdg-deploy/smoke-release.ts [releaseDir]
-//   releaseDir 默认 /root/.local/lib/coding-plan-router/current
+// 用法： node scripts/xdg-deploy/smoke-release.ts [releaseDir | npm包.tgz]
+//   v0.2.0 发布纪律：给 `npm pack` 出的 .tgz，本脚本解包（package/ 前缀）后冒烟——验的即发布的字节；
+//   也接受已解包的目录（含 core/ package.json）；缺省指本机旧 release 软链（阶段 3 切换前的生产实况）。
 // 退出码 0 = 全部通过。
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -13,14 +14,24 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-const releaseDir = path.resolve(process.argv[2] || '/root/.local/lib/coding-plan-router/current');
+const input = process.argv[2] || '/root/.local/lib/coding-plan-router/current';
 const tmpRoot = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'cpr-release-smoke-'));
+let releaseDir = path.resolve(input);
+if (input.endsWith('.tgz')) {
+  // npm pack 产物：tar 包内根目录是 package/，解到 tmp 后冒烟那份。
+  const extract = spawnSync('tar', ['-xf', releaseDir, '-C', tmpRoot], { encoding: 'utf8' });
+  if (extract.status !== 0) {
+    console.error(`cpr: 解包 ${releaseDir} 失败：${extract.stderr ?? ''}`);
+    process.exit(1);
+  }
+  releaseDir = path.join(tmpRoot, 'package');
+}
 const dataDir = path.join(tmpRoot, 'data');
 fs.mkdirSync(dataDir, { recursive: true });
 
