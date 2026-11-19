@@ -3,8 +3,7 @@
 // 存在 ~/.llm-cpr/policy.ts 则优先；坏声明在此拒绝启动（退出码 1）。
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { startGateway } from './http/server.ts';
 import { validateConfig } from './policy/config.ts';
 import { configDir, envFile } from './paths.ts';
@@ -15,17 +14,15 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-// 版本可见性：release 目录读 RELEASE.txt 的 commit=；clone 里 spawn git；都没有报 unknown。
+// 版本可见性：包内 package.json 的 version 是唯一正源（npm 形态各处同源；v0.1.0 的 RELEASE.txt/git
+// 机制已随 clone 分发退役——npm 装出来没有 RELEASE.txt 也没有 .git，读它们只会得到 unknown）。
 function bootVersion(): string {
   try {
-    const match = /commit=(\S+)/.exec(fs.readFileSync(new URL('../RELEASE.txt', import.meta.url), 'utf8'));
-    if (match) return match[1];
-  } catch { /* clone 场景没有 RELEASE.txt */ }
-  const result = spawnSync('git', ['rev-parse', '--short', 'HEAD'], {
-    cwd: fileURLToPath(new URL('..', import.meta.url)),
-    encoding: 'utf8',
-  });
-  return result.status === 0 ? (result.stdout ?? '').trim() : 'unknown';
+    const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string };
+    return pkg.version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
 }
 
 try {

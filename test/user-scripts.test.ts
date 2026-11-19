@@ -518,7 +518,7 @@ export default class LocalPolicy {
 function makeMainCopy(twinName: string): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-main-'));
   fs.cpSync(path.join(REPO, 'core'), path.join(root, 'core'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'package.json'), '{"type":"module"}\n');
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ type: 'module', name: '@ffrfree/llm-cpr', version: '0.1.0' }) + "\n");
   fs.writeFileSync(path.join(root, 'core', 'policy', 'mine.ts'), TWIN_MINE.replace('twin-stub', twinName));
   return root;
 }
@@ -563,7 +563,7 @@ test('main.ts：无 ~/.llm-cpr/policy.ts 回落 core/policy/mine.ts', async () =
   const { subscriptions, stdout, child } = await bootMain(root, {});
   try {
     assert.deepEqual(subscriptions.map((s) => s.name), ['twin-stub']);
-    assert.match(stdout, /^llm-cpr \S+ — policy: core\/policy\/mine\.ts/);
+    assert.match(stdout, /^llm-cpr 0\.1\.0 — policy: core\/policy\/mine\.ts/); // 版本行 = 包内 package.json（npm 形态正源，v0.1.0 的 RELEASE.txt/git 机制已退役）
   } finally {
     child.kill('SIGTERM');
   }
