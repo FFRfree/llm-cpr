@@ -17,3 +17,4 @@ Blocked by: 01
 - 坑（实现中踩到并修掉）：fresh 判定不能看「表存在」（openDatabase 开库即建表）——改看 requests 行数；手搭旧库夹具必须带全非 ALTER 管的列（baseline 的看板索引引用 total_tokens 等）。
 - 验证：`npm run typecheck` 0 错；`node --test` 146/146（新增 test/migrate.test.ts 6 例）。
 - 没做的验证：本机生产 data.db（user_version=0、1100+ 行）首次跑 v0.2.0 时会走「upgraded + 备份」路径——属阶段 3 生产切换时实测。
+- **独立 review 六项修正（3a46ab2，探针复验通过）**：P1 备份的 checkpoint busy 被忽略 + integrity 查的是源库而非备份产物 → busy 即拒迁、备份副本自开只读连接校验；P2 基线 DDL 原在 openDatabase 里跑（备份先被补列污染、未来版本拒启前已动结构）→ `openDatabase({baseline:false})` + 基线成为迁移步骤 1（`STEPS[0]`，下标=版本-1），直连入口默认 baseline:true 保持旧测试行为；P2 fresh 判定漏 system_events 决策账 → 两本账行数都查。回归面 8 例全钉进 test/migrate.test.ts（含「备份原貌未补列」「拒启不碰结构」「backups 受阻库原样」三个修正点断言）。

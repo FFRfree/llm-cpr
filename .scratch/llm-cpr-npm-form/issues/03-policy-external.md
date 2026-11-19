@@ -15,3 +15,4 @@ Blocked by: 02
 - commit 6b98048：`main.ts` 加载序改 `configDir()/policy.ts` 优先回落内置；install 落 policy 三件套（模板/policy.ts 真身/tsconfig 指路，幂等不重置既有文件）；`policy.example.ts` import 改 `'llm-cpr'` 并纳入仓 tsconfig paths+include（模板受静态门约束）；仓库根 policy.local.ts 机制整体退役（main.ts 不再读、.gitignore 行删除）。
 - 验证：`npm run typecheck` 0 错；`node --test` 140/140（install 三件套断言、幂等、local 优先/回落/坏 local 拒启三例重写为 ~/.cpr 语义，bootMain 的 `...extra` 收尾以允许测试覆盖 CPR_CONFIG_DIR）。
 - 没做的验证：npm 全局安装形态下 tsconfig paths 指向全局包路径（05/06 号票落地后 e2e 实测；clone 形态指向仓库根）。
+- **独立 review 三项修正（3a46ab2）**：install 写的 unit 补 `Environment=CPR_CONFIG_DIR/CPR_DATA_DIR`（systemd 不继承安装命令环境，缺了服务会静默加载另一份 policy——探针 install-probe.mjs 复验）；install 补写 `~/.cpr/package.json {"type":"module"}`（NodeNext 对外置 policy 的 ESM 判定，用户文件 TS1287 消除；契约链 contracts.ts 里的 `node:http` 类型在无 @types/node 的机器上仍报 TS2307/TS2580——只影响打开 contracts.ts 的视图，不影响 policy.ts 编辑体验，记为已知限制）；envfile 读不到（如路径是目录）从静默吞掉改为原样抛（EISDIR 用例进 paths.test.ts）。
