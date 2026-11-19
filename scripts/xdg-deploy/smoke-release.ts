@@ -135,7 +135,11 @@ const waitReady = async (url: string, timeoutMs: number = 10_000): Promise<void>
 
 try {
   assert.ok(fs.existsSync(path.join(releaseDir, 'core', 'main.ts')), `missing core/main.ts in ${releaseDir}`);
-  assert.ok(fs.existsSync(path.join(releaseDir, 'static', 'dashboard.html')), `missing static/dashboard.html in ${releaseDir}`);
+  // 后台 v2：单页 dashboard.html 已拆为多页（index + 4 页 + 共享 assets），断言随契约更新
+  assert.ok(fs.existsSync(path.join(releaseDir, 'static', 'index.html')), `missing static/index.html in ${releaseDir}`);
+  for (const asset of ['requests.html', 'sessions.html', 'trajectory.html', 'observability.html', path.join('assets', 'app.css'), path.join('assets', 'app.js')]) {
+    assert.ok(fs.existsSync(path.join(releaseDir, 'static', asset)), `missing static/${asset} in ${releaseDir}`);
+  }
   // .ts 的模块类型由最近的 package.json 决定；缺了它就只能靠 Node 语法探测兜底。
   const manifest: unknown = JSON.parse(fs.readFileSync(path.join(releaseDir, 'package.json'), 'utf8'));
   assert.ok(isRecord(manifest) && manifest.type === 'module', '发布副本必须带 package.json 且 "type": "module"');
