@@ -1,16 +1,16 @@
 # Policy 用户指南：怎么写自己的路由策略
 
 > 本指南是 policy 编写的基准文档；契约正本 = `core/policy/contract.ts`（类型以它为准）。
-> 标注约定：**【现状】** = 已实现于工作树（2026-11-18 契约收敛 + affinity/rebind 词汇改版，全量测试通过）、随下次 release 生效；生产 release 切换前仍是旧契约旧词汇。术语看 GLOSSARY、决策记录看 ADR-0002/0006。
+> 标注约定：**【现状】** = 已实现于工作树（2026-11-18 契约收敛 + affinity/rebind 词汇改版，全量测试通过）、随 v0.2.0 发布生效；本机生产切换到 v0.2.0 前仍是旧契约旧词汇（切换逐次授权）。术语看 GLOSSARY、决策记录看 ADR-0002/0006。
 
 ## 1. Policy 是什么
 
-你的策略就是一个 TS 类，住在 `/root/ffr-projects/llm-cpr/core/policy/mine.ts`。它由两部分组成：
+你的策略就是一个 TS 类，v0.2.0 起住在 `~/.llm-cpr/policy.ts`（`cpr install` 从模板生成；没有这个文件时回落包内作者的默认声明 `core/policy/mine.ts`）。它由两部分组成：
 
 - **声明区**（backends/models/listen/routing…）：网关的静态配置，等价于旧 config.json。
 - **策略区**：唯一一个钩子 `decide(ctx)`。引擎在每个请求的选路点调用它，它回答「这次发给谁」；它不回答的部分由**内置逻辑**兜底（月欠账评分选新会话 / 长会话保亲和不改绑 / 尊重亲和）。
 
-配置即代码：**改策略 = 改代码 = 发 release**，没有热重载按钮。`backends[].name` 是身份键（亲和事件与账本都存它），**绝不改 name**；`alias` 只是显示名，可随便改且可能撞名，凡需要唯一标识订阅的地方一律用 `name`。
+配置即代码：**改策略 = 改文件，改完 `systemctl --user restart llm-cpr` 即生效**（外置 policy 随引擎启动重载，没有热重载按钮，也不再需要发版）。`backends[].name` 是身份键（亲和事件与账本都存它），**绝不改 name**；`alias` 只是显示名，可随便改且可能撞名，凡需要唯一标识订阅的地方一律用 `name`。引擎层（`core/`）的改动仍属开发范畴，走 clone/发布流程。
 
 **一个核心边界，全指南建立在这句话上**：decide 回答两个决策点——**正常路由**（每个请求一次）和**改绑决策**（撞墙、原地重试烧尽后问一次，ctx 带 `error` 标记）。但出错的**机械动作**（原地重试、长会话保亲和、改绑冷却）全部引擎自治，policy 碰不到。
 
@@ -180,6 +180,6 @@ decide(ctx) {
 
 ## 7. 改动纪律
 
-- 改 `mine.ts` 前先看 `git status`，别覆盖并行改动；改完在仓库根跑 `node --test` 与 `npm run typecheck`。
-- 生产生效要走 release 部署流程（须用户逐次授权，停服会中断在途请求）；验证用 `scripts/xdg-deploy/smoke-release.ts` 的假上游冒烟，不烧真额度。
+- 外置 `~/.llm-cpr/policy.ts` 是你自己的文件，改动随意；改完 `systemctl --user restart llm-cpr` 生效，验证用 `cpr doctor` 与看板。
+- 包内 `mine.ts` 是引擎开发者的事：改前看 `git status` 别覆盖并行改动，改完在仓库根跑 `node --test` 与 `npm run typecheck`，发布冒烟用 `scripts/xdg-deploy/smoke-release.ts` 的假上游（不烧真额度）。
 - 亲和 + 撞墙不改绑 = 真·不回退（TCP 挂 → 503、撞墙 → 429 原样透传），这是诚实行为，引擎不会偷偷软化成「尽量固定」。

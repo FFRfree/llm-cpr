@@ -20,13 +20,20 @@
 - 对应 coding-plan 服务的有效订阅与 API 凭据。
 - OpenCode Go 可配置为直连（`direct: true`）或通过兼容代理接入；两种方式的额度查询方式不同。
 
-## 快速开始
+## 快速开始（普通用户）
 
-1. 克隆仓库后编辑 `policy.local.ts`（没有就 `cp policy.example.ts policy.local.ts`）——配置即代码：订阅声明与路由策略就在这个文件里，改它等于改代码。它被 gitignore，升级永不冲突；`core/policy/mine.ts` 是仓库自带的默认声明（作者的实际配置），没有 local 文件时用它。先从一份账号、一个模型开始，再扩展。
-2. 生成足够长的随机 master key；将其和后端凭据放在本机 `.env`，设置文件权限为仅当前用户可读（`chmod 600 .env`）。不要提交 `.env`。本仓库是开发环境示例；生产机的实际密钥放在配置目录（如 `~/.config/coding-plan-router/.env`），部署布局见 [`docs/deployment.md`](docs/deployment.md)。
-3. 根据订阅家族设置每个 backend 的 `family`（`ocg` 或 `ccg`）、`base_url`、`key_env`；`name` 是持久会话映射和审计的稳定身份键，不应重命名；`account` 用于上游额度账号匹配，`alias` 只改显示。OCG 的 `base_url` 指向直连服务或兼容代理，CCG 指向其 OpenAI 兼容 Provider API。
-4. 在 `models` 中配置对客户端公开的统一 `id`，并在 `backends` 映射中填写每个家族的准确上游模型 ID。仅加入你已验证可用、且希望公开给客户端的模型。
-5. 启动并检查模型列表与管理看板。
+前置：Node.js **≥ 22.18.0**（用内置 `node:sqlite` 和原生 `.ts` 类型擦除，零构建、零第三方依赖）+ 至少一份 coding-plan 订阅凭据。
+
+1. 首装一条命令（Linux/macOS，全程免 sudo）：
+
+   ```sh
+   npx -y llm-cpr install
+   ```
+
+   它做四件事：npm 把引擎下载进固定位置 `~/.local/lib/llm-cpr/`（npm 只是下载器，代码住哪我们自己定，ADR-0009）；建命令软链 `~/.local/bin/cpr`；在你的用户目录建 `~/.llm-cpr/`（policy 模板 + 随机 master key 的 `.env`，已 chmod 600）；写用户级 systemd unit、自举冒烟通过后启动。macOS 走 LaunchAgent（experimental）。
+2. 编辑 `~/.llm-cpr/policy.ts`——配置即代码：订阅声明与路由策略就在这个 TS 类里（`name` 定了绝不改，写法见 [docs/policy-guide.md](docs/policy-guide.md)）；上游凭据按 `key_env` 名填进 `~/.llm-cpr/.env`。改完 `systemctl --user restart llm-cpr` 生效。
+3. 客户端配 OpenAI 兼容地址 `http://127.0.0.1:8741/v1`，API key 用 `.env` 里 `CPR_MASTER_KEY` 的值；请求带 `Authorization: Bearer ***`。
+4. 打开看板 `http://127.0.0.1:8740/` 看额度与会话；`cpr doctor` 随时体检。
 
 `.env` 示例（占位值不是可用凭据）：
 
@@ -38,7 +45,7 @@ CPR_UPSTREAM_KEY=replace-with-your-provider-api-key
 # CPR_ADMIN_PORT=8740
 ```
 
-声明形状（`core/policy/mine.ts` 内即是实例，不用写 JSON；上线前请核对你的订阅及上游模型 ID）：`master_key_env`、`listen`/`admin` 端口、`backends[]`（`name`/`family`/`alias`/`base_url`/`key_env`）与 `models[]`（对客户端公开的统一 `id` → 各家族真名映射）。完整真实示例直接看 `core/policy/mine.ts`。
+声明形状（`~/.llm-cpr/policy.ts` 从模板生成，不用写 JSON；完整真实示例看包内 `core/policy/mine.ts`）：`master_key_env`、`listen`/`admin` 端口、`backends[]`（`name`/`family`/`alias`/`base_url`/`key_env`）与 `models[]`（对客户端公开的统一 `id` → 各家族真名映射）。
 
 `backends[].alias` 是可选的看板显示名：后台各处（订阅卡标题、汇总、钉住会话、请求明细）优先显示它，家族一律用全名 `OpenCode Go` / `CommandCode GOAT`，卡片脚注保留内部名 `name` 便于对日志。不配 `alias` 时显示内部名。
 
@@ -60,28 +67,30 @@ curl -H "Authorization: Bearer $CPR_MASTER_KEY" \
   http://127.0.0.1:8741/v1/models
 ```
 
-## 安装 / 升级 / 卸载（cpr 脚本）
+## 安装 / 升级 / 卸载（cpr 命令）
 
-安装走 clone（脚本随源码一起被你审阅，没有 curl 管道脚本）：
+安装、升级、卸载全部由 `cpr` 命令代劳；位置纪律：用户资产住 `~/.llm-cpr`，代码住 `~/.local/lib/llm-cpr`（版本目录 + `current` 软链），命令软链 `~/.local/bin/cpr`，unit 住 systemd 用户级抽屉（ADR-0009）。
+
+```sh
+cpr doctor                 # 只读体检：NODE/MODE/VERSION/APPROOT/BIN/UNIT/DB/POLICY/PATCH + NEXT 建议
+cpr upgrade                # 升级：npm 下载新版目录 → 打用户补丁 → 临时库冒烟 → 软链切换 → 健康门
+cpr upgrade --to <版本>     # 手动升/退到指定版本（不查 registry）
+cpr uninstall              # 停服务、删 unit/命令软链/代码安装区；~/.llm-cpr 永不静默删（--purge 显式确认）
+```
+
+升级语义：下载到**独立版本目录**（current 与服务全不动）→ 补丁/冒烟全过才翻转 `current` 软链 → 重启 + is-active 健康门；任何一步失败，`current` 拨回上一版目录——**零网络、瞬时**，你的数据在 `~/.llm-cpr` 里一动不动。版本目录保留当前+上一版垫背，更老的升级成功后自动清。数据库备份与迁移内建在引擎启动路径（`core/store/migrate.ts`：迁移前 WAL checkpoint + `~/.llm-cpr/backups/<时间戳>/` + integrity check），CLI 不重复做。
+
+启动日志第一行报当前版本（`llm-cpr <版本> — policy: ~/.llm-cpr/policy.ts|内置 mine`），随时核对「磁盘版本 = 运行版本」。
+
+## 引擎开发者（clone 轨道）
 
 ```sh
 git clone <仓库地址> llm-cpr && cd llm-cpr
-node scripts/cpr.ts install          # 交互式：Node 版本检查 → 建 policy.local.ts →
-                                     # 生成 .env(随机 master key) → 写 systemd unit → 测试 → 问是否启动
-node scripts/cpr.ts doctor           # 只读体检：版本差、领先 commit、脏文件清单
+node scripts/cpr.ts install    # 同款用户级服务，但代码直接跑 clone（开发迭代用）
+node scripts/cpr.ts doctor
 ```
 
-升级（重启服务前一定交互确认，默认不重启）：
-
-```sh
-node scripts/cpr.ts upgrade          # 干净仓 fast-forward；升级后自动 node --test + 假上游冒烟
-```
-
-行为边界：存在未提交的**被跟踪文件**改动时升级无条件拒绝（点名列出，出路是你自己 commit / stash / discard——脚本不代做）；你的 policy 改动住 `policy.local.ts`，git 永远不碰它。若你 commit 过引擎代码（fork 用户），脚本会打印领先 commit 清单并在你确认后 rebase，撞冲突立即 `--abort` 原地还原，由你手工解冲突后全量测试。
-
-卸载：`node scripts/cpr.ts uninstall` 停服务、删 unit；数据库与 `.env` 永不静默删除（确认不要再加 `--purge`）；clone 目录自己删。
-
-启动日志第一行报当前 commit（`llm-cpr <sha> — policy: policy.local.ts|core/policy/mine.ts`），随时核对「磁盘版本 = 运行版本」。
+clone 的升级不走 `cpr upgrade`（那是 npm 安装形态的通道）：`git pull` 后自行验证 `npm run typecheck` + `node --test` + `node scripts/xdg-deploy/smoke-release.ts`，再 `systemctl --user restart llm-cpr`。clone 里改引擎代码、npm 用户改 policy/补丁——两条轨道互补不互斥。
 
 ## 路由行为
 
