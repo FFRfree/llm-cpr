@@ -39,7 +39,7 @@ try {
   } catch (error) {
     throw new Error(`${source}: ${messageOf(error)}`);
   }
-  console.log(`coding-plan-router ${bootVersion()} — policy: ${source}`);
+  console.log(`llm-cpr ${bootVersion()} — policy: ${source}`);
   const tenantNames = (policy.tenants ?? []).map((tenant) => tenant.name);
   if (tenantNames.length) console.log(`tenants: ${tenantNames.join(', ')}`); // 鉴权按租户 key；缺 env 的租户在 authenticate 处自然 401，不在此拒启动
   await startGateway(policy);

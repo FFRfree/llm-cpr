@@ -5,7 +5,7 @@
 
 ## 1. Policy 是什么
 
-你的策略就是一个 TS 类，住在 `/root/ffr-projects/coding-plan-router/lib/policy/mine.ts`。它由两部分组成：
+你的策略就是一个 TS 类，住在 `/root/ffr-projects/llm-cpr/lib/policy/mine.ts`。它由两部分组成：
 
 - **声明区**（backends/models/listen/routing…）：网关的静态配置，等价于旧 config.json。
 - **策略区**：唯一一个钩子 `decide(ctx)`。引擎在每个请求的选路点调用它，它回答「这次发给谁」；它不回答的部分由**内置逻辑**兜底（月欠账评分选新会话 / 长会话保亲和不改绑 / 尊重亲和）。

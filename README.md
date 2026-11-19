@@ -1,10 +1,10 @@
-# coding-plan-router
+# llm-cpr（原 coding-plan-router，2026-11-19 改名）
 
 面向多份 coding-plan 订阅的 OpenAI 兼容路由网关：让 Hermes、Pi 等客户端共用一个入口，按会话和订阅用量分配请求。
 
 ## 为什么需要它
 
-个人可能同时持有多个 OpenCode Go、CommandCode GOAT 等 coding-plan 订阅。每份额度都有周期和到期时间；只用一份容易提前耗尽，另一份则可能在周期结束时仍有余量。coding-plan-router 将订阅纳入同一模型入口，尽量把用量均匀分摊到“落后于周期进度”的订阅，同时保留会话粘性，减少跨账号切换带来的缓存损失。
+个人可能同时持有多个 OpenCode Go、CommandCode GOAT 等 coding-plan 订阅。每份额度都有周期和到期时间；只用一份容易提前耗尽，另一份则可能在周期结束时仍有余量。llm-cpr 将订阅纳入同一模型入口，尽量把用量均匀分摊到“落后于周期进度”的订阅，同时保留会话粘性，减少跨账号切换带来的缓存损失。
 
 ## 能力概览
 
@@ -65,7 +65,7 @@ curl -H "Authorization: Bearer $CPR_MASTER_KEY" \
 安装走 clone（脚本随源码一起被你审阅，没有 curl 管道脚本）：
 
 ```sh
-git clone <仓库地址> coding-plan-router && cd coding-plan-router
+git clone <仓库地址> llm-cpr && cd llm-cpr
 node scripts/cpr.ts install          # 交互式：Node 版本检查 → 建 policy.local.ts →
                                      # 生成 .env(随机 master key) → 写 systemd unit → 测试 → 问是否启动
 node scripts/cpr.ts doctor           # 只读体检：版本差、领先 commit、脏文件清单
@@ -81,7 +81,7 @@ node scripts/cpr.ts upgrade          # 干净仓 fast-forward；升级后自动 
 
 卸载：`node scripts/cpr.ts uninstall` 停服务、删 unit；数据库与 `.env` 永不静默删除（确认不要再加 `--purge`）；clone 目录自己删。
 
-启动日志第一行报当前 commit（`coding-plan-router <sha> — policy: policy.local.ts|lib/policy/mine.ts`），随时核对「磁盘版本 = 运行版本」。
+启动日志第一行报当前 commit（`llm-cpr <sha> — policy: policy.local.ts|lib/policy/mine.ts`），随时核对「磁盘版本 = 运行版本」。
 
 ## 路由行为
 

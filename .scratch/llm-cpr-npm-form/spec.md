@@ -1,0 +1,25 @@
+# v0.2.0 npm 形态改造：llm-cpr 分发
+
+2026-11-18/19 三轮对话 + grilling 拍板。决策正本 = `docs/adr/0008-llm-cpr-rebrand-npm-form.md` + 决策票 `/root/ffr-scratch/2026-11-18-llm-cpr-npm-form/TICKET.md`（grilling 已定/执行记录）；本文为工单化 spec。
+
+## 动机
+
+v0.1.0 clone + git 升级对普通用户门槛高（要懂 git、systemd、XDG 布局）。目标用户扩展到「买了 coding-plan 订阅、在终端用 agent 的人」；Linux 一等公民，macOS 随版但 experimental。改名与品牌串已先行执行（Forgejo/本地仓/技能/hub/登记卡，见票执行记录）。
+
+## 方案
+
+- **npm 单轨**（包 `llm-cpr`，registry 名已核空闲）+ clone 双轨留给引擎开发者；v0.1.0 视为零真人用户，v0.2.0 破坏性重来，不写 clone→npm 迁移。
+- **`~/.cpr` 单目录**（policy.ts / .env / data.db / backups/；`os.homedir()` 三端同构）；`CPR_CONFIG_DIR`/`CPR_DATA_DIR` 接缝保留。
+- **用户级服务免 sudo**：Linux `systemctl --user` + install 顺手 `loginctl enable-linger`；macOS LaunchAgent。
+- **升级 = `cpr upgrade`**：npm 装新版 → 迁移前备份 → y/N 重启 → 启动路径自动迁移 → 健康检查，**失败自动装回旧版**；`--to <版本>` 手动退版。
+- **迁移三件套**：`PRAGMA user_version` 有序步骤表内建启动路径（fail-fast）；**只做加法迁移**（破坏性走离线工具）；迁移前 WAL checkpoint + 备份 + integrity check。
+- **探新版只在用户交互时**：看板打开经管理口现查 npm registry（缓存 1h）、`cpr doctor`/`upgrade` 现查；进程绝不定期轮询。
+- **policy 落点外置**：`~/.cpr/policy.ts` 存在则优先，否则内置 `mine.ts`；policy 文件对引擎仅 `import type` 依赖（运行时零依赖已核实）。
+- 本机 VPS 终态切产品同款；**生产切换逐次授权**（含 root 跑 user unit 的 linger 姿势、看板域名换名，届时单独拍板）。
+
+## 边界（第一版不做）
+
+- Windows 不做；macOS 无真机，launchd 不实测、标 experimental。
+- 单文件二进制押后（bun compile 默认拒绝运行时加载外部 TS，会逼「配置即代码」退回「配置即数据」；届时策略层先做 TS→JSON 降级）。
+- 进程不做 registry 定期轮询；管理口仍只绑回环。
+- `backends[].name` 身份键绝不改；`.scratch/` 历史工单原样保留。

@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
 const SCRIPT = path.join(REPO, 'scripts', 'cpr.ts');
-const UNIT = 'coding-plan-router.service';
+const UNIT = 'llm-cpr.service';
 
 type Env = Record<string, string>;
 
@@ -343,7 +343,7 @@ test('main.ts：无 policy.local.ts 回落 lib/policy/mine.ts', async () => {
   const { subscriptions, stdout, child } = await bootMain(root, {});
   try {
     assert.deepEqual(subscriptions.map((s) => s.name), ['twin-stub']);
-    assert.match(stdout, /^coding-plan-router \S+ — policy: lib\/policy\/mine\.ts/);
+    assert.match(stdout, /^llm-cpr \S+ — policy: lib\/policy\/mine\.ts/);
   } finally {
     child.kill('SIGTERM');
   }

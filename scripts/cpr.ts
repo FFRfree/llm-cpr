@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// scripts/cpr.ts — coding-plan-router 用户侧 doctor / install / upgrade / uninstall。
+// scripts/cpr.ts — llm-cpr 用户侧 doctor / install / upgrade / uninstall。
 // 约定：在 clone 根目录里运行；操作对象 = process.cwd()（与脚本文件位置无关）。
 // 安全边界：脚本永不 stash / commit / discard 用户的改动；脏跟踪文件一律拒绝升级；
 //   systemd 重启只在用户确认（y / --yes）后执行；uninstall 永不删数据库与 clone 目录。
@@ -17,10 +17,10 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import readline from 'node:readline/promises';
 
-const BRAND = 'coding-plan-router';
-// unit 名可注入：端到端测试用独立名字（如 coding-plan-router-e2e）装在真 systemd 上，与生产 unit 错开。
+const BRAND = 'llm-cpr';
+// unit 名可注入：端到端测试用独立名字（如 llm-cpr-e2e）装在真 systemd 上，与生产 unit 错开。
 // 后缀归一化：用户传裸名（不带 .service）时自动补上，否则 systemd 按 <名>.service 找不到 unit 文件。
-const unitNameRaw = process.env.CPR_UNIT_NAME || 'coding-plan-router.service';
+const unitNameRaw = process.env.CPR_UNIT_NAME || 'llm-cpr.service';
 const UNIT_NAME = unitNameRaw.endsWith('.service') ? unitNameRaw : `${unitNameRaw}.service`;
 
 interface RunResult { ok: boolean; out: string; err: string }
@@ -44,10 +44,10 @@ function die(message: string): never {
 
 function repoRoot(): string {
   const probe = git(['rev-parse', '--show-toplevel'], process.cwd());
-  if (!probe.ok) die('当前目录不是 git 仓库——请在 coding-plan-router 的 clone 根目录里运行');
+  if (!probe.ok) die('当前目录不是 git 仓库——请在 llm-cpr 的 clone 根目录里运行');
   const root = probe.out;
   if (!fs.existsSync(path.join(root, 'lib', 'main.ts')) || !fs.existsSync(path.join(root, 'package.json'))) {
-    die('当前仓库不是 coding-plan-router（缺 lib/main.ts / package.json）');
+    die('当前仓库不是 llm-cpr（缺 lib/main.ts / package.json）');
   }
   return root;
 }
