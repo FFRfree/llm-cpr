@@ -61,6 +61,26 @@ export function validateConfig(raw: unknown): GatewayConfig {
           if (!ids.has(model)) throw new Error(`config.tenants[${index}].models references unknown model: ${model}`);
         }
       }
+      // 观测层 opt-in：开关必须显式布尔（'true'/'1' 这类字符串不收——配置即代码，宁可拒启动）。
+      if (tenant.capture !== undefined && typeof tenant.capture !== 'boolean') throw new Error(`config.tenants[${index}].capture must be a boolean when set`);
+    }
+  }
+  // 观测层全局参数：ttl_days / max_body_bytes 非负有限数；语义（0=关闭对应限制）见 contracts.ts。
+  if (config.capture !== undefined) {
+    const capture = record(config.capture);
+    if (!capture) throw new Error('config.capture must be an object when set');
+    for (const key of ['ttl_days', 'max_body_bytes'] as const) {
+      const value = capture[key];
+      if (value === undefined) continue;
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error(`config.capture.${key} must be a non-negative finite number`);
+    }
+    // 泄漏取证豁免清单（票 04）：必须是非空字符串数组。
+    if (capture.privacy !== undefined) {
+      const privacy = record(capture.privacy);
+      if (!privacy) throw new Error('config.capture.privacy must be an object when set');
+      if (privacy.extra_allow !== undefined && (!Array.isArray(privacy.extra_allow) || privacy.extra_allow.some((entry) => typeof entry !== 'string' || !entry))) {
+        throw new Error('config.capture.privacy.extra_allow must be an array of non-empty strings when set');
+      }
     }
   }
   // 决策面字段（原 PolicyStore 加载期校验，随 policy 内联并入启动校验）

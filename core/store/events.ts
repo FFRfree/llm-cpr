@@ -8,12 +8,14 @@ import type { Logger } from '../contracts.ts';
 // 改绑次数 = rebind 事件计数，冷却 = 最新一条 rebind 的 ts（bind 不计入冷却，
 // 否则新会话首绑会自带一小时改绑锁）。状态即查询，历史即全部事件。
 
-export type EventKind = 'route.bind' | 'route.rebind' | 'route.hold' | 'policy.error';
+export type EventKind = 'route.bind' | 'route.rebind' | 'route.hold' | 'policy.error' | 'privacy.hit';
 
 // detail 的形状按 kind 分工：
 // route.bind / route.rebind → { trigger, source, note? }（引擎事实 + 来源 + policy 的 reason 或内置短语）
 // route.hold → { cause, status }（撞墙但不改绑的护栏归因）
 // policy.error → { error }（decide 抛错/非法的现场）
+// privacy.hit → { rule, item_hash, capture_id, message_index, role }（泄漏取证命中，票 04；
+//   绝不落命中原文——借 item_hash 回查 capture.db 定位「哪一轮、哪个角色、哪条消息」）
 export interface RouteEventDetail {
   trigger?: 'new-session' | 'stale-pin' | 'policy-override' | 'quota-wall';
   source?: 'policy' | 'builtin';
@@ -22,6 +24,11 @@ export interface RouteEventDetail {
   status?: number;
   error?: string;
   legacy?: boolean;
+  rule?: string;
+  item_hash?: string;
+  capture_id?: string;
+  message_index?: number;
+  role?: string | null;
 }
 
 export interface SystemEventInput {
@@ -100,11 +107,15 @@ export function createSystemEventStore(db: DatabaseSync, logger: Logger = consol
         return (overview.all() as unknown as RouteMapping[]).map((row) => ({ tenant: String(row.tenant), backend: String(row.backend), identities: Number(row.identities) }));
       } catch (error) { logger.warn?.(`[events] degraded: overview read failed (${message(error)})`); return []; }
     },
-    listEvents({ kind, limit = 100 }: { kind?: string; limit?: number | string | null } = {}): SystemEventRow[] {
+    listEvents({ kind, tenant, limit = 100 }: { kind?: string; tenant?: string; limit?: number | string | null } = {}): SystemEventRow[] {
       const count = Math.max(1, Math.min(500, Math.trunc(Number(limit) || 100)));
-      const rows = kind === undefined
+      const rows = kind === undefined && tenant === undefined
         ? db.prepare('SELECT * FROM system_events ORDER BY id DESC LIMIT ?').all(count)
-        : db.prepare('SELECT * FROM system_events WHERE kind = ? ORDER BY id DESC LIMIT ?').all(kind, count);
+        : kind !== undefined && tenant !== undefined
+          ? db.prepare('SELECT * FROM system_events WHERE kind = ? AND tenant = ? ORDER BY id DESC LIMIT ?').all(kind, tenant, count)
+          : kind !== undefined
+            ? db.prepare('SELECT * FROM system_events WHERE kind = ? ORDER BY id DESC LIMIT ?').all(kind, count)
+            : db.prepare('SELECT * FROM system_events WHERE tenant = ? ORDER BY id DESC LIMIT ?').all(tenant!, count);
       return rows as unknown as SystemEventRow[];
     },
   };

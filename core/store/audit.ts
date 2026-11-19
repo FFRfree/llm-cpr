@@ -52,7 +52,8 @@ export class UsageAudit {
     // 打开即 fail fast（声明在 db.ts）：合并库后「账本不可用」不再是可以静默跑路由的状态。
     // 打开与语句准备阶段的任何失败都直接抛，启动入口据此拒绝起服务；运行中写入失败才走降级。
     this.db = db ?? openDatabase(String(dbFile));
-    this.insert = this.db.prepare(`INSERT INTO requests(ts,tenant,identity,identity_kind,subscription,account,model,translated_model,path,status,ms,prompt_tokens,completion_tokens,cache_hit_tokens,cache_miss_tokens,cache_write_tokens,total_tokens,cache_observed,cache_outcome,ttft_ms,stream_ms,usage_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    // 列清单 23 个、占位符 23 个（capture_id 收官；改列后必须重数——手数必错，见 AGENTS 加列套路）。
+    this.insert = this.db.prepare(`INSERT INTO requests(ts,tenant,identity,identity_kind,subscription,account,model,translated_model,path,status,ms,prompt_tokens,completion_tokens,cache_hit_tokens,cache_miss_tokens,cache_write_tokens,total_tokens,cache_observed,cache_outcome,ttft_ms,stream_ms,usage_json,capture_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   }
 
   // 无兜底写入：供「账本行 + 事件行同事务成对落地」的路径使用，任何一步抛错即整体回滚。
@@ -65,7 +66,7 @@ export class UsageAudit {
       entry.account ?? null, entry.model ?? null, entry.translated_model ?? null, entry.path ?? null, entry.status ?? null, entry.ms ?? null,
       tokens.prompt_tokens, tokens.completion_tokens, tokens.cache_hit_tokens, tokens.cache_miss_tokens, tokens.cache_write_tokens,
       tokens.total_tokens, tokens.cache_observed ? 1 : 0, outcome, ms(entry.ttft_ms), ms(entry.stream_ms),
-      usage && typeof usage === 'object' ? JSON.stringify(usage) : null);
+      usage && typeof usage === 'object' ? JSON.stringify(usage) : null, entry.capture_id ?? null);
     return Number(info.lastInsertRowid);
   }
 
@@ -129,6 +130,42 @@ export class UsageAudit {
     });
   }
 
+  // 管理口分页读（后台 v2）：页码/排序/筛选在服务端裁决，前端不再拉全量自排。
+  // 排序列走白名单字典（排序键永不拼进 SQL 之外的东西）；days 按北京时间日切（用户在 UTC+8）。
+  static readonly #REQUEST_SORT: Record<string, string> = {
+    ts: 'ts', model: 'model', subscription: 'subscription', status: 'status', total_tokens: 'total_tokens', ms: 'ms',
+  };
+  #requestWhere({ tenant, identity, model, status, since }: { tenant?: string; identity?: string; model?: string; status?: number; since?: number }): { sql: string; args: unknown[] } {
+    const parts: string[] = [];
+    const args: unknown[] = [];
+    if (tenant !== undefined) { parts.push('tenant=?'); args.push(tenant); }
+    if (identity !== undefined) { parts.push('identity=?'); args.push(identity); }
+    if (model !== undefined) { parts.push('model=?'); args.push(model); }
+    if (status !== undefined) { parts.push('status=?'); args.push(status); }
+    if (since !== undefined) { parts.push('ts>=?'); args.push(since); }
+    return { sql: parts.length ? ` WHERE ${parts.join(' AND ')}` : '', args };
+  }
+  listRequestsPaged({ page = 1, pageSize = 50, sort = 'ts', order = 'desc', tenant, identity, model, status, days, now = Date.now() }: {
+    page?: number | string | null; pageSize?: number | string | null; sort?: string | null; order?: string | null;
+    tenant?: string; identity?: string; model?: string; status?: number | string | null; days?: number | string | null; now?: number;
+  } = {}): { requests: AuditRow[]; total: number; page: number; page_size: number } {
+    return this.#read({ requests: [], total: 0, page: 1, page_size: 50 }, (db) => {
+      const size = Math.max(10, Math.min(200, Math.trunc(Number(pageSize) || 50)));
+      const current = Math.max(1, Math.trunc(Number(page) || 1));
+      const column = UsageAudit.#REQUEST_SORT[String(sort)] ?? UsageAudit.#REQUEST_SORT.ts;
+      const dir = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+      const dayValue = Number(days);
+      const since = Number.isFinite(dayValue) && dayValue > 0 ? now - Math.min(90, dayValue) * 86_400_000 : undefined;
+      const statusNumber = status === undefined || status === null || status === '' ? undefined : Number(status);
+      const { sql, args } = this.#requestWhere({ tenant, identity, model, status: statusNumber !== undefined && Number.isFinite(statusNumber) ? statusNumber : undefined, since });
+      const totalRow = db.prepare(`SELECT COUNT(*) AS n FROM requests${sql}`).get(...(args as never[])) as { n: unknown };
+      const total = typeof totalRow?.n === 'number' ? totalRow.n : 0;
+      const rows = db.prepare(`SELECT * FROM requests${sql} ORDER BY ${column} ${dir}, id ${dir} LIMIT ? OFFSET ?`)
+        .all(...(args as never[]), size, (current - 1) * size) as unknown as Array<Record<string, unknown>>;
+      return { requests: rows.map(({ usage_json, ...row }) => asRow(row)), total, page: current, page_size: size };
+    });
+  }
+
   listSessions({ limit = 100, tenant }: { limit?: number | string | null; tenant?: string } = {}): SessionSummary[] {
     return this.#read<SessionSummary[]>([], (db) => {
       const count = Math.max(1, Math.min(500, Math.trunc(Number(limit) || 100)));
@@ -143,6 +180,88 @@ export class UsageAudit {
         const sessionTenant = String(session.tenant);
         return { ...session, ...this.sessionSummary(identity, { tenant: sessionTenant }) } as unknown as SessionSummary;
       });
+    });
+  }
+
+  // 会话分页读（后台 v2）：组数有界（≤500），每组的完整摘要本来就要算（N+1 同旧行为），
+  // 排序在 JS 层做（full_miss_rate 需要 computed 后才能排），分页同样 JS 切片。
+  listSessionsPaged({ page = 1, pageSize = 50, sort = 'last_ts', order = 'desc', tenant, days, now = Date.now() }: {
+    page?: number | string | null; pageSize?: number | string | null; sort?: string | null; order?: string | null;
+    tenant?: string; days?: number | string | null; now?: number;
+  } = {}): { sessions: SessionSummary[]; total: number; page: number; page_size: number } {
+    return this.#read({ sessions: [], total: 0, page: 1, page_size: 50 }, (db) => {
+      const size = Math.max(10, Math.min(200, Math.trunc(Number(pageSize) || 50)));
+      const current = Math.max(1, Math.trunc(Number(page) || 1));
+      const dayValue = Number(days);
+      const since = Number.isFinite(dayValue) && dayValue > 0 ? now - Math.min(90, dayValue) * 86_400_000 : undefined;
+      const scope = tenant !== undefined ? ' AND tenant = ?' : '';
+      const sinceSql = since !== undefined ? ' AND ts >= ?' : '';
+      const args = tenant !== undefined ? [tenant] : [];
+      const rows = db.prepare(`SELECT tenant, identity, identity_kind, COUNT(*) AS requests, MAX(ts) AS last_ts
+        FROM requests WHERE identity IS NOT NULL${scope}${sinceSql} GROUP BY tenant, identity, identity_kind
+        ORDER BY last_ts DESC LIMIT 500`).all(...(args as never[]), ...(since !== undefined ? [since] : [])) as unknown as Array<Record<string, unknown>>;
+      const sessions = rows.map((session) => {
+        const identity = String(session.identity);
+        const sessionTenant = String(session.tenant);
+        return { ...session, ...this.sessionSummary(identity, { tenant: sessionTenant }) } as unknown as SessionSummary;
+      });
+      const dir = String(order).toLowerCase() === 'asc' ? 1 : -1;
+      const key = String(sort);
+      sessions.sort((a, b) => {
+        const av = a[key as keyof SessionSummary], bv = b[key as keyof SessionSummary];
+        // null 排在末尾（与其排序方向无关）：「没有数据」不该冒充最大/最小
+        if (av === null || av === undefined) return 1;
+        if (bv === null || bv === undefined) return -1;
+        if (av < bv) return -dir;
+        if (av > bv) return dir;
+        return String(a.identity) < String(b.identity) ? -1 : 1;
+      });
+      const total = sessions.length;
+      return { sessions: sessions.slice((current - 1) * size, current * size), total, page: current, page_size: size };
+    });
+  }
+
+  // 订阅实际消耗聚合（后台 v2）：账本 requests 按订阅×北京时间日聚合。
+  // 上游快照是「配额还剩多少」，这里是「这几天实际烧了多少」——两个口径互补，不互相替代。
+  usageByDay({ days = 7, tenant, now = Date.now() }: { days?: number | string | null; tenant?: string; now?: number } = {}): {
+    days: string[]; subscriptions: { subscription: string; by_day: Record<string, { requests: number; errors: number; total_tokens: number; cache_hit_tokens: number; cache_miss_tokens: number }>; total: { requests: number; errors: number; total_tokens: number; cache_hit_tokens: number; cache_miss_tokens: number } }[];
+    day_boundary: string;
+  } {
+    return this.#read({ days: [] as string[], subscriptions: [], day_boundary: 'Asia/Shanghai (UTC+8)' }, (db) => {
+      const window = Math.max(1, Math.min(90, Math.trunc(Number(days) || 7)));
+      // 北京时间日切：桶边界 = ts + 8h 后取整天数；桶序号转回日期串时减回 8h。
+      const BJT_OFFSET_MS = 8 * 3_600_000;
+      const since = now - window * 86_400_000;
+      const scope = tenant === undefined ? '' : ' AND tenant = ?';
+      const args = tenant === undefined ? [] : [tenant];
+      const rows = db.prepare(`SELECT subscription,
+        CAST((ts + ${BJT_OFFSET_MS}) / 86400000 AS INTEGER) AS day_index,
+        COUNT(*) AS requests, SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END) AS errors,
+        SUM(COALESCE(total_tokens,0)) AS total_tokens, SUM(COALESCE(cache_hit_tokens,0)) AS cache_hit_tokens,
+        SUM(COALESCE(cache_miss_tokens,0)) AS cache_miss_tokens
+        FROM requests WHERE ts >= ?${scope}
+        GROUP BY subscription, day_index ORDER BY day_index DESC`).all(since, ...(args as never[])) as unknown as Array<{
+        subscription: unknown; day_index: unknown; requests: number; errors: number; total_tokens: number; cache_hit_tokens: number; cache_miss_tokens: number;
+      }>;
+      const todayIndex = Math.floor((now + BJT_OFFSET_MS) / 86_400_000);
+      const labels: string[] = [];
+      for (let i = 0; i < window; i++) {
+        labels.push(new Date((todayIndex - i) * 86_400_000 - BJT_OFFSET_MS).toISOString().slice(0, 10));
+      }
+      const labelOf = new Map(labels.map((label, i) => [todayIndex - i, label]));
+      interface SubDay { subscription: string; by_day: Record<string, { requests: number; errors: number; total_tokens: number; cache_hit_tokens: number; cache_miss_tokens: number }>; total: { requests: number; errors: number; total_tokens: number; cache_hit_tokens: number; cache_miss_tokens: number } }
+      const bySub = new Map<string, SubDay>();
+      for (const row of rows) {
+        const subscription = String(row.subscription ?? 'unknown');
+        const label = labelOf.get(Number(row.day_index));
+        if (!label) continue;
+        const entry = bySub.get(subscription) ?? { subscription, by_day: {}, total: { requests: 0, errors: 0, total_tokens: 0, cache_hit_tokens: 0, cache_miss_tokens: 0 } };
+        const day = { requests: Number(row.requests) || 0, errors: Number(row.errors) || 0, total_tokens: Number(row.total_tokens) || 0, cache_hit_tokens: Number(row.cache_hit_tokens) || 0, cache_miss_tokens: Number(row.cache_miss_tokens) || 0 };
+        entry.by_day[label] = day;
+        for (const k of Object.keys(entry.total) as (keyof typeof day)[]) entry.total[k] += day[k];
+        bySub.set(subscription, entry);
+      }
+      return { days: labels, subscriptions: [...bySub.values()], day_boundary: 'Asia/Shanghai (UTC+8)' };
     });
   }
 

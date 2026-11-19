@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>概览 · LLM CPR 后台</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<main>
+<div id="summary"></div>
+<div id="err"></div>
+
+<h2>订阅额度（上游快照）</h2>
+<main id="subscriptions" class="subs"></main>
+<div id="mappings" class="muted" style="margin-top:8px;font-size:12px"></div>
+
+<h2>订阅实际消耗（账本聚合 · 按北京时间日切）</h2>
+<div class="toolbar">
+  <label>天数 <select id="usage-days"><option value="7">7</option><option value="14">14</option><option value="30">30</option></select></label>
+  <span class="hint muted">「额度快照」是上游说还剩多少；这张表是账本里实际烧掉的（请求数 / 错误 / tokens / cache 命中）。</span>
+</div>
+<table id="usage-table">
+  <thead><tr><th>订阅</th><th>近 N 天</th><th class="num">请求</th><th class="num">错误</th><th class="num">tokens</th><th class="num">cache 命中 tokens</th><th>每日 tokens</th></tr></thead>
+  <tbody id="usage"></tbody>
+</table>
+</main>
+
+<script src="/assets/app.js"></script>
+<script>
+'use strict';
+initChrome('index.html').then(([routeStatus]) => load(routeStatus.value));
+
+let routeStatus = null;
+function renderSummary(summary) {
+  const subs = (summary?.subscriptions || []).map((x) =>
+    `<div><b class="num">${x.requests}</b><span>${esc(subLabel(routeStatus, x.subscription))} · ${x.errors} 错 · ${fmtTok(x.total_tokens)} tok</span></div>`);
+  $('#summary').innerHTML =
+    `<div><b class="num">${summary?.requests ?? '—'}</b><span>总请求</span></div>` +
+    `<div><b class="num">${summary?.sessions ?? '—'}</b><span>会话数</span></div>` + subs.join('');
+}
+
+function monthlyOf(s) { // CCG: 月额度 $；OCG: 月度百分比
+  if (num(s.monthlyCap) && num(s.monthlySpent)) return { used: s.monthlySpent, cap: s.monthlyCap, unit: '$' };
+  if (num(s.monthlyPercent)) return { used: s.monthlyPercent, cap: 100, unit: '%' };
+  return null;
+}
+function renderSubscriptions(st) {
+  routeStatus = st;
+  const subs = st.subscriptions || [];
+  $('#subscriptions').innerHTML = subs.map((x) => {
+    const s = x.snapshot || {};
+    const monthProgress = num(s.monthProgress) ? clamp(s.monthProgress)
+      : (s.periodStart && s.periodEnd ? clamp(100 * (Date.now() - Date.parse(s.periodStart)) / (Date.parse(s.periodEnd) - Date.parse(s.periodStart))) : null);
+    const badges = [];
+    if (!s.known) badges.push('<span class="badge err">余量未知</span>');
+    else if (s.degraded) badges.push('<span class="badge warn">快照降级</span>');
+    else if (s.stale) badges.push('<span class="badge warn">已过期</span>');
+    const mon = monthlyOf(s);
+    const remainHtml = num(s.monthlyRemaining) ? `月余 <b>$${s.monthlyRemaining.toFixed(2)}</b>` : '';
+    const rows = [
+      windowRow({ label: '5 小时', used: s.fiveHour?.used, cap: s.fiveHour?.cap, timePct: null,
+        resetText: countdown(toMs(s.fiveHour?.resetAt)), unit: x.family === 'ccg' ? '$' : '%' }),
+      windowRow({ label: '每周', used: s.weekly?.used, cap: s.weekly?.cap, timePct: null,
+        resetText: countdown(toMs(s.weekly?.resetAt)), unit: x.family === 'ccg' ? '$' : '%' }),
+      windowRow({ label: '每月', used: mon?.used, cap: mon?.cap, timePct: monthProgress,
+        resetText: s.periodEnd ? countdown(toMs(s.periodEnd)) : '', unit: mon?.unit || '%' }),
+    ].join('');
+    return `<article>
+      <div class="sub-head"><span class="name">${esc(x.alias || x.name)}</span><span class="badge">${esc(familyLabel(x.family))}</span>${badges.join('')}<span class="remain">${remainHtml}</span></div>
+      ${rows}
+      <div class="sub-foot">快照 ${s.fetchedAt ? rel(s.fetchedAt) : '尚无'} · 内部名 <span class="mono">${esc(x.name)}</span>
+        <details class="models"><summary>可用模型（${(x.models || []).length}）</summary>
+        <div class="chips">${(x.models || []).map((m) => `<span>${esc(m)}</span>`).join('')}</div></details></div>
+    </article>`;
+  }).join('') || '<div class="empty">没有订阅</div>';
+  const live = new Set(subs.map((x) => x.name));
+  const maps = st.mappings || [];
+  $('#mappings').innerHTML = maps.length
+    ? '亲和会话：' + maps.map((m) => `${m.tenant && m.tenant !== 'default' ? esc(m.tenant) + ' · ' : ''}${esc(subLabel(st, m.backend))} ${m.identities}${live.has(m.backend) ? '' : '（已下线，下次请求自动改绑）'}`).join(' · ') : '';
+}
+
+async function loadUsage() {
+  const days = $('#usage-days').value;
+  const usage = await fetchJson(withTenant(`/api/audit/usage?days=${days}`));
+  const max = Math.max(1, ...usage.subscriptions.flatMap((s) => Object.values(s.by_day).map((d) => d.total_tokens)));
+  $('#usage').innerHTML = usage.subscriptions.map((s) => {
+    const cells = usage.days.map((label) => {
+      const d = s.by_day[label];
+      const tokens = d ? d.total_tokens : 0;
+      const h = tokens ? Math.max(3, Math.round(56 * tokens / max)) : 0;
+      return `<div class="${tokens ? '' : 'zero'}" style="height:${h}px"><span>${label.slice(5)} · ${fmtTok(tokens)} tok · ${d?.requests ?? 0} 请求</span></div>`;
+    }).join('');
+    const dayLabels = usage.days.map((l) => `<span>${l.slice(5)}</span>`).join('');
+    return `<tr>
+      <td>${esc(subLabel(routeStatus, s.subscription))}</td>
+      <td class="num">${usage.days.length}</td>
+      <td class="num">${s.total.requests}</td>
+      <td class="num">${s.total.errors ? `<span class="lost">${s.total.errors}</span>` : '0'}</td>
+      <td class="num">${fmtTok(s.total.total_tokens)}</td>
+      <td class="num">${fmtTok(s.total.cache_hit_tokens)}</td>
+      <td><div class="daygrid">${cells}</div><div class="daycols">${dayLabels}</div></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="7" class="empty">窗口内没有请求</td></tr>';
+}
+
+async function load(st) {
+  try {
+    renderSubscriptions(st);
+    const [summary, usage] = await Promise.all([
+      fetchJson(withTenant('/api/audit/summary')),
+      loadUsage(),
+    ]);
+    renderSummary(summary?.summary);
+    $('#err').textContent = '';
+  } catch (e) { $('#err').textContent = `加载失败：${e.message}`; }
+}
+$('#usage-days').addEventListener('change', loadUsage);
+</script>
+</body>
+</html>

@@ -20,7 +20,7 @@ interface SummaryPayload { summary: SessionSummary }
 
 const close = (server: Server): Promise<Error | undefined> => new Promise<Error | undefined>((resolve) => server.close(resolve));
 
-test('admin API exposes subscription snapshots, audit queries and dashboard contract on loopback', async (t: TestContext): Promise<void> => {
+test('admin API exposes subscription snapshots, audit queries and index page contract on loopback', async (t: TestContext): Promise<void> => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-admin-'));
   const env = { CPR_SESSIONS_DB: path.join(dir, 'sessions.db'), CPR_USAGE_DB: path.join(dir, 'usage.db') };
   const config: GatewayConfig = {
@@ -56,11 +56,13 @@ test('admin API exposes subscription snapshots, audit queries and dashboard cont
   const detail = await fetch(`${root}/api/audit/sessions/session-1`).then((r: Response): Promise<RequestsPayload> => r.json());
   assert.equal(detail.requests[0].cache_hit_tokens, 20);
   const html = await fetch(root).then((r) => r.text());
+  // 后台 v2：'/' 发 static/index.html（共享 app.css 的多页 Admin）
   assert.match(html, /5 小时/);
-  assert.match(html, /weekly/);
-  assert.match(html, /monthlyPercent/);
-  assert.match(html, /loss_events/);
+  assert.match(html, /每周/);
+  assert.match(html, /订阅实际消耗/);
+  assert.match(html, /assets\/app\.css/);
   assert.equal((await fetch(`${root}/api/audit/requests?limit=1`)).status, 200);
+  assert.equal((await fetch(`${root}/assets/app.js`)).status, 200);
 });
 
 test('startGateway ignores configured public admin host and binds the admin listener to loopback', async (t: TestContext): Promise<void> => {

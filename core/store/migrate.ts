@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS requests (
   cache_outcome TEXT,
   ttft_ms INTEGER,
   stream_ms INTEGER,
-  usage_json TEXT
+  usage_json TEXT,
+  capture_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_requests_identity_ts ON requests(identity, ts, id);
 CREATE TABLE IF NOT EXISTS system_events (
@@ -66,6 +67,9 @@ export function applyBaseline(db: DatabaseSync): void {
   }
   const eventColumns = new Set((db.prepare('PRAGMA table_info(system_events)').all() as Array<{ name: string }>).map((entry) => entry.name));
   if (!eventColumns.has('tenant')) db.exec(`ALTER TABLE system_events ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`);
+  // 观测层锚点列（observability 票 01，加法迁移不占步骤号）：账本行 ↔ capture.db turns 的关联键。
+  // 旧行自然 NULL = 未捕获；capture_id 存在但查无 turn = 侧库降级缺行（不可宣称完整）。
+  if (!columns.has('capture_id')) db.exec('ALTER TABLE requests ADD COLUMN capture_id TEXT');
   // 看板查询索引：必须建在列迁移之后（sub_agg 依赖 ttft_ms/stream_ms），老库新库统一走这里。
   db.exec('CREATE INDEX IF NOT EXISTS idx_requests_sess_group ON requests(identity, identity_kind, ts)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_requests_sub_agg ON requests(subscription, status, total_tokens, completion_tokens, stream_ms, ttft_ms)');

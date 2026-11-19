@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>会话 · LLM CPR 后台</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<main>
+<h2>会话 / 缓存（服务端分页 / 排序）</h2>
+<div class="toolbar">
+  <select id="f-days"><option value="">时间：全部</option><option value="1">近 1 天</option><option value="7">近 7 天</option><option value="30">近 30 天</option></select>
+  <span class="hint muted">点行展开请求明细 + 缓存取证；「轨迹」进逐轮正文浏览</span>
+</div>
+<div id="err"></div>
+<table id="sessions-table">
+  <thead><tr>
+    <th class="sortable" data-key="identity">会话 <span class="arrow"></span></th>
+    <th class="sortable num" data-key="requests">请求 <span class="arrow"></span></th>
+    <th class="sortable num" data-key="full_miss_rate">cache miss <span class="arrow"></span></th>
+    <th class="sortable num" data-key="full_misses">丢失 <span class="arrow"></span></th>
+    <th class="sortable" data-key="last_ts">最后活跃 <span class="arrow"></span></th>
+    <th>轨迹</th>
+  </tr></thead>
+  <tbody id="sessions"></tbody>
+</table>
+<div class="pager" id="pager"></div>
+</main>
+
+<script src="/assets/app.js"></script>
+<script>
+'use strict';
+const state = { sort: { key: 'last_ts', dir: 'desc' }, page: 1, expanded: null };
+
+function query() {
+  const p = new URLSearchParams({ page: String(state.page), page_size: '50', sort: state.sort.key, order: state.sort.dir });
+  const days = $('#f-days').value;
+  if (days) p.set('days', days);
+  return withTenant(`/api/audit/sessions?${p}`);
+}
+
+async function load() {
+  try {
+    const data = await fetchJson(query());
+    state.page = data.page;
+    $('#sessions').innerHTML = data.sessions.map((s) => {
+      const miss = s.full_miss_rate;
+      const missHtml = miss == null ? '<span class="muted">—</span>'
+        : `<span class="${miss >= 0.5 ? 'lost' : miss >= 0.2 ? 'warnmiss' : ''}">${(100 * miss).toFixed(1)}%</span>`;
+      const losses = (s.loss_events || []).length;
+      const tenant = s.tenant || 'default';
+      const isExpanded = state.expanded === `${tenant}|${s.identity}`;
+      return `<tr class="data${isExpanded ? ' expanded' : ''}" data-id="${esc(s.identity)}" data-tenant="${esc(tenant)}">
+        <td data-l="会话"><div class="idcell" title="${esc(s.identity)}">${esc(s.identity)} <button class="copy" data-copy="${esc(s.identity)}" title="复制完整 ID">⧉</button></div><span class="kind">${esc(s.identity_kind ?? '')}${tenant !== 'default' ? ` · ${esc(tenant)}` : ''}</span></td>
+        <td class="num" data-l="请求">${s.requests ?? '—'}</td>
+        <td class="num" data-l="cache miss">${missHtml}</td>
+        <td class="num" data-l="丢失">${losses ? '<span class="lost">⚠ ' + losses + '</span>' : '<span class="muted">0</span>'}</td>
+        <td class="num" data-l="最后活跃">${rel(s.last_ts)}</td>
+        <td data-l="轨迹"><a href="/trajectory.html?identity=${encodeURIComponent(s.identity)}&tenant=${encodeURIComponent(tenant)}">看轨迹</a></td>
+      </tr>${isExpanded ? `<tr class="detail-row"><td colspan="6" data-detail="${esc(tenant + '|' + s.identity)}">加载中…</td></tr>` : ''}`;
+    }).join('') || '<tr><td colspan="6" class="empty">没有匹配的会话</td></tr>';
+    renderPager($('#pager'), data, (page) => { state.page = page; load(); });
+    $('#err').textContent = '';
+  } catch (e) { $('#err').textContent = `加载失败：${e.message}`; }
+}
+
+async function showDetail(id, tenant) {
+  const cell = document.querySelector(`td[data-detail="${CSS.escape(tenant + '|' + id)}"]`);
+  if (!cell) return;
+  try {
+    const data = await fetchJson(`/api/audit/sessions/${encodeURIComponent(id)}?tenant=${encodeURIComponent(tenant)}`);
+    const lossTs = new Set((data.session?.loss_events || []).map((e) => e.ts));
+    const rows = (data.requests || []).slice().reverse().map((r) => {
+      const tps = num(r.stream_ms) && r.stream_ms > 0 && num(r.completion_tokens) ? (r.completion_tokens * 1000 / r.stream_ms).toFixed(0) : '—';
+      return `<tr${lossTs.has(r.ts) ? ' style="color:var(--warning)"' : ''}>
+      <td class="num">${fmtClock(r.ts)}</td><td>${esc(r.subscription ?? '—')}</td><td>${esc(r.model ?? '—')}</td>
+      <td class="num">${esc(r.status)}</td><td class="num">${r.prompt_tokens ?? '—'}</td>
+      <td class="num">${r.cache_hit_tokens ?? '—'}</td>
+      <td class="num">${num(r.ttft_ms) ? (r.ttft_ms / 1000).toFixed(2) + 's' : '—'}</td>
+      <td class="num">${tps}</td>
+      <td class="num">${num(r.ms) ? r.ms + 'ms' : '—'}</td>
+      <td>${lossTs.has(r.ts) ? '⚠ cache 丢失' : ''}</td></tr>`;
+    }).join('');
+    // 缓存取证链（同一会话的相邻轮哈希对比）+ 同窗口改绑事件并排
+    const forensics = await fetchJson(`/api/capture/cache-forensics?identity=${encodeURIComponent(id)}&tenant=${encodeURIComponent(tenant)}&limit=50`).catch(() => null);
+    let chain = '';
+    if (forensics && (forensics.chain || []).length > 1) {
+      const rebindAt = new Map((forensics.rebinds || []).map((r) => [r.ts, r]));
+      chain = `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">缓存取证链（${forensics.chain.length - 1} 个相邻轮对比）</summary>
+        <table style="margin-top:6px"><thead><tr><th>轮</th><th>时间</th><th>模型</th><th class="num">公共前缀</th><th>分歧点</th><th class="num">chars Δ</th><th>同窗改绑</th></tr></thead><tbody>
+        ${forensics.chain.map((c, i) => {
+          const rb = rebindAt.get(c.ts);
+          const diff = c.first_diff_index == null ? '' : `第 ${c.first_diff_index + 1} 条（${esc(c.first_diff_role || '?')}）`;
+          return `<tr><td class="num">#${i + 1}</td><td class="num">${fmtClock(c.ts)}</td><td>${esc(c.model ?? '—')}</td>
+            <td class="num">${c.common_prefix}/${c.message_count}</td><td>${diff || '<span class="muted">—</span>'}</td>
+            <td class="num">${c.chars_delta}</td>
+            <td>${rb ? `⚠ ${esc(rb.backend)}（证据指向改绑）` : ''}</td></tr>`;
+        }).join('')}
+        </tbody></table></details>`;
+    }
+    cell.innerHTML = `<table><thead><tr><th>时间</th><th>订阅</th><th>模型</th><th>状态</th><th>prompt</th><th>cache hit</th><th>TTFT</th><th>tok/s</th><th>耗时</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="10" class="empty">无请求记录</td></tr>'}</tbody></table>${chain}`;
+  } catch (e) { cell.textContent = `明细加载失败：${e.message}`; }
+}
+
+$('#sessions').addEventListener('click', (e) => {
+  const copy = e.target.closest('.copy');
+  if (copy) { e.stopPropagation(); navigator.clipboard?.writeText(copy.dataset.copy); return; }
+  if (e.target.closest('a')) return;
+  const row = e.target.closest('tr.data');
+  if (!row) return;
+  const id = row.dataset.id;
+  const tenant = row.dataset.tenant || 'default';
+  const key = `${tenant}|${id}`;
+  state.expanded = state.expanded === key ? null : key;
+  load().then(() => { if (state.expanded === key) showDetail(id, tenant); });
+});
+bindSortHeaders($('#sessions-table'), state.sort, () => { state.page = 1; load(); });
+$('#f-days').addEventListener('change', () => { state.page = 1; load(); });
+
+/* 带 identity 进入：自动展开该会话 */
+initChrome('sessions.html').then(async () => {
+  const identity = new URLSearchParams(location.search).get('identity');
+  if (identity) {
+    state.expanded = `${tenantFilter.get() || 'default'}|${identity}`;
+  }
+  await load();
+  if (identity) {
+    const row = $(`#sessions tr.data[data-id="${CSS.escape(identity)}"]`);
+    if (row) showDetail(identity, row.dataset.tenant);
+  }
+});
+</script>
+</body>
+</html>

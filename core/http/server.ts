@@ -8,17 +8,19 @@ import { once } from 'node:events';
 import { endToEndHeaders } from './headers.ts';
 import { chatCompletions } from '../protocols/chat-completions.ts';
 import { resolveIdentity } from '../store/identity.ts';
-import { createSystemEventStore, type SystemEventStore, type RouteEventDetail } from '../store/events.ts';
+import { createSystemEventStore, type SystemEventStore, type RouteEventDetail, type EventKind } from '../store/events.ts';
 import { openDatabase } from '../store/db.ts';
 import { runMigrations } from '../store/migrate.ts';
+import { CaptureStore } from '../store/capture.ts';
 import { defaultDbPath } from '../paths.ts';
-import { UsageSnapshots, currentSnapshot } from '../store/snapshots.ts';
+import { UsageSnapshots } from '../store/snapshots.ts';
 import { rankBackends, monthlyDebtScore } from '../policy/selection.ts';
 import { builtinDecide } from '../policy/builtin-decide.ts';
 import { resolveListenEndpoints } from '../policy/config.ts';
+import { decisionCtx, routeScope } from '../policy/ctx.ts';
 import { UsageAudit } from '../store/audit.ts';
 import type { AuditEntry, Backend, ChatBody, ChatUsage, Environment, Headers, Logger, Model, SnapshotView } from '../contracts.ts';
-import type { BackendRecent, CandidateView, Decision, DecisionCtx, RouterPolicy } from '../policy/contract.ts';
+import type { BackendRecent, Decision, DecisionCtx, RouterPolicy } from '../policy/contract.ts';
 
 interface ForwardTimings {
   ttftMs: number | null;
@@ -44,6 +46,32 @@ function statusOf(error: unknown, fallback: number): number {
   const status = error !== null && typeof error === 'object' ? (error as { statusCode?: unknown }).statusCode : undefined;
   return typeof status === 'number' && status ? status : fallback;
 }
+
+// ---- 后台 v2 静态分发（多页 Admin）：static/ 目录白名单扩展名，路径解析后必须仍落在
+// static/ 内（防穿越）；HTML no-store、资产 60s。旧单页 dashboard.html 已废弃删除。
+const STATIC_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'static');
+const STATIC_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml',
+};
+function serveStatic(url: URL, res: ServerResponse): boolean {
+  const pathname = url.pathname === '/' ? '/index.html' : url.pathname;
+  const type = STATIC_TYPES[path.extname(pathname).toLowerCase()];
+  if (!type) return false;
+  let rel = '';
+  try { rel = path.normalize(decodeURIComponent(pathname)).replace(/^[/\\]+/, ''); } catch { return false; }
+  const abs = path.join(STATIC_ROOT, rel);
+  if (!rel || !abs.startsWith(STATIC_ROOT + path.sep)) return false;
+  try {
+    const bytes = fs.readFileSync(abs);
+    res.writeHead(200, { 'content-type': type, 'content-length': bytes.length, 'cache-control': pathname.endsWith('.html') ? 'no-store' : 'max-age=60' });
+    res.end(bytes);
+    return true;
+  } catch { return false; }
+}
+
+// /api/events 的 kind 白名单（非法值 → 不过滤，不把枚举面打开）。
+const EVENT_KINDS: ReadonlySet<string> = new Set(['route.bind', 'route.rebind', 'route.hold', 'policy.error', 'privacy.hit']);
 
 // ---- 版本信息（工单 07）：打开看板才现查 npm registry，缓存 1 小时；进程其余时间零 registry 请求 ----
 const PKG = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json'), 'utf8')) as { name?: string; version?: string };
@@ -283,6 +311,8 @@ export interface Gateway {
   audit: UsageAudit;
   // 路由事件账（system_events）：bind/rebind/hold/policy.error，测试与排障读这里。
   events: SystemEventStore;
+  // 正文捕获侧库（observability 票 01）：无租户 opt-in 时为 null（capture.db 不落盘）。
+  capture: CaptureStore | null;
 }
 
 export function createGatewayServers(policy: RouterPolicy, { env = process.env, fetchImpl = fetch, logger = console }: CreateGatewayOptions = {}): Gateway {
@@ -334,6 +364,40 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
   // 配置即代码：policy 为进程内静态实例（无热重载），快照轮询器随启动一次构建。
   const snapshots = new UsageSnapshots({ backends: policy.backends, env, intervalMs: policy.routing?.snapshot_interval_ms ?? 300_000, fetchImpl, logger });
 
+  // 观测层正文捕获（observability 票 01）：租户级 opt-in，默认关；无 opt-in 租户不建侧库
+  // （capture.db 连文件都不落，对外用户零感知）。显式 opt-in 却打不开侧库 = 声明错误，fail fast 拒启动。
+  const captureTenantNames = new Set((policy.tenants ?? []).filter((tenant) => tenant.capture === true).map((tenant) => tenant.name));
+  let capture: CaptureStore | null = null;
+  if (captureTenantNames.size > 0) {
+    const capturePath = env.CPR_CAPTURE_DB_FILE || path.join(path.dirname(dbPath), 'capture.db');
+    fs.mkdirSync(path.dirname(capturePath), { recursive: true });
+    // 泄漏取证白名单（票 04）：自带 key（master/租户/订阅）的真实值 + 用户前缀豁免。
+    // 只进内存比对，绝不打日志、绝不落库。
+    const allowValues: string[] = [...(policy.capture?.privacy?.extra_allow ?? [])];
+    for (const envName of [policy.masterKeyEnv || policy.master_key_env, ...(policy.tenants ?? []).map((tenant) => tenant.key_env), ...policy.backends.map((backend) => backend.key_env)]) {
+      const value = typeof envName === 'string' ? env[envName] : undefined;
+      if (typeof value === 'string' && value.length > 0) allowValues.push(value);
+    }
+    capture = new CaptureStore({
+      dbFile: capturePath,
+      ttlDays: Number(policy.capture?.ttl_days ?? 14),
+      maxBodyBytes: Number(policy.capture?.max_body_bytes ?? 5_000_000),
+      logger,
+      privacy: {
+        allow: allowValues,
+        onHit: (hit) => {
+          try {
+            events.append({ kind: 'privacy.hit', tenant: hit.tenant, identity: { kind: hit.identityKind as 'session' | 'fingerprint' | 'address', key: hit.identity ?? 'unknown' }, detail: { rule: hit.rule, item_hash: hit.itemHash, capture_id: hit.captureId, message_index: hit.messageIndex, role: hit.role } });
+          } catch (error) {
+            logger.warn?.(`[capture] privacy.hit append failed: ${messageOf(error)}`);
+          }
+        },
+      },
+    });
+    logger.log?.(`capture: on for tenants ${[...captureTenantNames].join(', ')} → ${capturePath}（TTL ${Number(policy.capture?.ttl_days ?? 14)} 天，正文不进 data.db）`);
+    logger.log?.(`capture: leak scan on（allow 清单 ${allowValues.length} 项，含用户豁免 ${(policy.capture?.privacy?.extra_allow ?? []).length} 项）`);
+  }
+
   const forwardServer = http.createServer(async (req, res) => {
     const p = policy;
     const tenant = authenticate(req);
@@ -375,20 +439,14 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       const upstreamTimeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
         ? Math.min(300_000, Math.max(1, configuredTimeout)) : 120_000;
       const current = snaps.peek();
-      const candidates: Backend[] = tenantBackends.filter((candidate) => requestedModel.backends[candidate.family]);
+      // 候选过滤同源（policy/ctx.ts routeScope）：租户池 + 模型支持，一处定义两处消费（server + 回放）。
+      const candidates: Backend[] = routeScope(tenantBackends, undefined, requestedModel);
       if (!candidates.length) return json(res, 400, { error: { message: 'model is not available on configured backends', type: 'invalid_request_error' } });
-      const candidateView = (view: SnapshotView, backend2: Backend): CandidateView => {
-        const raw = view.snapshots[backend2.name];
-        const snapshot = raw === undefined ? undefined : currentSnapshot(raw, Date.now());
-        return {
-          name: backend2.name, family: backend2.family, alias: backend2.alias, account: backend2.account ?? null,
-          priority: Number(backend2.priority ?? 0),
-          walled: Boolean(snapshot?.fiveHour?.exceeded) || Boolean(snapshot?.weekly?.exceeded),
-          snapshot,
-          recent: health.view(backend2.name),
-        };
-      };
       const requestView = { model: requestedModel.id, chars: bytes.length, messages: Array.isArray(body.messages) ? body.messages.length : 0 };
+      // 决策点 ctx 同源构造（observability 票 02 抽取；回放沙盘 2026-11-19 经用户拍板移除，
+      // 同源构造器保留）：正常路由与改绑决策共用这一个工厂，别在别处手搓第二份。
+      const buildCtx = (view: SnapshotView, now: number, affinity: string | undefined, error?: { backend: string; status: number; retryAfterMs: number | null }): DecisionCtx =>
+        decisionCtx({ now, tenant: tenant.name, model: requestView.model, chars: requestView.chars, messages: requestView.messages, affinity, candidates, snapshots: view, health, error });
       // 硬护栏：policy 只能在支持该模型的候选里挑；返回野名字/缺映射的目标一律判非法、回落内置。
       const policyErrorEvent = (error: string): void => {
         try { events.append({ kind: 'policy.error', tenant: tenant.name, identity, detail: { error } }); }
@@ -416,13 +474,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       // decided = policy 已给出可执行决定（含 keep），内置兜底不再介入。
       let attempt: { source: 'policy' | 'builtin'; note?: string } | null = null;
       let decided = false;
-      const ctx: DecisionCtx = {
-        now: Date.now(),
-        tenant: tenant.name,
-        request: requestView,
-        session: { affinity: pinnedName, pin: pinnedName },
-        candidates: candidates.map((candidate) => candidateView(current, candidate)),
-      };
+      const ctx: DecisionCtx = buildCtx(current, Date.now(), pinnedName);
       {
         const decision = askPolicy(ctx);
         if (decision === 'keep') {
@@ -503,6 +555,15 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
         catch (error) { logger.warn?.(`[events] route.rebind append failed: ${messageOf(error)}`); }
       }
       const startedAt = Date.now();
+      // 正文捕获（observability 票 01）：仅租户 opt-in 且请求已走到转发路径时捕获客户端
+      // 原始 body（转发前、路由决策后——未发出的请求不占存储）。锚点 captureId 随账本行落
+      // capture_id 列，02-05 的关联查询靠它；侧库降级/队列满时 turn 可能缺行（不可宣称完整）。
+      let captureId: string | null = null;
+      if (capture && captureTenantNames.has(tenant.name)) {
+        const outcome = capture.capture({ tenant: tenant.name, identity: identity.key, identityKind: identity.kind, model: requestedModel.id, body: parsed, rawBytes: bytes.length });
+        captureId = outcome.captureId;
+        if (outcome.skipped === 'oversize') logger.warn?.(`[capture] request body ${bytes.length} bytes exceeds capture.max_body_bytes; turn skipped`);
+      }
       let quotaRetries = 0;
       let lastResult: QuotaResult | undefined;
       while (true) {
@@ -517,6 +578,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
             ts: startedAt, tenant: tenant.name, identity: identity.key, identity_kind: identity.kind, subscription: active.name,
             account: active.account ?? active.name, model: requestedModel.id, translated_model: typeof translatedModel === 'string' ? translatedModel : null,
             path: req.url, status, ms: Date.now() - startedAt, ttft_ms: timings?.ttftMs, stream_ms: timings?.streamMs,
+            capture_id: captureId,
           } satisfies AuditEntry, typeof payload === 'string' ? chatCompletions.responseUsage(payload) : payload);
           health.note(active.name, status);
         };
@@ -524,7 +586,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
         const failEntry = (status: number): AuditEntry => ({
           ts: startedAt, tenant: tenant.name, identity: identity.key, identity_kind: identity.kind, subscription: active.name,
           account: active.account ?? active.name, model: requestedModel.id, translated_model: typeof translatedModel === 'string' ? translatedModel : null,
-          path: req.url, status, ms: Date.now() - startedAt,
+          path: req.url, status, ms: Date.now() - startedAt, capture_id: captureId,
         });
         const result = await forwardAttempt({ res, backend: active, body: JSON.stringify(translated.body), headers: translated.headers, startedAt, onComplete: record, timeoutMs: upstreamTimeoutMs });
         if (result.forwarded) return;
@@ -560,14 +622,9 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
           };
           // 出错重试也是一次 decide：带 error 标记问 policy（刚失败的后端与状态码），null 交内置。
           const fresh = snaps.peek();
-          const errorCtx: DecisionCtx = {
-            now: Date.now(),
-            tenant: tenant.name,
-            request: requestView,
-            session: { affinity: active.name, pin: active.name },
-            candidates: candidates.map((candidate) => candidateView(fresh, candidate)),
-            error: { backend: active.name, status: result.status, retryAfterMs: retryAfterMs(result.headers['retry-after']) },
-          };
+          const errorCtx: DecisionCtx = buildCtx(fresh, Date.now(), active.name, {
+            backend: active.name, status: result.status, retryAfterMs: retryAfterMs(result.headers['retry-after']),
+          });
           const rebindTo = (target: Backend, info: { source: 'policy' | 'builtin'; note?: string }): boolean => {
             const ok = failWith({ kind: 'route.rebind', backendName: target.name, detail: { trigger: 'quota-wall', source: info.source, ...(info.note ? { note: info.note } : {}) } });
             if (ok) { backend = target; quotaRetries = 0; }
@@ -641,14 +698,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       return json(res, 200, snapshots.peek());
     }
     if (req.method !== 'GET') return json(res, 405, { error: { message: 'method not allowed', type: 'method_not_allowed_error' } });
-    if (url.pathname === '/' || url.pathname === '/dashboard') {
-      const filename = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'static', 'dashboard.html');
-      try {
-        const bytes = fs.readFileSync(filename);
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': bytes.length, 'cache-control': 'no-store' });
-        return res.end(bytes);
-      } catch { return json(res, 500, { error: { message: 'dashboard unavailable', type: 'server_error' } }); }
-    }
+    if (serveStatic(url, res)) return;
     if (url.pathname === '/api/snapshots') return json(res, 200, snapshots.peek());
     if (url.pathname === '/api/version') {
       // 工单 07：只在看板/用户交互时现查（服务端缓存 1h）；无人访问时进程零网络请求。
@@ -679,9 +729,41 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       })), tenants: tenantViews, preference, mappings: events.mappingOverview(), snapshots: current });
     }
     if (url.pathname === '/api/audit/requests') {
+      // page 参数在 → 分页响应（带 total，后台 v2）；不在 → 旧 limit 形态（兼容既有调用方）。
+      if (url.searchParams.has('page')) {
+        return json(res, 200, audit.listRequestsPaged({
+          page: url.searchParams.get('page'), pageSize: url.searchParams.get('page_size'),
+          sort: url.searchParams.get('sort'), order: url.searchParams.get('order'), days: url.searchParams.get('days'),
+          identity: url.searchParams.get('identity') ?? undefined, tenant: url.searchParams.get('tenant') ?? undefined,
+          model: url.searchParams.get('model') ?? undefined, status: url.searchParams.get('status'),
+        }));
+      }
       return json(res, 200, { requests: audit.listRequests({ limit: url.searchParams.get('limit'), identity: url.searchParams.get('identity') ?? undefined, tenant: url.searchParams.get('tenant') ?? undefined }) });
     }
-    if (url.pathname === '/api/audit/sessions') return json(res, 200, { sessions: audit.listSessions({ limit: url.searchParams.get('limit'), tenant: url.searchParams.get('tenant') ?? undefined }) });
+    if (url.pathname === '/api/audit/sessions') {
+      // 同上：page 参数在 → 分页响应；不在 → 旧形态。
+      if (url.searchParams.has('page')) {
+        return json(res, 200, audit.listSessionsPaged({
+          page: url.searchParams.get('page'), pageSize: url.searchParams.get('page_size'),
+          sort: url.searchParams.get('sort'), order: url.searchParams.get('order'), days: url.searchParams.get('days'),
+          tenant: url.searchParams.get('tenant') ?? undefined,
+        }));
+      }
+      return json(res, 200, { sessions: audit.listSessions({ limit: url.searchParams.get('limit'), tenant: url.searchParams.get('tenant') ?? undefined }) });
+    }
+    // 订阅实际消耗聚合（后台 v2）：按订阅×北京时间日，与上游快照（还剩多少）互补。
+    if (url.pathname === '/api/audit/usage') {
+      return json(res, 200, audit.usageByDay({ days: url.searchParams.get('days'), tenant: url.searchParams.get('tenant') ?? undefined }));
+    }
+    // 系统事件流（后台 v2）：改绑/hold/泄漏命中等，观测页时间线用。kind 白名单外一律不过滤。
+    if (url.pathname === '/api/events') {
+      const kindParam = url.searchParams.get('kind') ?? undefined;
+      return json(res, 200, { events: events.listEvents({
+        kind: kindParam !== undefined && EVENT_KINDS.has(kindParam) ? kindParam as EventKind : undefined,
+        tenant: url.searchParams.get('tenant') ?? undefined,
+        limit: url.searchParams.get('limit'),
+      }) });
+    }
     if (url.pathname === '/api/audit/summary') {
       const identity = url.searchParams.get('identity');
       const tenant = url.searchParams.get('tenant') ?? undefined;
@@ -699,16 +781,80 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       catch { return json(res, 400, { error: { message: 'invalid session URL', type: 'invalid_request_error' } }); }
       return json(res, 200, { session: audit.sessionSummary(identity, { tenant }), requests: audit.listRequests({ limit: url.searchParams.get('limit'), identity, tenant }) });
     }
+    // 观测层读侧（observability 票 01）：捕获轮次清单 / 单轮还原正文 / 侧库状态。只读聚合，不加重热路径。
+    if (url.pathname === '/api/capture/turns') {
+      return json(res, 200, { turns: capture ? capture.listTurns({ limit: url.searchParams.get('limit'), tenant: url.searchParams.get('tenant') ?? undefined, identity: url.searchParams.get('identity') ?? undefined }) : [] });
+    }
+    const captureTurn = url.pathname.match(/^\/api\/capture\/turns\/(\d+)$/);
+    if (captureTurn) {
+      if (!capture) return json(res, 404, { error: { message: 'capture is not enabled for any tenant', type: 'not_found_error' } });
+      const found = capture.turnBody(Number(captureTurn[1]));
+      return found ? json(res, 200, found) : json(res, 404, { error: { message: 'capture turn not found (or content missing in degraded state)', type: 'not_found_error' } });
+    }
+    if (url.pathname === '/api/capture/status') {
+      return json(res, 200, capture ? capture.status() : { enabled: false, turns: 0, contents: 0, bytes: 0, dropped: 0, degraded: false });
+    }
+    // 缓存取证（票 03）：需 identity（会话从 /api/audit/sessions 挑）。输出相邻轮对比链，
+    // 并把时间窗口内的 route.rebind 事件并排进每一轮——归因措辞是「证据指向」，不下断言。
+    // tenant 缺省 = 全租户（identity 由调用方指定，缺省写死 'default' 会查空）。
+    if (url.pathname === '/api/capture/cache-forensics') {
+      if (!capture) return json(res, 404, { error: { message: 'capture is not enabled for any tenant', type: 'not_found_error' } });
+      const identity = url.searchParams.get('identity');
+      const tenant = url.searchParams.get('tenant') ?? undefined;
+      if (!identity) return json(res, 400, { error: { message: 'identity query parameter is required (pick a session from /api/audit/sessions)', type: 'invalid_request_error' } });
+      const limitParam = Number(url.searchParams.get('limit') ?? 100);
+      const chain = capture.cacheChain(tenant, identity, Number.isFinite(limitParam) ? limitParam : undefined);
+      const rebinds = events.listEvents({ kind: 'route.rebind', tenant, limit: 500 })
+        .map((event) => ({ ts: event.ts, backend: event.backend_name, detail: event.detail ? JSON.parse(event.detail) as Record<string, unknown> : {} }));
+      return json(res, 200, {
+        tenant: tenant ?? null, identity, chain,
+        rebinds,
+        // 哈希结论与 chars 口径互校的说明随响应给出（票 03 验收「不一致要能解释」）：
+        hint: 'common_prefix 骤降 ↔ 前缀断裂（证据指向改绑/改提示词/插消息，以同时间窗 rebind 与 first_diff_role 定位）；chars_delta 与 common_prefix 不一致时以哈希结论为准（chars 还受非消息字段影响）',
+      });
+    }
+    // 工具/skill 分析（票 05）：读侧聚合，按需慢查询（默认 7 天 / 500 轮上限）。
+    // tenant 缺省 = 全租户合计（与 /api/audit/* 口径一致；review 后修正——缺省写死 'default'
+    // 会让多租户部署的看板永远空表）。
+    if (url.pathname === '/api/capture/tools') {
+      if (!capture) return json(res, 404, { error: { message: 'capture is not enabled for any tenant', type: 'not_found_error' } });
+      return json(res, 200, capture.toolStats({
+        tenant: url.searchParams.get('tenant') ?? undefined,
+        identity: url.searchParams.get('identity') ?? undefined,
+        days: Number(url.searchParams.get('days') ?? 7),
+        maxTurns: Number(url.searchParams.get('max_turns') ?? 500),
+      }));
+    }
+    // 泄漏取证定位（票 04）：privacy.hit 事件清单 + 借 item_hash/capture_id 回查捕获库，
+    // 给出「哪一轮、哪个角色、第几条消息、该内容第一次出现在哪一轮」。原文不可得（从未落过）。
+    if (url.pathname === '/api/capture/privacy') {
+      if (!capture) return json(res, 404, { error: { message: 'capture is not enabled for any tenant', type: 'not_found_error' } });
+      const tenant = url.searchParams.get('tenant') ?? undefined;
+      const hits = events.listEvents({ kind: 'privacy.hit', tenant, limit: url.searchParams.get('limit') }).map((event) => {
+        const detail = event.detail ? JSON.parse(event.detail) as Record<string, unknown> : {};
+        const itemHash = typeof detail.item_hash === 'string' ? detail.item_hash : null;
+        const turn = typeof detail.capture_id === 'string' ? capture!.turnByCaptureId(detail.capture_id) : null;
+        const firstSeen = itemHash && turn ? capture!.turnsContaining(turn.tenant, itemHash, 1)[0] ?? null : null;
+        return {
+          id: event.id, ts: event.ts, tenant: event.tenant, identity_hash: event.identity_hash, rule: detail.rule ?? null,
+          message_index: detail.message_index ?? null, role: detail.role ?? null,
+          hit_turn: turn ? { capture_id: turn.capture_id, ts: turn.ts, identity: turn.identity, model: turn.model } : null,
+          first_seen_turn: firstSeen ? { capture_id: firstSeen.capture_id, ts: firstSeen.ts, identity: firstSeen.identity, model: firstSeen.model } : null,
+        };
+      });
+      return json(res, 200, { hits });
+    }
     return json(res, 404, { error: { message: 'not found', type: 'not_found_error' } });
   });
   snapshots.start();
-  forwardServer.once('close', () => { audit.close(); snapshots.stop(); });
+  forwardServer.once('close', () => { audit.close(); snapshots.stop(); capture?.close(); });
   return {
     forwardServer,
     adminServer,
     get snapshots() { return snapshots; },
     audit,
     get events() { return events; },
+    capture,
   };
 }
 

@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>轨迹 · LLM CPR 后台</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<main>
+<h2>轨迹查看器</h2>
+<p class="muted" style="font-size:12px;margin:0 0 4px">
+  每轮请求的完整 messages 数组（内容寻址侧库逐字节还原）。左侧挑会话 → 中间按轮翻 → 右侧读正文。
+  绿色「同上轮」= 这条消息与上一轮哈希一致（客户端重发的历史，正是缓存命中的部分）；黄色「新」= 本轮才出现的内容。
+</p>
+<div class="toolbar">
+  <input id="f-search" type="search" placeholder="会话 ID 过滤…" autocomplete="off">
+</div>
+<div id="err"></div>
+<div class="traj">
+  <section id="pane-sessions">
+    <h3>会话（有捕获的）</h3>
+    <ul id="traj-sessions"></ul>
+  </section>
+  <section id="pane-turns">
+    <h3>轮次</h3>
+    <ul id="traj-turns"></ul>
+  </section>
+  <section id="pane-view">
+    <h3 id="view-title">正文</h3>
+    <div id="traj-view"><div id="traj-empty">选一轮看正文</div></div>
+  </section>
+</div>
+</main>
+
+<script src="/assets/app.js"></script>
+<script>
+'use strict';
+const state = { sessions: [], identity: null, tenant: null, turns: [], refsByTurn: new Map(), turnId: null, chainByTurn: new Map() };
+
+/* ---- 左列：会话清单（取账本会话，租户按全局筛选；无捕获的会话点开轮次会是空列表） ---- */
+async function loadSessions() {
+  const q = $('#f-search').value.trim().toLowerCase();
+  const data = await fetchJson(withTenant('/api/audit/sessions?page=1&page_size=200&sort=last_ts&order=desc'));
+  state.sessions = (data.sessions || []).filter((s) => !q || String(s.identity).toLowerCase().includes(q));
+  $('#traj-sessions').innerHTML = state.sessions.map((s) => `
+    <li data-identity="${esc(s.identity)}" data-tenant="${esc(s.tenant || 'default')}">
+      <div class="who">${esc(s.identity)}</div>
+      <div class="meta">${esc(s.tenant || 'default')} · ${s.requests} 请求 · ${rel(s.last_ts)}</div>
+    </li>`).join('') || '<li class="empty">没有匹配的会话</li>';
+}
+
+/* ---- 中列：选中会话的轮次时间线（升序），用缓存取证链标「前缀命中 / 断裂」 ---- */
+async function loadTurns(identity, tenant) {
+  state.identity = identity; state.tenant = tenant;
+  state.turnId = null; state.refsByTurn = new Map(); state.chainByTurn = new Map();
+  const [turns, forensics] = await Promise.all([
+    fetchJson(`/api/capture/turns?identity=${encodeURIComponent(identity)}&tenant=${encodeURIComponent(tenant)}&limit=500`),
+    fetchJson(`/api/capture/cache-forensics?identity=${encodeURIComponent(identity)}&tenant=${encodeURIComponent(tenant)}&limit=200`).catch(() => null),
+  ]);
+  state.turns = (turns.turns || []).slice().reverse(); // API 返回新→旧，时间线要旧→新
+  if (forensics) {
+    for (let i = 0; i < forensics.chain.length; i++) state.chainByTurn.set(forensics.chain[i].id, forensics.chain[i]);
+  }
+  $('#traj-turns').innerHTML = state.turns.map((t, i) => {
+    const chain = state.chainByTurn.get(t.id);
+    const prevId = i > 0 ? state.turns[i - 1].id : null;
+    let flag = '';
+    if (i === 0) flag = '<div class="t-flag ok">首轮 · 基线</div>';
+    else if (chain) {
+      if (chain.common_prefix === 0 && t.message_count > 0)
+        flag = `<div class="t-flag break">⚠ 前缀断裂：0 条与上轮相同（第 ${chain.first_diff_index + 1} 条起全新）</div>`;
+      else if (chain.first_diff_index != null)
+        flag = `<div class="t-flag">新增：第 ${chain.first_diff_index + 1} 条起（${esc(chain.first_diff_role || '?')}）</div>`;
+      else flag = '<div class="t-flag ok">全部与上轮相同</div>';
+    }
+    void prevId;
+    return `<li data-id="${t.id}">
+      <div>#${i + 1} · <span class="t-model">${esc(t.model ?? '—')}</span> · ${t.message_count} 条 · ${fmtBytes(t.bytes)}</div>
+      <div class="meta muted">${fmtClock(t.ts)}</div>
+      ${flag}
+    </li>`;
+  }).join('') || '<li class="empty">该会话没有捕获轮次（租户未开 capture 或轮次已过 TTL 清理）</li>';
+  $('#view-title').textContent = `正文 · ${identity}`;
+  $('#traj-view').innerHTML = '<div id="traj-empty">选一轮看正文</div>';
+}
+
+/* ---- 右列：单轮完整 messages 渲染。逐条消息用 refs 与上一轮 refs 对比标重复/新增 ---- */
+function renderMessage(msg, index, prevRefs, refHash) {
+  const role = String(msg.role ?? '?');
+  const dup = Array.isArray(prevRefs) && prevRefs.includes(refHash);
+  const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+  const content = msg.content == null ? '' : typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content, null, 2);
+  const toolTag = msg.tool_call_id ? ` · 回应 <span class="mono">${esc(msg.tool_call_id)}</span>` : '';
+  const long = content.length > 600;
+  return `<div class="msg">
+    <div class="msg-head">
+      <span class="role ${esc(role)}">${esc(role)}</span>
+      <span class="kind">第 ${index + 1} 条</span>
+      ${dup ? '<span class="dup">同上轮（缓存命中段）</span>' : '<span class="new">本轮新增</span>'}
+      ${toolTag}
+    </div>
+    ${toolCalls.length ? `<div class="toolcalls">${toolCalls.map((tc) => {
+      let pretty = tc.function?.arguments ?? '';
+      try { pretty = JSON.stringify(JSON.parse(pretty), null, 2); } catch {}
+      return `<div class="toolcall"><span class="fn">${esc(tc.function?.name ?? '?')}</span> 调用参数<pre>${esc(pretty)}</pre></div>`;
+    }).join('')}</div>` : ''}
+    ${content ? `<div class="msg-body${long ? ' clamped' : ''}">${esc(content)}</div>${long ? '<button class="toggle" type="button">展开全文 ▾</button>' : ''}` : ''}
+  </div>`;
+}
+
+async function loadTurn(id) {
+  state.turnId = id;
+  const idx = state.turns.findIndex((t) => t.id === id);
+  const prevTurn = idx > 0 ? state.turns[idx - 1] : null;
+  const data = await fetchJson(`/api/capture/turns/${id}`);
+  state.refsByTurn.set(id, data.refs || []);
+  if (prevTurn && !state.refsByTurn.has(prevTurn.id)) {
+    // 上一轮的 refs 没拿过：轻量补一次（缓存起来，翻轮次时零成本）
+    try { const prev = await fetchJson(`/api/capture/turns/${prevTurn.id}`); state.refsByTurn.set(prevTurn.id, prev.refs || []); } catch {}
+  }
+  const prevRefs = state.refsByTurn.get(prevTurn?.id ?? '') ?? null;
+  const body = data.body || {};
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const refs = data.refs || [];
+  $('#view-title').textContent = `正文 · 轮次 #${idx + 1}（${esc(state.identity)}） · capture_id ${esc(String(data.turn?.capture_id ?? ''))}`;
+  $('#traj-view').innerHTML =
+    `<div class="traj-note" style="padding:8px 14px">model <b>${esc(body.model ?? '—')}</b> · ${messages.length} 条消息 · ${fmtBytes(data.turn?.bytes)} · capture 于 ${fmtClock(data.turn?.ts)} · 哈希引用列表（盐化）：${refs.length ? esc(refs[0].slice(0, 12)) + '… 等 ' + refs.length + ' 条' : '—'}</div>` +
+    messages.map((m, i) => renderMessage(m, i, prevRefs, refs[i])).join('') || '<div id="traj-empty">该轮正文缺失（降级状态）</div>';
+  $$('.msg .toggle', $('#traj-view')).forEach((btn) => btn.addEventListener('click', () => {
+    const body2 = btn.previousElementSibling;
+    body2.classList.toggle('clamped');
+    btn.textContent = body2.classList.contains('clamped') ? '展开全文 ▾' : '收起 ▴';
+  }));
+}
+
+/* ---- 事件 ---- */
+$('#traj-sessions').addEventListener('click', (e) => {
+  const li = e.target.closest('li[data-identity]');
+  if (!li) return;
+  $$('#traj-sessions li').forEach((x) => x.classList.remove('active'));
+  li.classList.add('active');
+  loadTurns(li.dataset.identity, li.dataset.tenant).catch((err) => { $('#err').textContent = `轮次加载失败：${err.message}`; });
+});
+$('#traj-turns').addEventListener('click', (e) => {
+  const li = e.target.closest('li[data-id]');
+  if (!li) return;
+  $$('#traj-turns li').forEach((x) => x.classList.remove('active'));
+  li.classList.add('active');
+  loadTurn(Number(li.dataset.id)).catch((err) => { $('#err').textContent = `正文加载失败：${err.message}`; });
+});
+$('#f-search').addEventListener('input', () => loadSessions().catch(() => {}));
+
+initChrome('trajectory.html').then(async () => {
+  await loadSessions();
+  const params = new URLSearchParams(location.search);
+  const identity = params.get('identity');
+  if (identity) {
+    const li = $(`#traj-sessions li[data-identity="${CSS.escape(identity)}"]`);
+    if (li) {
+      $$('#traj-sessions li').forEach((x) => x.classList.remove('active'));
+      li.classList.add('active');
+      const captureId = params.get('capture_id');
+      if (captureId) {
+        // 从请求页跳来：定位该 capture_id 的轮次并直接展开正文
+        await loadTurns(identity, li.dataset.tenant);
+        const turn = state.turns.find((t) => t.capture_id === captureId);
+        if (turn) {
+          const item = $(`#traj-turns li[data-id="${turn.id}"]`);
+          item?.click();
+        } else $('#err').textContent = `轮次 ${captureId.slice(0, 8)}… 不在最近 500 轮里（可能已过 TTL 清理）`;
+      }
+      return;
+    }
+    // 会话不在第一页：直接按参数拉
+    $('#err').textContent = `会话 ${identity} 不在最近 200 个会话里，请从列表里挑`;
+  }
+});
+</script>
+</body>
+</html>
