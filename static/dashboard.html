@@ -167,8 +167,9 @@ tr.detail-row th{color:var(--muted)}
 </head>
 <body>
 <header>
-  <h1>Coding Plan Router</h1>
+  <h1>LLM CPR</h1>
   <span id="status"><span class="dot"></span><span id="status-text">加载中…</span></span>
+  <span id="ver" class="muted" style="font-size:12px"></span>
   <span class="spacer"></span>
   <select id="tenant-sel" aria-label="按租户筛选" title="按租户筛选（调用方）"></select>
   <button id="snap-refresh-btn" type="button" title="立即向上游查询一次各订阅额度">刷新快照</button>
@@ -462,9 +463,20 @@ $('#tenant-sel').addEventListener('change',()=>{
 });
 document.addEventListener('visibilitychange',()=>{ // 后台标签页停更，回前台立即补一刷
   if(document.hidden){clearInterval(timer);timer=null;}
-  else{if(!timer)timer=setInterval(refresh,30000);refresh();}
+  else{if(!timer)timer=setInterval(refresh,30000);refresh();refreshVersion();}
 });
-refresh();timer=setInterval(refresh,30000);
+async function refreshVersion(){ // 工单 07：打开看板才现查（服务端缓存 1h，进程零轮询）
+  try{
+    const d=await fetch('/api/version').then(r=>r.json());
+    const el=$('#ver');
+    if(!d.version){el.textContent='';return;}
+    if(d.latest&&d.latest!==d.version)
+      el.innerHTML=`v${esc(d.version)} · <b style="color:#d97706">有新版 v${esc(d.latest)}</b> → 运行 cpr upgrade`;
+    else if(d.latest)el.textContent=`v${d.version}（最新）`;
+    else el.textContent=`v${d.version}`;
+  }catch{/* 版本区失败不影响看板其余数据 */}
+}
+refresh();refreshVersion();timer=setInterval(refresh,30000);
 </script>
 </body>
 </html>

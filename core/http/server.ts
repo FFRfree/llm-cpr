@@ -45,6 +45,24 @@ function statusOf(error: unknown, fallback: number): number {
   return typeof status === 'number' && status ? status : fallback;
 }
 
+// ---- 版本信息（工单 07）：打开看板才现查 npm registry，缓存 1 小时；进程其余时间零 registry 请求 ----
+const PKG = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json'), 'utf8')) as { name?: string; version?: string };
+const RUNTIME_VERSION = PKG.version ?? 'unknown';
+const REGISTRY_BASE = process.env.CPR_REGISTRY_URL || 'https://registry.npmjs.org';
+const LATEST_TTL_MS = Number(process.env.CPR_LATEST_TTL_MS ?? 3_600_000);
+let latestCache: { at: number; latest: string | null } | null = null;
+
+async function npmLatestCached(): Promise<string | null> {
+  if (latestCache && Date.now() - latestCache.at < LATEST_TTL_MS) return latestCache.latest;
+  let latest: string | null = null;
+  try {
+    const res = await fetch(`${REGISTRY_BASE}/${PKG.name ?? 'llm-cpr'}/latest`, { signal: AbortSignal.timeout(5000) });
+    if (res.ok) latest = ((await res.json()) as { version?: string }).version ?? null;
+  } catch { latest = null; } // 离线/registry 不可达：徽标降级只报当前版，不影响端点本身
+  latestCache = { at: Date.now(), latest };
+  return latest;
+}
+
 async function readBody(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -632,6 +650,11 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       } catch { return json(res, 500, { error: { message: 'dashboard unavailable', type: 'server_error' } }); }
     }
     if (url.pathname === '/api/snapshots') return json(res, 200, snapshots.peek());
+    if (url.pathname === '/api/version') {
+      // 工单 07：只在看板/用户交互时现查（服务端缓存 1h）；无人访问时进程零网络请求。
+      const latest = await npmLatestCached();
+      return json(res, 200, { version: RUNTIME_VERSION, latest, checkedAt: latestCache?.at ?? null });
+    }
     if (url.pathname === '/api/route/status') {
       const p = policy;
       const snaps = snapshots;
