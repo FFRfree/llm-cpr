@@ -43,3 +43,6 @@ Blocked by: (resolved: 01)
   全量 182/182。
 - 没做的验证：真实 agent 流量上的排行观察（生产开启后积累）；skill 粒度（标记头方案，
   单独授权，暂不做）。
+- 独立 review 出 P2（toolStats ASC+LIMIT 截断保留最旧轮、报告冒充全窗口）→ 已修：
+  取最新 cap 条再正序聚合，报告加 turns_truncated/covered_since，回归测试配齐
+  （commit 1d36294，findings 正本 ../review-1.md）。

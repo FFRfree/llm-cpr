@@ -38,3 +38,6 @@ Blocked by: (resolved: 01)
   改 system 后 common=0 分歧位 0 角色 system）+ 全量 182/182。
 - 没做的验证：keep-affinity 月度汇总事件形态（开放问题留给用户拍板后再做——报告页
   形态先以端点交付）；非 chat-completions 协议。
+- 独立 review 出 P1（cacheChain 不限 SQL 行数，长会话全量读取可拖住同进程转发）→
+  已修：SQL 层取最新 N 轮再逆序恢复升序，回归测试在 test/observability.test.ts
+  （commit 1d36294，findings 正本 ../review-1.md）。
