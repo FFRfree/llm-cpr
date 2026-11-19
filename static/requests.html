@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>请求明细 · LLM CPR 后台</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<main>
+<h2>请求明细（服务端分页 / 排序 / 筛选）</h2>
+<div class="toolbar">
+  <input id="f-identity" type="search" placeholder="按会话 ID 精确匹配…" autocomplete="off">
+  <input id="f-model" type="search" placeholder="按模型精确匹配…" autocomplete="off" style="max-width:180px">
+  <select id="f-status"><option value="">状态：全部</option><option value="200">2xx</option><option value="400">400</option><option value="403">403</option><option value="429">429</option><option value="499">499</option><option value="500">500</option><option value="502">502</option></select>
+  <select id="f-days"><option value="">时间：全部</option><option value="1">近 1 天</option><option value="7">近 7 天</option><option value="30">近 30 天</option></select>
+  <span class="hint muted">点表头排序；点行展开明细</span>
+</div>
+<div id="err"></div>
+<table id="requests-table">
+  <thead><tr>
+    <th class="sortable" data-key="ts">时间 <span class="arrow"></span></th>
+    <th class="sortable" data-key="model">模型 <span class="arrow"></span></th>
+    <th class="sortable" data-key="subscription">订阅 <span class="arrow"></span></th>
+    <th class="sortable num" data-key="status">状态 <span class="arrow"></span></th>
+    <th>会话</th>
+    <th class="num">prompt</th><th class="num">completion</th><th class="num">cache hit</th><th class="num">TTFT</th><th class="num">耗时</th>
+    <th>轨迹</th>
+  </tr></thead>
+  <tbody id="requests"></tbody>
+</table>
+<div class="pager" id="pager"></div>
+</main>
+
+<script src="/assets/app.js"></script>
+<script>
+'use strict';
+const state = { sort: { key: 'ts', dir: 'desc' }, page: 1, expanded: null, subs: [] };
+
+function query() {
+  const p = new URLSearchParams({ page: String(state.page), page_size: '50', sort: state.sort.key, order: state.sort.dir });
+  const identity = $('#f-identity').value.trim();
+  const model = $('#f-model').value.trim();
+  const status = $('#f-status').value;
+  const days = $('#f-days').value;
+  if (identity) p.set('identity', identity);
+  if (model) p.set('model', model);
+  if (status) p.set('status', status);
+  if (days) p.set('days', days);
+  return withTenant(`/api/audit/requests?${p}`);
+}
+
+async function load() {
+  const btn = $('#refresh-btn');
+  try {
+    const data = await fetchJson(query());
+    state.page = data.page;
+    state.subs = (await fetchJson('/api/route/status')).subscriptions;
+    $('#requests').innerHTML = data.requests.map((r) => {
+      const missBad = num(r.cache_hit_tokens) && num(r.prompt_tokens) && r.prompt_tokens > 0 && r.cache_hit_tokens === 0;
+      const isExpanded = state.expanded === `${r.tenant}|${r.id}`;
+      return `<tr class="data${isExpanded ? ' expanded' : ''}" data-id="${r.id}" data-tenant="${esc(r.tenant)}" data-capture="${esc(r.capture_id || '')}" data-identity="${esc(r.identity || '')}">
+        <td class="num" data-l="时间">${fmtClock(r.ts)}</td>
+        <td data-l="模型">${esc(r.model ?? '—')}${r.translated_model && r.translated_model !== r.model ? `<span class="kind"> → ${esc(r.translated_model)}</span>` : ''}</td>
+        <td data-l="订阅">${esc(subLabel({ subscriptions: state.subs }, r.subscription ?? '—'))}</td>
+        <td class="num" data-l="状态">${r.status >= 400 ? `<span class="lost">${r.status}</span>` : r.status}</td>
+        <td data-l="会话">${r.identity ? `<div class="idcell" title="${esc(r.identity)}">${esc(r.identity)}</div><span class="kind">${esc(r.identity_kind ?? '')}</span>` : '<span class="muted">—</span>'}</td>
+        <td class="num" data-l="prompt">${r.prompt_tokens ?? '—'}</td>
+        <td class="num" data-l="completion">${r.completion_tokens ?? '—'}</td>
+        <td class="num" data-l="cache hit">${r.cache_hit_tokens ?? '—'}${missBad ? ' <span class="lost">⚠</span>' : ''}</td>
+        <td class="num" data-l="TTFT">${num(r.ttft_ms) ? (r.ttft_ms / 1000).toFixed(2) + 's' : '—'}</td>
+        <td class="num" data-l="耗时">${num(r.ms) ? r.ms + 'ms' : '—'}</td>
+        <td data-l="轨迹">${r.capture_id ? `<a href="/trajectory.html?identity=${encodeURIComponent(r.identity || '')}&tenant=${encodeURIComponent(r.tenant)}&capture_id=${encodeURIComponent(r.capture_id)}">看轨迹</a>` : '<span class="muted">未捕获</span>'}</td>
+      </tr>${isExpanded ? '<tr class="detail-row"><td colspan="11">加载中…</td></tr>' : ''}`;
+    }).join('') || '<tr><td colspan="11" class="empty">没有匹配的请求</td></tr>';
+    renderPager($('#pager'), data, (page) => { state.page = page; load(); });
+    $('#err').textContent = '';
+  } catch (e) { $('#err').textContent = `加载失败：${e.message}`; }
+  btn.disabled = false;
+}
+
+async function showDetail(row) {
+  const cell = row.nextElementSibling?.querySelector('td');
+  if (!cell) return;
+  const id = row.dataset.id;
+  try {
+    const data = await fetchJson(withTenant(`/api/audit/sessions/${encodeURIComponent(row.dataset.identity)}`));
+    const req = (data.requests || []).find((r) => String(r.id) === String(id)) ?? {};
+    cell.innerHTML = `<table><tbody>
+      <tr><th>request id</th><td class="mono">${esc(id)}</td></tr>
+      <tr><th>路径</th><td class="mono">${esc(req.path ?? '—')}</td></tr>
+      <tr><th>capture 锚点</th><td class="mono">${req.capture_id ? `${esc(req.capture_id)}（轨迹页可还原该轮正文）` : 'null（未捕获 / 租户未开 capture）'}</td></tr>
+      <tr><th>cache outcome</th><td>${esc(req.cache_outcome ?? '未观察到')}</td></tr>
+      <tr><th>tokens</th><td class="num">prompt ${req.prompt_tokens ?? '—'} · completion ${req.completion_tokens ?? '—'} · cache hit ${req.cache_hit_tokens ?? '—'} · miss ${req.cache_miss_tokens ?? '—'} · write ${req.cache_write_tokens ?? '—'}</td></tr>
+    </tbody></table>`;
+  } catch (e) { cell.textContent = `明细加载失败：${e.message}`; }
+}
+
+$('#requests').addEventListener('click', (e) => {
+  if (e.target.closest('a')) return;
+  const row = e.target.closest('tr.data');
+  if (!row) return;
+  const key = `${row.dataset.tenant}|${row.dataset.id}`;
+  state.expanded = state.expanded === key ? null : key;
+  load().then(() => { if (state.expanded === key) showDetail($(`tr.data[data-id="${row.dataset.id}"]`)); });
+});
+bindSortHeaders($('#requests-table'), state.sort, () => { state.page = 1; load(); });
+for (const id of ['#f-identity', '#f-model']) $(id).addEventListener('change', () => { state.page = 1; load(); });
+for (const id of ['#f-status', '#f-days']) $(id).addEventListener('change', () => { state.page = 1; load(); });
+
+/* 带 capture_id 进入：滚动到该请求并展开 */
+initChrome('requests.html').then(async ([st]) => {
+  state.subs = st.value?.subscriptions ?? [];
+  const captureId = new URLSearchParams(location.search).get('capture_id');
+  if (captureId) {
+    try {
+      const data = await fetchJson(query());
+      const idx = data.requests.findIndex((r) => r.capture_id === captureId);
+      if (idx >= 0) {
+        state.page = Math.floor(idx / data.page_size) + 1;
+        const target = data.requests[idx];
+        state.expanded = `${target.tenant}|${target.id}`;
+      }
+    } catch {}
+  }
+  load();
+});
+</script>
+</body>
+</html>

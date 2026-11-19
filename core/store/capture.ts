@@ -375,7 +375,9 @@ export class CaptureStore {
 
   // 按引用列表拼装还原：meta（含 messages 占位空数组，键序同原 body）回填 messages。
   // 还原 JSON.stringify 与原始请求体逐字节一致（测试覆盖）；查无引用内容 = 降级缺行，返回 null。
-  turnBody(id: number): { turn: CaptureTurnRow; body: Record<string, unknown> } | null {
+  // refs 一并返回（盐化 sha256 的消息哈希，按消息序）：轨迹页用「与上一轮哈希重合」精确标出
+  // 每条消息的重复/新增（后台 v2）。
+  turnBody(id: number): { turn: CaptureTurnRow; body: Record<string, unknown>; refs: string[] } | null {
     const turnRow = this.#db.prepare('SELECT id,capture_id,ts,tenant,identity,identity_kind,model,message_count,bytes,response_refs FROM turns WHERE id=?').get(id) as Record<string, unknown> | undefined;
     if (!turnRow) return null;
     const turn = turnRow as unknown as CaptureTurnRow;
@@ -389,7 +391,7 @@ export class CaptureStore {
     }
     const restored = JSON.parse(String((this.#db.prepare('SELECT meta FROM turns WHERE id=?').get(id) as { meta: string }).meta)) as Record<string, unknown>;
     restored.messages = messages;
-    return { turn, body: restored };
+    return { turn, body: restored, refs };
   }
 
   status(): { turns: number; contents: number; bytes: number; dropped: number; degraded: boolean } {

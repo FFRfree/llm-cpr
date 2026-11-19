@@ -8,7 +8,7 @@ import { once } from 'node:events';
 import { endToEndHeaders } from './headers.ts';
 import { chatCompletions } from '../protocols/chat-completions.ts';
 import { resolveIdentity } from '../store/identity.ts';
-import { createSystemEventStore, type SystemEventStore, type RouteEventDetail } from '../store/events.ts';
+import { createSystemEventStore, type SystemEventStore, type RouteEventDetail, type EventKind } from '../store/events.ts';
 import { openDatabase } from '../store/db.ts';
 import { runMigrations } from '../store/migrate.ts';
 import { CaptureStore } from '../store/capture.ts';
@@ -46,6 +46,32 @@ function statusOf(error: unknown, fallback: number): number {
   const status = error !== null && typeof error === 'object' ? (error as { statusCode?: unknown }).statusCode : undefined;
   return typeof status === 'number' && status ? status : fallback;
 }
+
+// ---- 后台 v2 静态分发（多页 Admin）：static/ 目录白名单扩展名，路径解析后必须仍落在
+// static/ 内（防穿越）；HTML no-store、资产 60s。旧单页 dashboard.html 已废弃删除。
+const STATIC_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'static');
+const STATIC_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml',
+};
+function serveStatic(url: URL, res: ServerResponse): boolean {
+  const pathname = url.pathname === '/' ? '/index.html' : url.pathname;
+  const type = STATIC_TYPES[path.extname(pathname).toLowerCase()];
+  if (!type) return false;
+  let rel = '';
+  try { rel = path.normalize(decodeURIComponent(pathname)).replace(/^[/\\]+/, ''); } catch { return false; }
+  const abs = path.join(STATIC_ROOT, rel);
+  if (!rel || !abs.startsWith(STATIC_ROOT + path.sep)) return false;
+  try {
+    const bytes = fs.readFileSync(abs);
+    res.writeHead(200, { 'content-type': type, 'content-length': bytes.length, 'cache-control': pathname.endsWith('.html') ? 'no-store' : 'max-age=60' });
+    res.end(bytes);
+    return true;
+  } catch { return false; }
+}
+
+// /api/events 的 kind 白名单（非法值 → 不过滤，不把枚举面打开）。
+const EVENT_KINDS: ReadonlySet<string> = new Set(['route.bind', 'route.rebind', 'route.hold', 'policy.error', 'privacy.hit']);
 
 // ---- 版本信息（工单 07）：打开看板才现查 npm registry，缓存 1 小时；进程其余时间零 registry 请求 ----
 const PKG = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json'), 'utf8')) as { name?: string; version?: string };
@@ -672,14 +698,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       return json(res, 200, snapshots.peek());
     }
     if (req.method !== 'GET') return json(res, 405, { error: { message: 'method not allowed', type: 'method_not_allowed_error' } });
-    if (url.pathname === '/' || url.pathname === '/dashboard') {
-      const filename = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'static', 'dashboard.html');
-      try {
-        const bytes = fs.readFileSync(filename);
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': bytes.length, 'cache-control': 'no-store' });
-        return res.end(bytes);
-      } catch { return json(res, 500, { error: { message: 'dashboard unavailable', type: 'server_error' } }); }
-    }
+    if (serveStatic(url, res)) return;
     if (url.pathname === '/api/snapshots') return json(res, 200, snapshots.peek());
     if (url.pathname === '/api/version') {
       // 工单 07：只在看板/用户交互时现查（服务端缓存 1h）；无人访问时进程零网络请求。
@@ -710,9 +729,41 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       })), tenants: tenantViews, preference, mappings: events.mappingOverview(), snapshots: current });
     }
     if (url.pathname === '/api/audit/requests') {
+      // page 参数在 → 分页响应（带 total，后台 v2）；不在 → 旧 limit 形态（兼容既有调用方）。
+      if (url.searchParams.has('page')) {
+        return json(res, 200, audit.listRequestsPaged({
+          page: url.searchParams.get('page'), pageSize: url.searchParams.get('page_size'),
+          sort: url.searchParams.get('sort'), order: url.searchParams.get('order'), days: url.searchParams.get('days'),
+          identity: url.searchParams.get('identity') ?? undefined, tenant: url.searchParams.get('tenant') ?? undefined,
+          model: url.searchParams.get('model') ?? undefined, status: url.searchParams.get('status'),
+        }));
+      }
       return json(res, 200, { requests: audit.listRequests({ limit: url.searchParams.get('limit'), identity: url.searchParams.get('identity') ?? undefined, tenant: url.searchParams.get('tenant') ?? undefined }) });
     }
-    if (url.pathname === '/api/audit/sessions') return json(res, 200, { sessions: audit.listSessions({ limit: url.searchParams.get('limit'), tenant: url.searchParams.get('tenant') ?? undefined }) });
+    if (url.pathname === '/api/audit/sessions') {
+      // 同上：page 参数在 → 分页响应；不在 → 旧形态。
+      if (url.searchParams.has('page')) {
+        return json(res, 200, audit.listSessionsPaged({
+          page: url.searchParams.get('page'), pageSize: url.searchParams.get('page_size'),
+          sort: url.searchParams.get('sort'), order: url.searchParams.get('order'), days: url.searchParams.get('days'),
+          tenant: url.searchParams.get('tenant') ?? undefined,
+        }));
+      }
+      return json(res, 200, { sessions: audit.listSessions({ limit: url.searchParams.get('limit'), tenant: url.searchParams.get('tenant') ?? undefined }) });
+    }
+    // 订阅实际消耗聚合（后台 v2）：按订阅×北京时间日，与上游快照（还剩多少）互补。
+    if (url.pathname === '/api/audit/usage') {
+      return json(res, 200, audit.usageByDay({ days: url.searchParams.get('days'), tenant: url.searchParams.get('tenant') ?? undefined }));
+    }
+    // 系统事件流（后台 v2）：改绑/hold/泄漏命中等，观测页时间线用。kind 白名单外一律不过滤。
+    if (url.pathname === '/api/events') {
+      const kindParam = url.searchParams.get('kind') ?? undefined;
+      return json(res, 200, { events: events.listEvents({
+        kind: kindParam !== undefined && EVENT_KINDS.has(kindParam) ? kindParam as EventKind : undefined,
+        tenant: url.searchParams.get('tenant') ?? undefined,
+        limit: url.searchParams.get('limit'),
+      }) });
+    }
     if (url.pathname === '/api/audit/summary') {
       const identity = url.searchParams.get('identity');
       const tenant = url.searchParams.get('tenant') ?? undefined;
