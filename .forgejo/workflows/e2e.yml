@@ -1,0 +1,24 @@
+# llm-cpr e2e 快车道（Forgejo Actions）
+# 每次推 master 跑一轮：typecheck + 全量单测 + e2e 快车道（场景 1/2/5）。
+# runner 跑在 job 容器里（node:22-bookworm，host 网络），无宿主 systemd，
+# e2e 的生产 PID 护栏用 CPR_E2E_SKIP_PID_GUARD=1 豁免（本地跑不豁免）。
+name: e2e
+on:
+  push:
+    branches: [master]
+  workflow_dispatch: {}
+
+jobs:
+  fast-lane:
+    runs-on: docker-bookworm
+    env:
+      CPR_E2E_SKIP_PID_GUARD: '1'
+    steps:
+      - name: 探针——runner 是否自带 clone
+        run: ls -la && git log --oneline -1
+      - name: typecheck
+        run: npm run typecheck
+      - name: 全量单测
+        run: node --test
+      - name: e2e 快车道（场景 1/2/5）
+        run: node scripts/e2e/run-scenarios.ts

@@ -46,3 +46,13 @@ cd /root/ffr-projects/llm-cpr && node scripts/e2e/run-scenarios.ts   # 两遍，
 npm run typecheck                                                    # 过（tsconfig include 覆盖 scripts/**/*.ts）
 node --test                                                          # 206/206（套件文件名不含 .test.、不在 test/，不影响发现）
 ```
+
+## 慢车道（场景 8 安装层，`slow-lane/`）
+
+快车道（本文件）隔离靠软护栏约定；**安装链路**（`cpr install`/真 systemctl/回滚）的回归走慢车道——rootless podman 容器内跑真安装，宿主零共享（`--network=none`，install 的 npm 流量落在容器内假 registry）。用法见 `slow-lane/README-slow-lane.md`：
+
+```
+bash scripts/e2e/slow-lane/run-slow-lane.sh   # 连跑 2 遍，每遍 17 步 report.json 判绿
+```
+
+何时用哪个：改引擎/路由/策略代码 → 快车道够用；动 `scripts/cpr.ts` 安装/升级/回滚逻辑或发布版本前 → 跑慢车道。

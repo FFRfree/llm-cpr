@@ -243,6 +243,10 @@ function safeParse(text: string): any {
 interface ProdState { pid: number | null; state: string; raw: string }
 
 async function prodState(): Promise<ProdState> {
+  if (process.env.CPR_E2E_SKIP_PID_GUARD === '1') {
+    // CI 容器内没有宿主 systemd；豁免只在显式 env 下生效，本地跑永远不豁免。
+    return { pid: null, state: 'skipped', raw: 'PID 护栏豁免（CPR_E2E_SKIP_PID_GUARD=1）' };
+  }
   const { stdout } = await execFileAsync('systemctl',
     ['--user', 'show', PROD_UNIT, '-p', 'MainPID,ActiveState'],
     { env: { ...process.env, ...PROD_ENV }, timeout: 15_000, encoding: 'utf8' });
@@ -252,6 +256,7 @@ async function prodState(): Promise<ProdState> {
 }
 
 async function prodUnchanged(before: ProdState): Promise<void> {
+  if (before.pid === null) return; // 豁免模式（CI）
   const after = await prodState();
   assert.equal(after.pid, before.pid,
     `生产 ${PROD_UNIT} 的 MainPID 变了：${before.pid} → ${after.pid}（e2e 绝不允许扰动生产进程）`);
@@ -271,7 +276,8 @@ interface RoundOptions {
 
 async function piRound(opts: RoundOptions): Promise<Awaited<ReturnType<typeof runPi>>> {
   const before = await prodState();
-  assert.ok(before.pid !== null, `跑前读生产 ${PROD_UNIT} 状态失败：${before.raw}`);
+  assert.ok(before.pid !== null || process.env.CPR_E2E_SKIP_PID_GUARD === '1',
+    `跑前读生产 ${PROD_UNIT} 状态失败：${before.raw}`);
   const pi = await runPi({
     inferPort: opts.inferPort,
     model: E2E_MODEL_ID,
@@ -459,7 +465,8 @@ async function runCprReloadCli(opts: { adminPort: number; runDir: string }): Pro
   fs.writeFileSync(stubPath, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${logPath}'\nexit 0\n`);
   fs.chmodSync(stubPath, 0o755);
   const before = await prodState();
-  assert.ok(before.pid !== null, `CLI 跑前读生产状态失败：${before.raw}`);
+  assert.ok(before.pid !== null || process.env.CPR_E2E_SKIP_PID_GUARD === '1',
+    `CLI 跑前读生产状态失败：${before.raw}`);
   const child = spawn(process.execPath, [path.join(packDir, 'scripts', 'cpr.ts'), 'reload'], {
     env: {
       ...process.env,
@@ -666,8 +673,9 @@ async function main(): Promise<number> {
   fs.mkdirSync(runsRoot, { recursive: true });
 
   const prodBefore = await prodState();
-  assert.ok(prodBefore.pid !== null, `读生产 ${PROD_UNIT} 状态失败：${prodBefore.raw}`);
-  console.log(`[run-scenarios] 生产 ${PROD_UNIT} MainPID=${prodBefore.pid}（只读比对基准）`);
+  assert.ok(prodBefore.pid !== null || process.env.CPR_E2E_SKIP_PID_GUARD === '1',
+    `读生产 ${PROD_UNIT} 状态失败：${prodBefore.raw}`);
+  console.log(`[run-scenarios] 生产 ${PROD_UNIT} ${prodBefore.pid === null ? 'PID 护栏豁免（CI）' : `MainPID=${prodBefore.pid}（只读比对基准）`}`);
   console.log(`[run-scenarios] 场景=${filter.join('/')} pack 源=${packDir}（${packSource}）现场根=${runsRoot}`);
 
   const runners: Record<number, (runDir: string) => Promise<void>> = { 1: scenario1, 2: scenario2, 5: scenario5 };

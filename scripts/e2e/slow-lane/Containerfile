@@ -1,0 +1,28 @@
+# slow-lane 镜像：薄、通用测试底座——故意不预装 llm-cpr（安装层本身是被测对象，场景 8）。
+# 用法：以 e2e-cpr 用户 rootless 构建：podman build -t localhost/llm-cpr-e2e:24.04 <本目录>
+# 注意：构建期需要网络（apt + NodeSource）；运行期容器内绝不碰外网（见 README-slow-lane.md）。
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg git tar \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/nodesource-setup.sh \
+    && bash /tmp/nodesource-setup.sh \
+    && apt-get install -y --no-install-recommends nodejs systemd dbus libpam-systemd \
+    && rm -rf /var/lib/apt/lists/* /tmp/nodesource-setup.sh \
+    # systemd-as-PID1 容器纪律：/tmp 1777（unit PrivateTmp=yes 要用）、软链 init
+    && chmod 1777 /tmp \
+    && ln -sf /usr/lib/systemd/systemd /sbin/init
+
+# systemd-in-container 配套：user@.service 需要 XDG_RUNTIME_DIR（见文件内注释）；驱动 unit 预 enable。
+COPY image-files/ /
+RUN mkdir -p /etc/systemd/system/multi-user.target.wants \
+    && ln -sf ../llm-cpr-e2e-driver.service /etc/systemd/system/multi-user.target.wants/llm-cpr-e2e-driver.service
+
+# 引擎要求 Node >= 22.18（strip types）；构建期自检，不满足直接 fail build。
+RUN node --version && node -e "const [M,m]=process.versions.node.split('.').map(Number); if(!(M>22||(M===22&&m>=18))) { console.error('Node too old'); process.exit(1) }"
+
+# 镜像本体不预装 llm-cpr、不写 policy；套件脚本/产物运行时 bind-mount 进来（/mnt/e2e、/mnt/pkg、/mnt/run）。
+# CMD 用 --systemd=always 跑驱动脚本时 podman 会包一层 systemd 瞬态 unit；裸跑容器则直接 systemd 当 PID 1。
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

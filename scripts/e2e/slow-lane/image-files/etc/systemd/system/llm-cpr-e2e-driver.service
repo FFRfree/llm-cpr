@@ -1,0 +1,18 @@
+# slow-lane 驱动 unit：systemd（PID 1）拉起后启动容器内 e2e 驱动脚本。
+# 镜像预 enable（multi-user.target.wants 软链）；未挂载 /mnt/e2e 时 Condition 不满足，裸容器照常启动。
+# 退出纪律见 run-install-e2e.ts 尾部：驱动结束即 systemctl --no-wall poweroff 收容器；
+# 成败裁决以 /mnt/run/report.json 的 ok 字段为准（rootless 容器内无 CAP_KILL，无法用信号给 PID1 定非零退出码）。
+[Unit]
+Description=llm-cpr slow-lane e2e driver (scenario 8: install-layer)
+ConditionPathExists=/mnt/e2e/slow-lane/run-install-e2e.ts
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/node /mnt/e2e/slow-lane/run-install-e2e.ts
+TimeoutStartSec=900
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
