@@ -1,95 +1,30 @@
-import http, { type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import https from 'node:https';
-import net, { type AddressInfo } from 'node:net';
+// 网关编排：鉴权/租户解析、建库迁移、正文捕获接线、转发请求的路由环。
+// 管道细节在 ./forward.ts（流式透传/超时/透传），健康观察在 ./health.ts，打点在 ./perf.ts，
+// 管理口 HTTP 面在 ./admin.ts——本文件只保留「每个请求发给谁」的决策流程与状态接线。
+import http, { type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { type AddressInfo } from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
-import { endToEndHeaders } from './headers.ts';
 import { chatCompletions } from '../protocols/chat-completions.ts';
 import { resolveIdentity } from '../store/identity.ts';
-import { createSystemEventStore, type SystemEventStore, type RouteEventDetail, type EventKind } from '../store/events.ts';
+import { createSystemEventStore, type SystemEventStore, type RouteEventDetail } from '../store/events.ts';
 import { openDatabase } from '../store/db.ts';
 import { runMigrations } from '../store/migrate.ts';
 import { CaptureStore } from '../store/capture.ts';
 import { defaultDbPath } from '../paths.ts';
 import { UsageSnapshots } from '../store/snapshots.ts';
-import { rankBackends, monthlyDebtScore } from '../policy/selection.ts';
 import { builtinDecide } from '../policy/builtin-decide.ts';
 import { resolveListenEndpoints } from '../policy/config.ts';
 import { decisionCtx, routeScope } from '../policy/ctx.ts';
 import { UsageAudit } from '../store/audit.ts';
-import type { AuditEntry, Backend, ChatBody, ChatUsage, Environment, Headers, Logger, Model, SnapshotView } from '../contracts.ts';
-import type { BackendRecent, Decision, DecisionCtx, RouterPolicy } from '../policy/contract.ts';
-
-interface ForwardTimings {
-  ttftMs: number | null;
-  streamMs: number | null;
-}
-type CompleteHandler = (status: number, payload: string | ChatUsage | null, timings?: ForwardTimings) => void;
-
-function json(res: ServerResponse, status: number, value: unknown): void {
-  const bytes = Buffer.from(JSON.stringify(value));
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': bytes.length });
-  res.end(bytes);
-}
-
-function authorized(req: IncomingMessage, key: string | undefined): boolean {
-  return typeof key === 'string' && key.length > 0 && req.headers.authorization === `Bearer ${key}`;
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function statusOf(error: unknown, fallback: number): number {
-  const status = error !== null && typeof error === 'object' ? (error as { statusCode?: unknown }).statusCode : undefined;
-  return typeof status === 'number' && status ? status : fallback;
-}
-
-// ---- 后台 v2 静态分发（多页 Admin）：static/ 目录白名单扩展名，路径解析后必须仍落在
-// static/ 内（防穿越）；HTML no-store、资产 60s。旧单页 dashboard.html 已废弃删除。
-const STATIC_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'static');
-const STATIC_TYPES: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml',
-};
-function serveStatic(url: URL, res: ServerResponse): boolean {
-  const pathname = url.pathname === '/' ? '/index.html' : url.pathname;
-  const type = STATIC_TYPES[path.extname(pathname).toLowerCase()];
-  if (!type) return false;
-  let rel = '';
-  try { rel = path.normalize(decodeURIComponent(pathname)).replace(/^[/\\]+/, ''); } catch { return false; }
-  const abs = path.join(STATIC_ROOT, rel);
-  if (!rel || !abs.startsWith(STATIC_ROOT + path.sep)) return false;
-  try {
-    const bytes = fs.readFileSync(abs);
-    res.writeHead(200, { 'content-type': type, 'content-length': bytes.length, 'cache-control': pathname.endsWith('.html') ? 'no-store' : 'max-age=60' });
-    res.end(bytes);
-    return true;
-  } catch { return false; }
-}
-
-// /api/events 的 kind 白名单（非法值 → 不过滤，不把枚举面打开）。
-const EVENT_KINDS: ReadonlySet<string> = new Set(['route.bind', 'route.rebind', 'route.hold', 'policy.error', 'privacy.hit']);
-
-// ---- 版本信息（工单 07）：打开看板才现查 npm registry，缓存 1 小时；进程其余时间零 registry 请求 ----
-const PKG = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json'), 'utf8')) as { name?: string; version?: string };
-const RUNTIME_VERSION = PKG.version ?? 'unknown';
-const REGISTRY_BASE = process.env.CPR_REGISTRY_URL || 'https://registry.npmjs.org';
-const LATEST_TTL_MS = Number(process.env.CPR_LATEST_TTL_MS ?? 3_600_000);
-let latestCache: { at: number; latest: string | null } | null = null;
-
-async function npmLatestCached(): Promise<string | null> {
-  if (latestCache && Date.now() - latestCache.at < LATEST_TTL_MS) return latestCache.latest;
-  let latest: string | null = null;
-  try {
-    const res = await fetch(`${REGISTRY_BASE}/${encodeURIComponent(PKG.name ?? '@ffrfree/llm-cpr')}/latest`, { signal: AbortSignal.timeout(5000) });
-    if (res.ok) latest = ((await res.json()) as { version?: string }).version ?? null;
-  } catch { latest = null; } // 离线/registry 不可达：徽标降级只报当前版，不影响端点本身
-  latestCache = { at: Date.now(), latest };
-  return latest;
-}
+import { json, messageOf, statusOf } from './respond.ts';
+import { forwardAttempt, passthroughError, retryAfterMs, sleep, type ForwardTimings, type QuotaResult } from './forward.ts';
+import { createPerfSpan } from './perf.ts';
+import { healthyBackend, createHealthTracker } from './health.ts';
+import { createAdminServer, type AdminTenantView } from './admin.ts';
+import type { AuditEntry, Backend, ChatBody, ChatUsage, Environment, Logger, Model, SnapshotView } from '../contracts.ts';
+import type { Decision, DecisionCtx, RouterPolicy } from '../policy/contract.ts';
 
 async function readBody(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -103,254 +38,8 @@ async function readBody(req: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-function retryAfterMs(value: unknown, now = Date.now()): number | null {
-  if (typeof value !== 'string' || !value.trim()) return null;
-  const trimmed = value.trim();
-  const seconds = Number(trimmed);
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
-  const at = Date.parse(trimmed);
-  return Number.isFinite(at) ? Math.max(0, at - now) : null;
-}
-
-function sleep(ms: number, res: ServerResponse): Promise<boolean> {
-  return new Promise((resolve) => {
-    if (res.destroyed) return resolve(false);
-    const finish = (active: boolean) => { clearTimeout(timer); res.off('close', cancel); resolve(active); };
-    const cancel = () => finish(false);
-    const timer = setTimeout(() => finish(!res.destroyed), ms);
-    res.once('close', cancel);
-  });
-}
-
-interface ForwardedResult {
-  status: number;
-  forwarded: true;
-}
-interface QuotaResult {
-  status: number;
-  forwarded: false;
-  headers: IncomingHttpHeaders;
-  responseHeaders: Headers;
-  body: Buffer;
-}
-type AttemptResult = ForwardedResult | QuotaResult;
-
-interface ForwardOptions {
-  res: ServerResponse;
-  backend: Backend;
-  body: string;
-  headers: Headers;
-  startedAt: number;
-  onComplete?: CompleteHandler;
-  timeoutMs: number;
-}
-
-function forwardAttempt({ res, backend, body, headers, startedAt, onComplete, timeoutMs }: ForwardOptions): Promise<AttemptResult> {
-  return new Promise((resolve) => {
-    if (res.destroyed) {
-      try { onComplete?.(499, null); } catch {}
-      return resolve({ status: 499, forwarded: true });
-    }
-    const target = chatCompletions.target(backend.base_url);
-    const transport = target.protocol === 'https:' ? https : http;
-    const outgoingHeaders = endToEndHeaders(headers);
-    outgoingHeaders['content-type'] = 'application/json';
-    outgoingHeaders['content-length'] = Buffer.byteLength(body);
-    let finished = false;
-    let incoming: IncomingMessage | undefined;
-    let timer: NodeJS.Timeout | undefined;
-    const cleanup = () => { clearTimeout(timer); res.off('close', cancel); };
-    const fail = (error: Error & { code?: string }) => {
-      if (finished) return;
-      finished = true;
-      cleanup();
-      const status = error.code === 'ECANCELED' ? 499 : error.code === 'ETIMEDOUT' ? 504 : 502;
-      try { onComplete?.(status, null); } catch {}
-      incoming?.unpipe(res);
-      incoming?.destroy();
-      upstream.destroy(error);
-      if (!res.destroyed) {
-        if (!res.headersSent) json(res, status === 499 ? 502 : status, { error: { message: `upstream request failed: ${error.message}`, type: 'gateway_error' } });
-        else res.destroy(error);
-      }
-      resolve({ status, forwarded: true });
-    };
-    // Header wait is absolute (includes connection establishment); successful
-    // bodies use inactivity, not total lifetime, so active long SSE is untouched.
-    const armTimeout = (ms = timeoutMs) => {
-      clearTimeout(timer);
-      timer = setTimeout(() => fail(Object.assign(new Error('upstream timed out'), { code: 'ETIMEDOUT' })), ms);
-      timer.unref?.();
-    };
-    // A single terminal path owns audit and teardown. Response abort/error and the
-    // request error can all fire for one failure; none may turn it into a false 499.
-    const cancel = () => {
-      if (res.writableEnded || res.writableFinished) return;
-      fail(Object.assign(new Error('client cancelled'), { code: 'ECANCELED' }));
-    };
-    const upstream = transport.request(target, { method: 'POST', headers: outgoingHeaders }, (response) => {
-      incoming = response;
-      response.on('aborted', () => fail(new Error('upstream response aborted')));
-      response.on('error', fail);
-      const status = response.statusCode || 502;
-      const responseHeaders = endToEndHeaders(response.headers);
-      if (status === 403 || status === 429) {
-        // Quota bodies gate retries: a drip must not cause an error while the body is still open.
-        armTimeout(Math.min(timeoutMs, 5000));
-        const chunks: Buffer[] = [];
-        let size = 0;
-        response.on('data', (chunk: Buffer) => {
-          size += chunk.length;
-          if (size > 1024 * 1024) return fail(new Error('upstream quota response too large'));
-          chunks.push(chunk);
-        });
-        response.on('end', () => {
-          if (finished) return;
-          finished = true; cleanup();
-          resolve({ status, forwarded: false, headers: response.headers, responseHeaders, body: Buffer.concat(chunks) });
-        });
-        return;
-      }
-      armTimeout();
-      // pipe() pauses this readable when the client applies backpressure. While
-      // paused we cannot observe upstream activity, so it is not an idle period.
-      // Resume starts a fresh idle window; cancellation/abort still use fail().
-      response.on('pause', () => clearTimeout(timer));
-      response.on('resume', () => { if (!finished) armTimeout(); });
-      let firstByteAt: number | null = null;
-      const streaming = chatCompletions.isStreaming(response.headers);
-      const collector = chatCompletions.usageCollector(streaming);
-      response.on('data', (chunk: Buffer) => {
-        if (finished) return;
-        armTimeout();
-        // Until a body byte arrives, keep the option of a structured 502/504.
-        if (firstByteAt === null) { firstByteAt = Date.now(); res.writeHead(status, responseHeaders); }
-        collector.write(chunk);
-      });
-      response.on('end', () => {
-        if (finished) return;
-        finished = true; cleanup();
-        if (!res.headersSent) res.writeHead(status, responseHeaders);
-        const timings: ForwardTimings = {
-          ttftMs: firstByteAt !== null ? firstByteAt - startedAt : null,
-          streamMs: streaming && firstByteAt !== null ? Math.max(0, Date.now() - firstByteAt) : null,
-        };
-        try { onComplete?.(status, collector.end(), timings); } catch {}
-      });
-      response.pipe(res);
-      resolve({ status, forwarded: true });
-    });
-    upstream.on('error', fail);
-    res.once('close', cancel);
-    armTimeout();
-    upstream.end(body);
-  });
-}
-
-function passthroughError(res: ServerResponse, result: QuotaResult, onComplete?: CompleteHandler): void {
-  res.writeHead(result.status, result.responseHeaders);
-  res.end(result.body);
-  try { onComplete?.(result.status, result.body.toString('utf8')); } catch {}
-}
-
-function healthyBackend(backend: Backend, timeoutMs = 500): Promise<boolean> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (healthy: boolean) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolve(healthy);
-    };
-    const target = new URL(backend.base_url);
-    const socket = net.connect({ host: target.hostname, port: Number(target.port) || (target.protocol === 'https:' ? 443 : 80) });
-    socket.setTimeout(timeoutMs, () => finish(false));
-    socket.once('connect', () => finish(true));
-    socket.once('error', () => finish(false));
-  });
-}
-
-// firstHealthyBackend 已由 handler 内的 firstHealthy（带 probe 计时包装）取代，原函数删除。
-
-// 内存健康追踪：record() 记账路径顺手喂入，decide ctx 的 candidates[].recent 从这里取。
-// 只在内存里（重启归 undefined = 窗口内没观察到失败 ≠ 健康，观察盲区语义同快照未知）；零查询成本。
-const HEALTH_WINDOW_MS = 10 * 60_000;
-const HEALTH_RING_CAP = 50;
-function createHealthTracker() {
-  const rings = new Map<string, { ts: number; status: number }[]>();
-  return {
-    note(name: string, status: number, now = Date.now()): void {
-      // 499 = 客户端取消，与后端服务质量无关，不计入。
-      if (status < 400 || status === 499) return;
-      const ring = rings.get(name) ?? [];
-      ring.push({ ts: now, status });
-      if (ring.length > HEALTH_RING_CAP) ring.splice(0, ring.length - HEALTH_RING_CAP);
-      rings.set(name, ring);
-    },
-    view(name: string, now = Date.now()): BackendRecent | undefined {
-      const windowed = (rings.get(name) ?? []).filter((entry) => now - entry.ts < HEALTH_WINDOW_MS);
-      if (!windowed.length) return undefined;
-      const last = windowed[windowed.length - 1];
-      return { fails: windowed.length, lastStatus: last.status, lastErrorAt: last.ts };
-    },
-  };
-}
-
-// ---- perf 打点（spec .scratch/perf-instrumentation/spec.md）：转发路径分段计时，每请求一行 [perf] ----
-// 只测「我们自己的代码开销」：startedAt（选路完成、开始连上游）之前的 read/parse/identity/snapshot/
-// route（probe 另计，route−probe=纯决策）/prepare/capture 各段 + forward{ttft,stream}。不含身份明文、
-// 会话 id、正文（journal 可读，纪律同账本的 identity_hash）；401/404/本地 400 走 suppress 不发行。
-// res close 时幂等发射；aborted = 连接未正常写完（客户端取消/半截流），与账本 499 同义。
-function createPerfSpan(res: ServerResponse) {
-  const marks: Record<string, number> = {};
-  let routeT0: number | null = null;
-  let attempts = 0;
-  let forward: { ttft: number | null; stream: number | null } | null = null;
-  let bytes: number | null = null;
-  let model: string | null = null;
-  let tenant: string | null = null;
-  let done = false;
-  const round = (value: number | undefined): number | null => value === undefined ? null : Math.round(value * 10) / 10;
-  return {
-    add(key: string, ms: number): void { marks[key] = (marks[key] ?? 0) + ms; },
-    run<T>(key: string, fn: () => T): T {
-      const t0 = performance.now();
-      try { return fn(); } finally { marks[key] = (marks[key] ?? 0) + (performance.now() - t0); }
-    },
-    async runAsync<T>(key: string, fn: () => Promise<T>): Promise<T> {
-      const t0 = performance.now();
-      try { return await fn(); } finally { marks[key] = (marks[key] ?? 0) + (performance.now() - t0); }
-    },
-    routeStart(): void { routeT0 = performance.now(); },
-    routeEnd(): void { if (routeT0 !== null) { marks.route = (marks.route ?? 0) + (performance.now() - routeT0); routeT0 = null; } },
-    countAttempt(): void { attempts += 1; },
-    setForward(timings: ForwardTimings | undefined): void { if (timings) forward = { ttft: timings.ttftMs, stream: timings.streamMs }; },
-    meta(input: { bytes: number; model: string; tenant: string }): void { bytes = input.bytes; model = input.model; tenant = input.tenant; },
-    suppress(): void { done = true; },
-    finish(logger: Logger): void {
-      if (done) return;
-      done = true;
-      const view: Record<string, unknown> = {
-        ts: Date.now(),
-        ms: {
-          read: round(marks.read), parse: round(marks.parse), identity: round(marks.identity), snapshot: round(marks.snapshot),
-          route: round(marks.route), probe: round(marks.probe), prepare: round(marks.prepare), capture: round(marks.capture),
-        },
-        attempts,
-        forward,
-        status: res.statusCode,
-        bytes, model, tenant,
-      };
-      if (!res.writableFinished) view.aborted = true;
-      logger.log?.(`[perf] ${JSON.stringify(view)}`);
-    },
-    // 正常完成在 'finish'（响应写完）即发射——keep-alive 客户端下 'close' 要等连接断开，
-    // 日志会延迟数秒甚至攒到连接池回收；'close' 只兜 aborted（客户端取消/半截流，无 finish）。
-    attach(logger: Logger): void {
-      res.once('finish', () => this.finish(logger));
-      res.once('close', () => this.finish(logger));
-    },
-  };
+function authorized(req: IncomingMessage, key: string | undefined): boolean {
+  return typeof key === 'string' && key.length > 0 && req.headers.authorization === `Bearer ${key}`;
 }
 
 export interface CreateGatewayOptions {
@@ -500,7 +189,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       const candidates: Backend[] = routeScope(tenantBackends, undefined, requestedModel);
       if (!candidates.length) return json(res, 400, { error: { message: 'model is not available on configured backends', type: 'invalid_request_error' } });
       // perf（spec .scratch/perf-instrumentation/spec.md）：route 段从候选过滤后起、到改绑事件落定止；
-      // 探活走本地包装另计 probe 段（分析时 route−probe = 纯决策开销），firstHealthy 不再吃 module 级探活。
+      // 探活走本地包装另计 probe 段（分析时 route−probe = 纯决策开销）。
       const probeHealthy = async (target: Backend): Promise<boolean> => {
         const t0 = performance.now();
         try { return await healthyBackend(target); } finally { span.add('probe', performance.now() - t0); }
@@ -758,165 +447,14 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       return json(res, statusOf(error, 400), { error: { message: messageOf(error), type: statusOf(error, 400) === 429 ? 'routing_error' : 'invalid_request_error' } });
     }
   });
-  const adminServer = http.createServer(async (req, res) => {
-    let url: URL;
-    try { url = new URL(req.url ?? '/', 'http://127.0.0.1'); }
-    catch { return json(res, 400, { error: { message: 'invalid URL', type: 'invalid_request_error' } }); }
-    // 唯一的写操作：手动触发一轮额度快照刷新（轮询默认 5 分钟一次，看板按钮也走这里）
-    if (req.method === 'POST' && url.pathname === '/api/snapshots/refresh') {
-      try { await snapshots.refresh(); } catch (error) {
-        return json(res, 502, { error: { message: `snapshot refresh failed: ${messageOf(error)}`, type: 'server_error' } });
-      }
-      return json(res, 200, snapshots.peek());
-    }
-    if (req.method !== 'GET') return json(res, 405, { error: { message: 'method not allowed', type: 'method_not_allowed_error' } });
-    if (serveStatic(url, res)) return;
-    if (url.pathname === '/api/snapshots') return json(res, 200, snapshots.peek());
-    if (url.pathname === '/api/version') {
-      // 工单 07：只在看板/用户交互时现查（服务端缓存 1h）；无人访问时进程零网络请求。
-      const latest = await npmLatestCached();
-      return json(res, 200, { version: RUNTIME_VERSION, latest, checkedAt: latestCache?.at ?? null });
-    }
-    if (url.pathname === '/api/route/status') {
-      const p = policy;
-      const snaps = snapshots;
-      const current = snaps.peek();
-      // 租户清单（看板下拉用）：声明了 tenants 列真实租户；未声明时只有隐式 default。
-      const tenantViews = declaredTenants.length
-        ? declaredTenants.map((tenant) => ({ name: tenant.name, ...(tenant.backends ? { backends: tenant.backends } : {}), ...(tenant.models ? { models: tenant.models } : {}) }))
-        : [{ name: 'default' }];
-      // 「当前优先」：如果现在来一个新会话，内置月欠账会挑谁。policy 自定义决定不在此列
-      // （它每请求都可能不同），看板对钉死模型显示的优先序仅供参考。
-      let preference: { name: string; score: number | null }[] | null = null;
-      try {
-        const modelMap = p.models[0]?.backends;
-        preference = rankBackends({ backends: p.backends, snapshots: current.snapshots, model: modelMap })
-          .map((candidate) => ({ name: candidate.name, score: monthlyDebtScore(current.snapshots[candidate.name]) }));
-      } catch { preference = null; }
-      return json(res, 200, { subscriptions: p.backends.map((candidate) => ({
-        name: candidate.name, family: candidate.family, alias: candidate.alias ?? candidate.name,
-        account: candidate.account ?? candidate.name,
-        models: p.models.filter((model) => model.backends?.[candidate.family]).map((model) => model.id),
-        snapshot: current.snapshots[candidate.name] ?? { known: false, degraded: true, stale: true },
-      })), tenants: tenantViews, preference, mappings: events.mappingOverview(), snapshots: current });
-    }
-    if (url.pathname === '/api/audit/requests') {
-      // page 参数在 → 分页响应（带 total，后台 v2）；不在 → 旧 limit 形态（兼容既有调用方）。
-      if (url.searchParams.has('page')) {
-        return json(res, 200, audit.listRequestsPaged({
-          page: url.searchParams.get('page'), pageSize: url.searchParams.get('page_size'),
-          sort: url.searchParams.get('sort'), order: url.searchParams.get('order'), days: url.searchParams.get('days'),
-          identity: url.searchParams.get('identity') ?? undefined, tenant: url.searchParams.get('tenant') ?? undefined,
-          model: url.searchParams.get('model') ?? undefined, status: url.searchParams.get('status'),
-        }));
-      }
-      return json(res, 200, { requests: audit.listRequests({ limit: url.searchParams.get('limit'), identity: url.searchParams.get('identity') ?? undefined, tenant: url.searchParams.get('tenant') ?? undefined }) });
-    }
-    if (url.pathname === '/api/audit/sessions') {
-      // 同上：page 参数在 → 分页响应；不在 → 旧形态。
-      if (url.searchParams.has('page')) {
-        return json(res, 200, audit.listSessionsPaged({
-          page: url.searchParams.get('page'), pageSize: url.searchParams.get('page_size'),
-          sort: url.searchParams.get('sort'), order: url.searchParams.get('order'), days: url.searchParams.get('days'),
-          tenant: url.searchParams.get('tenant') ?? undefined,
-        }));
-      }
-      return json(res, 200, { sessions: audit.listSessions({ limit: url.searchParams.get('limit'), tenant: url.searchParams.get('tenant') ?? undefined }) });
-    }
-    // 订阅实际消耗聚合（后台 v2）：按订阅×北京时间日，与上游快照（还剩多少）互补。
-    if (url.pathname === '/api/audit/usage') {
-      return json(res, 200, audit.usageByDay({ days: url.searchParams.get('days'), tenant: url.searchParams.get('tenant') ?? undefined }));
-    }
-    // 系统事件流（后台 v2）：改绑/hold/泄漏命中等，观测页时间线用。kind 白名单外一律不过滤。
-    if (url.pathname === '/api/events') {
-      const kindParam = url.searchParams.get('kind') ?? undefined;
-      return json(res, 200, { events: events.listEvents({
-        kind: kindParam !== undefined && EVENT_KINDS.has(kindParam) ? kindParam as EventKind : undefined,
-        tenant: url.searchParams.get('tenant') ?? undefined,
-        limit: url.searchParams.get('limit'),
-      }) });
-    }
-    if (url.pathname === '/api/audit/summary') {
-      const identity = url.searchParams.get('identity');
-      const tenant = url.searchParams.get('tenant') ?? undefined;
-      const p = policy;
-      // 汇总只看当前声明的订阅；已下线的（如历史 ocg-main/first/second）留在库里不上板
-      return json(res, 200, identity === null
-        ? { summary: audit.summary({ subscriptionNames: p.backends.map((candidate) => candidate.name), tenant }) }
-        : { summary: audit.sessionSummary(identity, { tenant }), requests: audit.listRequests({ limit: url.searchParams.get('limit'), identity, tenant }) });
-    }
-    const detail = url.pathname.match(/^\/api\/audit\/sessions\/(.+)$/);
-    if (detail) {
-      let identity: string;
-      let tenant: string;
-      try { identity = decodeURIComponent(detail[1]); tenant = url.searchParams.get('tenant') ?? 'default'; }
-      catch { return json(res, 400, { error: { message: 'invalid session URL', type: 'invalid_request_error' } }); }
-      return json(res, 200, { session: audit.sessionSummary(identity, { tenant }), requests: audit.listRequests({ limit: url.searchParams.get('limit'), identity, tenant }) });
-    }
-    // 观测层读侧（observability 票 01）：捕获轮次清单 / 单轮还原正文 / 侧库状态。只读聚合，不加重热路径。
-    if (url.pathname === '/api/capture/turns') {
-      return json(res, 200, { turns: capture ? capture.listTurns({ limit: url.searchParams.get('limit'), tenant: url.searchParams.get('tenant') ?? undefined, identity: url.searchParams.get('identity') ?? undefined }) : [] });
-    }
-    const captureTurn = url.pathname.match(/^\/api\/capture\/turns\/(\d+)$/);
-    if (captureTurn) {
-      if (!capture) return json(res, 404, { error: { message: 'capture is not enabled for any tenant', type: 'not_found_error' } });
-      const found = capture.turnBody(Number(captureTurn[1]));
-      return found ? json(res, 200, found) : json(res, 404, { error: { message: 'capture turn not found (or content missing in degraded state)', type: 'not_found_error' } });
-    }
-    if (url.pathname === '/api/capture/status') {
-      return json(res, 200, capture ? capture.status() : { enabled: false, turns: 0, contents: 0, bytes: 0, dropped: 0, degraded: false });
-    }
-    // 缓存取证（票 03）：需 identity（会话从 /api/audit/sessions 挑）。输出相邻轮对比链，
-    // 并把时间窗口内的 route.rebind 事件并排进每一轮——归因措辞是「证据指向」，不下断言。
-    // tenant 缺省 = 全租户（identity 由调用方指定，缺省写死 'default' 会查空）。
-    if (url.pathname === '/api/capture/cache-forensics') {
-      if (!capture) return json(res, 404, { error: { message: 'capture is not enabled for any tenant', type: 'not_found_error' } });
-      const identity = url.searchParams.get('identity');
-      const tenant = url.searchParams.get('tenant') ?? undefined;
-      if (!identity) return json(res, 400, { error: { message: 'identity query parameter is required (pick a session from /api/audit/sessions)', type: 'invalid_request_error' } });
-      const limitParam = Number(url.searchParams.get('limit') ?? 100);
-      const chain = capture.cacheChain(tenant, identity, Number.isFinite(limitParam) ? limitParam : undefined);
-      const rebinds = events.listEvents({ kind: 'route.rebind', tenant, limit: 500 })
-        .map((event) => ({ ts: event.ts, backend: event.backend_name, detail: event.detail ? JSON.parse(event.detail) as Record<string, unknown> : {} }));
-      return json(res, 200, {
-        tenant: tenant ?? null, identity, chain,
-        rebinds,
-        // 哈希结论与 chars 口径互校的说明随响应给出（票 03 验收「不一致要能解释」）：
-        hint: 'common_prefix 骤降 ↔ 前缀断裂（证据指向改绑/改提示词/插消息，以同时间窗 rebind 与 first_diff_role 定位）；chars_delta 与 common_prefix 不一致时以哈希结论为准（chars 还受非消息字段影响）',
-      });
-    }
-    // 工具/skill 分析（票 05）：读侧聚合，按需慢查询（默认 7 天 / 500 轮上限）。
-    // tenant 缺省 = 全租户合计（与 /api/audit/* 口径一致；review 后修正——缺省写死 'default'
-    // 会让多租户部署的看板永远空表）。
-    if (url.pathname === '/api/capture/tools') {
-      if (!capture) return json(res, 404, { error: { message: 'capture is not enabled for any tenant', type: 'not_found_error' } });
-      return json(res, 200, capture.toolStats({
-        tenant: url.searchParams.get('tenant') ?? undefined,
-        identity: url.searchParams.get('identity') ?? undefined,
-        days: Number(url.searchParams.get('days') ?? 7),
-        maxTurns: Number(url.searchParams.get('max_turns') ?? 500),
-      }));
-    }
-    // 泄漏取证定位（票 04）：privacy.hit 事件清单 + 借 item_hash/capture_id 回查捕获库，
-    // 给出「哪一轮、哪个角色、第几条消息、该内容第一次出现在哪一轮」。原文不可得（从未落过）。
-    if (url.pathname === '/api/capture/privacy') {
-      if (!capture) return json(res, 404, { error: { message: 'capture is not enabled for any tenant', type: 'not_found_error' } });
-      const tenant = url.searchParams.get('tenant') ?? undefined;
-      const hits = events.listEvents({ kind: 'privacy.hit', tenant, limit: url.searchParams.get('limit') }).map((event) => {
-        const detail = event.detail ? JSON.parse(event.detail) as Record<string, unknown> : {};
-        const itemHash = typeof detail.item_hash === 'string' ? detail.item_hash : null;
-        const turn = typeof detail.capture_id === 'string' ? capture!.turnByCaptureId(detail.capture_id) : null;
-        const firstSeen = itemHash && turn ? capture!.turnsContaining(turn.tenant, itemHash, 1)[0] ?? null : null;
-        return {
-          id: event.id, ts: event.ts, tenant: event.tenant, identity_hash: event.identity_hash, rule: detail.rule ?? null,
-          message_index: detail.message_index ?? null, role: detail.role ?? null,
-          hit_turn: turn ? { capture_id: turn.capture_id, ts: turn.ts, identity: turn.identity, model: turn.model } : null,
-          first_seen_turn: firstSeen ? { capture_id: firstSeen.capture_id, ts: firstSeen.ts, identity: firstSeen.identity, model: firstSeen.model } : null,
-        };
-      });
-      return json(res, 200, { hits });
-    }
-    return json(res, 404, { error: { message: 'not found', type: 'not_found_error' } });
+  const adminServer = createAdminServer({
+    policy,
+    // 看板租户视图：内部 ResolvedTenant（keyEnv 不出鉴权作用域）收窄成展示形。
+    tenants: declaredTenants.map((tenant) => ({ name: tenant.name, ...(tenant.backends ? { backends: tenant.backends } : {}), ...(tenant.models ? { models: tenant.models } : {}) })) satisfies AdminTenantView[],
+    snapshots,
+    audit,
+    events,
+    capture,
   });
   snapshots.start();
   forwardServer.once('close', () => { audit.close(); snapshots.stop(); capture?.close(); });
