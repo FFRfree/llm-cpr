@@ -263,3 +263,156 @@ test('scanForLeaks unit: known formats hit, low-entropy assignments stay silent'
   assert.ok(scanForLeaks('-----BEGIN RSA PRIVATE KEY-----').some((hit) => hit.rule === 'private-key-block'));
   assert.deepEqual(scanForLeaks('const retries = 3; // no secrets here').length, 0);
 });
+
+// ---- family-observability 票 02：cacheChain 线程化 ----
+// deleg 家族（多 subagent 共享一个会话身份）交错落库时，时间序「上一轮」是另一个孩子的
+// 轮次——common_prefix 只剩 system 是**假断裂**；断裂判定看线程内口径（thread_key=refs[1]）。
+test('cache forensics threads: interleaved sibling turns are switch boundaries, breaks judged in-thread', async (t: TestContext): Promise<void> => {
+  const fake = await fakeBackend('first', []);
+  t.after(async () => await close(fake.server));
+  const app = await start(t, [{ name: 'main', key_env: 'K_MAIN', capture: true }], [fake.url]);
+  const send = (goal: string, extra: string | null): Promise<Response> =>
+    chat(app.forwardUrl, 'main-key', JSON.stringify({
+      model: 'm',
+      messages: extra === null
+        ? [{ role: 'system', content: 'shared system' }, { role: 'user', content: goal }]
+        : [{ role: 'system', content: 'shared system' }, { role: 'user', content: goal }, { role: 'user', content: extra }],
+    }), { 'x-session-id': 'family-1' });
+  // 两「孩子」共用一个会话身份，时间序交错：A1, B1, A2, B2。
+  assert.equal((await send('goal A', null)).status, 200);
+  assert.equal((await send('goal B', null)).status, 200);
+  assert.equal((await send('goal A', 'a2')).status, 200);
+  assert.equal((await send('goal B', 'b2')).status, 200);
+  await settle();
+  const data = await fetch(`${app.adminUrl}/api/capture/cache-forensics?tenant=main&identity=family-1`).then((r) => r.json()) as {
+    chain: Array<{ id: number; thread_key: string; boundary: string; common_prefix: number; prev_in_thread_id: number | null; common_prefix_in_thread: number | null; first_diff_in_thread_index: number | null; first_diff_in_thread_role: string | null }>;
+    threads: Array<{ key: string; label: string; turn_count: number; bytes: number; first_ts: number; last_ts: number }>;
+  };
+  assert.equal(data.chain.length, 4);
+  const [a1, b1, a2, b2] = data.chain;
+  assert.equal(a1.boundary, 'first');
+  assert.equal(b1.boundary, 'thread-switch'); // 时间序上一轮是 A1 —— 切了孩子，不是断裂
+  assert.equal(a2.boundary, 'thread-switch');
+  assert.equal(b2.boundary, 'thread-switch');
+  // 时间序口径保留：a2 的时间序上一轮是 b1，前缀只剩 system 1 条。
+  assert.equal(a2.common_prefix, 1);
+  // 线程内口径：a2 对比 a1（不是 b1），追加一条 → common=2，分歧位置 2、角色 user。
+  assert.equal(a2.prev_in_thread_id, a1.id);
+  assert.equal(a2.common_prefix_in_thread, 2);
+  assert.equal(a2.first_diff_in_thread_index, 2);
+  assert.equal(a2.first_diff_in_thread_role, 'user');
+  assert.equal(b2.prev_in_thread_id, b1.id);
+  assert.equal(b2.common_prefix_in_thread, 2);
+  // 线程汇总：2 个孩子各 2 轮，label = goal 开场白，按首轮时间升序。
+  assert.equal(data.threads.length, 2);
+  assert.equal(data.threads[0].label, 'goal A');
+  assert.equal(data.threads[0].turn_count, 2);
+  assert.equal(data.threads[1].label, 'goal B');
+  assert.ok(data.threads[0].first_ts <= data.threads[1].first_ts);
+});
+
+test('cache forensics threads: single-thread session keeps legacy equivalence', async (t: TestContext): Promise<void> => {
+  const fake = await fakeBackend('first', []);
+  t.after(async () => await close(fake.server));
+  const app = await start(t, [{ name: 'main', key_env: 'K_MAIN', capture: true }], [fake.url]);
+  const send = (messages: Array<{ role: string; content: string }>): Promise<Response> =>
+    chat(app.forwardUrl, 'main-key', JSON.stringify({ model: 'm', messages }), { 'x-session-id': 'solo-1' });
+  assert.equal((await send([{ role: 'system', content: 'sys' }, { role: 'user', content: 'q1' }])).status, 200);
+  assert.equal((await send([{ role: 'system', content: 'sys' }, { role: 'user', content: 'q1' }, { role: 'user', content: 'q2' }])).status, 200);
+  await settle();
+  const data = await fetch(`${app.adminUrl}/api/capture/cache-forensics?tenant=main&identity=solo-1`).then((r) => r.json()) as {
+    chain: Array<{ boundary: string; common_prefix: number; common_prefix_in_thread: number | null; prev_id: number | null; prev_in_thread_id: number | null }>;
+    threads: Array<{ label: string; turn_count: number }>;
+  };
+  const [, second] = data.chain;
+  assert.equal(second.boundary, 'same-thread');
+  assert.equal(second.prev_in_thread_id, second.prev_id); // 单线程时线程内上一轮 = 时间序上一轮
+  assert.equal(second.common_prefix_in_thread, second.common_prefix);
+  assert.equal(data.threads.length, 1);
+  assert.equal(data.threads[0].label, 'q1');
+  assert.equal(data.threads[0].turn_count, 2);
+});
+
+// ---- family-observability 票 03：缓存效率（理想消耗/实际消耗）----
+// 上游回 OpenAI 形状 usage（prompt_tokens 含缓存，cached_tokens 单列）的假上游：
+// 同一 goal（第 2 条消息）第二次起，除新增尾条外的全部消息按 500 tok/条命中；
+// goal 含 'DROP' 的会话永远全量重算（cached=0）——构造丢缓存场景。
+async function fakeBackendWithUsage(name: string): Promise<{ server: Server; url: string }> {
+  const server = http.createServer(async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    let raw = '';
+    for await (const chunk of req) raw += String(chunk);
+    let prompt = 0, cached = 0;
+    try {
+      const body = JSON.parse(raw) as { messages?: Array<{ role: string; content: string }> };
+      const messages = body.messages ?? [];
+      prompt = 500 * messages.length;
+      const goal = messages.length >= 2 ? JSON.stringify(messages[1]) : '';
+      const dropSession = goal.includes('DROP');
+      const everSeen = cacheState.get(goal) === true;
+      cacheState.set(goal, true);
+      cached = !dropSession && everSeen ? 500 * (messages.length - 1) : 0;
+    } catch { /* 保持 0 */ }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      choices: [{ message: { role: 'assistant', content: 'ok' } }],
+      usage: { prompt_tokens: prompt, completion_tokens: 1, prompt_tokens_details: { cached_tokens: cached } },
+    }));
+  });
+  return { server, url: await listen(server) };
+}
+const cacheState = new Map<string, boolean>();
+
+test('cache efficiency: perfect append-only thread scores 1.0, cache-drop thread shows waste', async (t: TestContext): Promise<void> => {
+  const fake = await fakeBackendWithUsage('first');
+  t.after(async () => await close(fake.server));
+  const app = await start(t, [{ name: 'main', key_env: 'K_MAIN', capture: true }], [fake.url]);
+  const send = (session: string, messages: Array<{ role: string; content: string }>): Promise<Response> =>
+    chat(app.forwardUrl, 'main-key', JSON.stringify({ model: 'm', messages }), { 'x-session-id': session });
+  // 完美线程：只追加、上游每次命中全部旧前缀（cached = 旧消息条数×500）。
+  // 消息内容按 role 补偿成「存储 JSON 等长」（system 串 98 + user 串 100 → 各 128 字节）：
+  // 字节占比 = 消息条数占比，与上游的均分命中严格一致，理想==实际可精确断言。
+  assert.equal((await send('eff-perfect', [{ role: 'system', content: 's'.repeat(98) }, { role: 'user', content: 'g'.repeat(100) }])).status, 200);
+  assert.equal((await send('eff-perfect', [{ role: 'system', content: 's'.repeat(98) }, { role: 'user', content: 'g'.repeat(100) }, { role: 'user', content: '2'.repeat(100) }])).status, 200);
+  assert.equal((await send('eff-perfect', [{ role: 'system', content: 's'.repeat(98) }, { role: 'user', content: 'g'.repeat(100) }, { role: 'user', content: '2'.repeat(100) }, { role: 'user', content: '3'.repeat(100) }])).status, 200);
+  // 丢缓存线程：goal 带 DROP 标记，上游整段重算（cached=0），多付一遍全价。
+  assert.equal((await send('eff-drop', [{ role: 'system', content: 's'.repeat(98) }, { role: 'user', content: 'DROP-' + 'd'.repeat(93) }])).status, 200);
+  assert.equal((await send('eff-drop', [{ role: 'system', content: 's'.repeat(98) }, { role: 'user', content: 'DROP-' + 'd'.repeat(93) }, { role: 'user', content: '2'.repeat(100) }])).status, 200);
+  await settle();
+  const perfect = await fetch(`${app.adminUrl}/api/capture/cache-efficiency?tenant=main&identity=eff-perfect`).then((r) => r.json()) as {
+    totals: { turns_used: number; turns_skipped_no_usage: number; efficiency: number | null; waste_share: number | null; read_multiplier: number | null };
+    threads: Array<{ turns: number; efficiency: number | null }>;
+  };
+  assert.equal(perfect.totals.turns_used, 3);
+  assert.equal(perfect.totals.turns_skipped_no_usage, 0);
+  // 三轮：t1 全新全价、t2/t3 旧段全命中 + 新段全价 —— 理想 == 实际。
+  assert.ok(Math.abs((perfect.totals.efficiency ?? 0) - 1) < 1e-9, `efficiency=${perfect.totals.efficiency}`);
+  assert.equal(perfect.totals.waste_share, 0);
+  assert.ok(Math.abs((perfect.totals.read_multiplier ?? 0) - 1.25) < 1e-9); // Σhit/corpus = (1000+1500)/2000
+  assert.equal(perfect.threads.length, 1);
+  assert.equal(perfect.threads[0].turns, 3);
+
+  const drop = await fetch(`${app.adminUrl}/api/capture/cache-efficiency?tenant=main&identity=eff-drop`).then((r) => r.json()) as {
+    totals: { efficiency: number | null; waste_share: number | null };
+  };
+  // t1 1000 全价 + t2 命中 0 → 1500 全价 = 2500；理想 = 1000 + (1000×0.1 + 500) = 1600 → 效率 0.64。
+  assert.ok(Math.abs((drop.totals.efficiency ?? 0) - 0.64) < 0.01, `efficiency=${JSON.stringify(drop.totals)}`);
+  assert.ok(Math.abs((drop.totals.waste_share ?? 0) - 0.36) < 0.01);
+});
+
+test('cache efficiency: skips turns without usage and guards 404/400', async (t: TestContext): Promise<void> => {
+  const fake = await fakeBackend('first', []); // 无 usage 形状 → cache_observed=false → 全部剔除
+  t.after(async () => await close(fake.server));
+  const app = await start(t, [{ name: 'main', key_env: 'K_MAIN', capture: true }], [fake.url]);
+  assert.equal((await chat(app.forwardUrl, 'main-key', JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'hi' }] }), { 'x-session-id': 'eff-nousage' })).status, 200);
+  await settle();
+  const data = await fetch(`${app.adminUrl}/api/capture/cache-efficiency?tenant=main&identity=eff-nousage`).then((r) => r.json()) as {
+    totals: { turns_used: number; turns_skipped_no_usage: number; efficiency: number | null };
+  };
+  assert.equal(data.totals.turns_used, 0);
+  assert.equal(data.totals.turns_skipped_no_usage, 1);
+  assert.equal(data.totals.efficiency, null);
+  assert.equal((await fetch(`${app.adminUrl}/api/capture/cache-efficiency?tenant=main`)).status, 400);
+  // capture 关闭的租户：404（对齐 cache-forensics 口径）。
+  const noCapture = await start(t, [{ name: 'main', key_env: 'K_MAIN' }], [fake.url]);
+  assert.equal((await fetch(`${noCapture.adminUrl}/api/capture/cache-efficiency?tenant=main&identity=x`)).status, 404);
+});
