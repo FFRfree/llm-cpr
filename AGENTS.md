@@ -26,9 +26,9 @@ docs/agents/      agent 协作约定（issue tracker、domain docs）
 - 运行时零第三方依赖（node:sqlite 与原生类型擦除），Node ≥ 22.18；TypeScript 为开发依赖。
 - 全仓 `.ts`（`core/`、`test/`、`scripts/`）：Node 原生类型擦除直接运行，没有构建步骤，`import` 必须写 `.ts` 后缀；`npm run typecheck` 覆盖这三处，`node --test` 会自动发现 `test/*.test.ts`。编译期负例放 `type-tests/`（`node --test` 不扫该目录）。
 - 配置即代码（v0.2.0 加载序）：用户声明在 `~/.llm-cpr/policy.ts`（存在则优先，坏文件原样抛拒启动），否则内置 `core/policy/mine.ts`；密钥在 `~/.llm-cpr/.env`（引擎自加载、只填缺失键，`CPR_ENV_FILE` 接缝优先）。仓库只放 `.env.example` 与 `policy.example.ts` 模板，用户真身不进仓、不进 release。
-- 生产运行副本在 `/root/.local/lib/coding-plan-router/current`，SQLite 在 `/root/.local/share/coding-plan-router/`；源码树不是生产运行目录，发布/回滚见 `docs/deployment.md`（通用版）；本机专属部署事实以技能 `llm-cpr` 的 `references/production-deployment.md` 为准。
+- 生产运行副本在 `~/.local/lib/llm-cpr/versions/<v>/app`（`current` 软链切换，ADR-0009），配置/密钥/数据库在 `~/.llm-cpr/`；旧 `/root/.local/lib|share/coding-plan-router/` 路径已停用、纯为回滚材料；源码树不是生产运行目录，发布/回滚见 `docs/deployment.md`（通用版）；本机专属部署事实以技能 `llm-cpr` 的 `references/production-deployment.md` 为准。
 - 管理口永远只绑回环；开发期用端口覆盖 + 假上游冒烟，不碰生产端口。
-- 审计写失败只丢行不挡转发；不落请求正文。
+- 审计写失败只丢行不挡转发；请求正文默认不落库，租户 opt-in（`capture: true`）才写侧库 capture.db（内容寻址去重、TTL 清理）。
 - 正式改动单独中文 git commit，结束工作树应干净。
 - Hermes config.yaml / systemd 等生产改动须用户逐次明确同意。
 

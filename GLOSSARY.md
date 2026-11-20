@@ -1,4 +1,4 @@
-# Coding-Plan-Router
+# llm-cpr
 
 对多份 coding-plan 订阅做路由的 LLM 网关：把每个 agent 会话的推理请求发给当下最该用的那份订阅，并留下完整账本。
 
@@ -60,6 +60,20 @@ _Avoid_: config（配置文件形态已退役，见 ADR-0001）
 定期向各家上游拉取的余量读数；拉取失败或过期一律标「未知」，不假装有数。
 _Avoid_: cache
 
+### 观察层
+
+**Capture（正文捕获）**:
+租户级 opt-in 的请求正文落库：声明 `capture: true` 的租户把发往上游前的客户端原始请求体写入独立侧库 capture.db（与账本 data.db 分库，账本查询口径不被正文连累）；未 opt-in 的租户侧库文件都不落。只捕获请求侧，响应侧未实现（response_refs 预留）。
+_Avoid_: 日志正文（日志不含正文）, body logging（含糊）
+
+**Turn（轮）**:
+capture.db `turns` 表一行 = 一轮请求的正文索引：消息哈希清单（refs）+ 租户/身份/模型/字节等元数据；账本 requests 行经 `capture_id` 锚定到它，capture_id 有值但查无 turn 即降级缺行（跳过/超限/写失败），不能宣称完整。
+_Avoid_: request（另指账本行）
+
+**Content addressing（内容寻址）**:
+每条消息正文按盐化 sha256 只存一份（content 表），每轮重发的系统提示与历史不重复落盘；turns 只存哈希引用，TTL 清理判引用（仍被引用的正文不删）。
+_Avoid_: 去重缓存、dedup cache
+
 ### 交付与运行
 
 **Release**:
@@ -67,5 +81,5 @@ _Avoid_: cache
 _Avoid_: build（本项目无构建）, deploy 目录
 
 **Dashboard（看板）**:
-管理口承载的单文件静态页：每订阅一行额度柱状图 + 账本查询；只读，唯一写操作是刷新快照。
-_Avoid_: admin UI, console
+管理口承载的多页静态后台（v2）：概览 / 请求 / 会话 / 轨迹 / 观测五页 + 共享资产，服务端分页排序；只读，唯一写操作是刷新快照。轨迹页按 `capture_id` 直达正文拼装视图。
+_Avoid_: admin UI, console, 单页 dashboard（旧形态已删）
