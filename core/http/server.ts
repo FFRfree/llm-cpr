@@ -270,10 +270,7 @@ function healthyBackend(backend: Backend, timeoutMs = 500): Promise<boolean> {
   });
 }
 
-async function firstHealthyBackend(backends: Backend[]): Promise<Backend | undefined> {
-  for (const backend of backends) if (await healthyBackend(backend)) return backend;
-  return undefined;
-}
+// firstHealthyBackend 已由 handler 内的 firstHealthy（带 probe 计时包装）取代，原函数删除。
 
 // 内存健康追踪：record() 记账路径顺手喂入，decide ctx 的 candidates[].recent 从这里取。
 // 只在内存里（重启归 undefined = 窗口内没观察到失败 ≠ 健康，观察盲区语义同快照未知）；零查询成本。
@@ -295,6 +292,63 @@ function createHealthTracker() {
       if (!windowed.length) return undefined;
       const last = windowed[windowed.length - 1];
       return { fails: windowed.length, lastStatus: last.status, lastErrorAt: last.ts };
+    },
+  };
+}
+
+// ---- perf 打点（spec .scratch/perf-instrumentation/spec.md）：转发路径分段计时，每请求一行 [perf] ----
+// 只测「我们自己的代码开销」：startedAt（选路完成、开始连上游）之前的 read/parse/identity/snapshot/
+// route（probe 另计，route−probe=纯决策）/prepare/capture 各段 + forward{ttft,stream}。不含身份明文、
+// 会话 id、正文（journal 可读，纪律同账本的 identity_hash）；401/404/本地 400 走 suppress 不发行。
+// res close 时幂等发射；aborted = 连接未正常写完（客户端取消/半截流），与账本 499 同义。
+function createPerfSpan(res: ServerResponse) {
+  const marks: Record<string, number> = {};
+  let routeT0: number | null = null;
+  let attempts = 0;
+  let forward: { ttft: number | null; stream: number | null } | null = null;
+  let bytes: number | null = null;
+  let model: string | null = null;
+  let tenant: string | null = null;
+  let done = false;
+  const round = (value: number | undefined): number | null => value === undefined ? null : Math.round(value * 10) / 10;
+  return {
+    add(key: string, ms: number): void { marks[key] = (marks[key] ?? 0) + ms; },
+    run<T>(key: string, fn: () => T): T {
+      const t0 = performance.now();
+      try { return fn(); } finally { marks[key] = (marks[key] ?? 0) + (performance.now() - t0); }
+    },
+    async runAsync<T>(key: string, fn: () => Promise<T>): Promise<T> {
+      const t0 = performance.now();
+      try { return await fn(); } finally { marks[key] = (marks[key] ?? 0) + (performance.now() - t0); }
+    },
+    routeStart(): void { routeT0 = performance.now(); },
+    routeEnd(): void { if (routeT0 !== null) { marks.route = (marks.route ?? 0) + (performance.now() - routeT0); routeT0 = null; } },
+    countAttempt(): void { attempts += 1; },
+    setForward(timings: ForwardTimings | undefined): void { if (timings) forward = { ttft: timings.ttftMs, stream: timings.streamMs }; },
+    meta(input: { bytes: number; model: string; tenant: string }): void { bytes = input.bytes; model = input.model; tenant = input.tenant; },
+    suppress(): void { done = true; },
+    finish(logger: Logger): void {
+      if (done) return;
+      done = true;
+      const view: Record<string, unknown> = {
+        ts: Date.now(),
+        ms: {
+          read: round(marks.read), parse: round(marks.parse), identity: round(marks.identity), snapshot: round(marks.snapshot),
+          route: round(marks.route), probe: round(marks.probe), prepare: round(marks.prepare), capture: round(marks.capture),
+        },
+        attempts,
+        forward,
+        status: res.statusCode,
+        bytes, model, tenant,
+      };
+      if (!res.writableFinished) view.aborted = true;
+      logger.log?.(`[perf] ${JSON.stringify(view)}`);
+    },
+    // 正常完成在 'finish'（响应写完）即发射——keep-alive 客户端下 'close' 要等连接断开，
+    // 日志会延迟数秒甚至攒到连接池回收；'close' 只兜 aborted（客户端取消/半截流，无 finish）。
+    attach(logger: Logger): void {
+      res.once('finish', () => this.finish(logger));
+      res.once('close', () => this.finish(logger));
     },
   };
 }
@@ -410,23 +464,26 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
     }
     if (!chatCompletions.matches(req.method, req.url)) return json(res, 404, { error: { message: 'not found', type: 'not_found_error' } });
     try {
-      const bytes = await readBody(req);
-      if (res.destroyed) return;
+      const span = createPerfSpan(res);
+      span.attach(logger);
+      const bytes = await span.runAsync('read', () => readBody(req));
+      if (res.destroyed) { span.suppress(); return; }
       let parsed: unknown;
-      try { parsed = JSON.parse(bytes.toString('utf8')); } catch { return json(res, 400, { error: { message: 'invalid JSON request body', type: 'invalid_request_error' } }); }
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return json(res, 400, { error: { message: 'request body must be a JSON object', type: 'invalid_request_error' } });
+      try { parsed = span.run('parse', () => JSON.parse(bytes.toString('utf8'))); } catch { span.suppress(); return json(res, 400, { error: { message: 'invalid JSON request body', type: 'invalid_request_error' } }); }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { span.suppress(); return json(res, 400, { error: { message: 'request body must be a JSON object', type: 'invalid_request_error' } }); }
       const body = parsed as ChatBody;
       const requestedModel = p.models.find((entry) => entry.id === body.model);
-      if (!requestedModel) return json(res, 400, { error: { message: `model not allowed: ${String(body.model ?? '')}`, type: 'invalid_request_error' } });
-      if (tenant.models && !tenant.models.includes(requestedModel.id)) return json(res, 400, { error: { message: `model not allowed for tenant ${tenant.name}: ${requestedModel.id}`, type: 'invalid_request_error' } });
-      const identity = resolveIdentity({ headers: req.headers, body, remoteAddress: req.socket.remoteAddress ?? 'unknown', identityHeader: identityHeaderOf(p) });
-      const pinnedName = events.affinity(tenant.name, identity.kind, identity.key);
+      if (!requestedModel) { span.suppress(); return json(res, 400, { error: { message: `model not allowed: ${String(body.model ?? '')}`, type: 'invalid_request_error' } }); }
+      if (tenant.models && !tenant.models.includes(requestedModel.id)) { span.suppress(); return json(res, 400, { error: { message: `model not allowed for tenant ${tenant.name}: ${requestedModel.id}`, type: 'invalid_request_error' } }); }
+      span.meta({ bytes: bytes.length, model: requestedModel.id, tenant: tenant.name });
+      const identity = span.run('identity', () => resolveIdentity({ headers: req.headers, body, remoteAddress: req.socket.remoteAddress ?? 'unknown', identityHeader: identityHeaderOf(p) }));
+      const pinnedName = span.run('identity', () => events.affinity(tenant.name, identity.kind, identity.key));
       let backend: Backend | undefined = pinnedName ? tenantBackends.find((candidate) => candidate.name === pinnedName) : undefined;
       const stalePin = Boolean(pinnedName && !backend);
       if (stalePin) logger.warn?.(`[routing] pinned backend "${pinnedName}" no longer available for tenant ${tenant.name}; re-selecting for identity ${identity.kind}`);
       const snaps = snapshots;
       if (!backend && snaps.peek().fetchedAt === null) {
-        await snaps.refresh();
+        await span.runAsync('snapshot', () => snaps.refresh());
         if (res.destroyed) return;
       }
       const longSessionMin = Number(p.routing?.long_session_min_requests ?? 10);
@@ -442,6 +499,17 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       // 候选过滤同源（policy/ctx.ts routeScope）：租户池 + 模型支持，一处定义两处消费（server + 回放）。
       const candidates: Backend[] = routeScope(tenantBackends, undefined, requestedModel);
       if (!candidates.length) return json(res, 400, { error: { message: 'model is not available on configured backends', type: 'invalid_request_error' } });
+      // perf（spec .scratch/perf-instrumentation/spec.md）：route 段从候选过滤后起、到改绑事件落定止；
+      // 探活走本地包装另计 probe 段（分析时 route−probe = 纯决策开销），firstHealthy 不再吃 module 级探活。
+      const probeHealthy = async (target: Backend): Promise<boolean> => {
+        const t0 = performance.now();
+        try { return await healthyBackend(target); } finally { span.add('probe', performance.now() - t0); }
+      };
+      const firstHealthy = async (pool: Backend[]): Promise<Backend | undefined> => {
+        for (const candidate of pool) if (await probeHealthy(candidate)) return candidate;
+        return undefined;
+      };
+      span.routeStart();
       const requestView = { model: requestedModel.id, chars: bytes.length, messages: Array.isArray(body.messages) ? body.messages.length : 0 };
       // 决策点 ctx 同源构造（observability 票 02 抽取；回放沙盘 2026-11-19 经用户拍板移除，
       // 同源构造器保留）：正常路由与改绑决策共用这一个工厂，别在别处手搓第二份。
@@ -489,7 +557,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
             decided = true;
             if (!backend || stalePin) {
               // 无亲和（或亲和已失效）时的 policy 首选：不健康即 503，不做备选回退（钉死语义）。
-              if (!await healthyBackend(pick.backend)) {
+              if (!await probeHealthy(pick.backend)) {
                 if (res.destroyed) return;
                 return json(res, 503, { error: { message: 'no healthy backend available', type: 'routing_error' } });
               }
@@ -499,7 +567,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
               attempt = { source: 'policy', note: decision.reason };
             } else if (pick.backend.name !== backend.name) {
               // 有亲和时的逐请求覆写：目标不健康则保亲和并告警（不为坏目标作废可用会话）。
-              if (await healthyBackend(pick.backend)) {
+              if (await probeHealthy(pick.backend)) {
                 backend = pick.backend;
                 effectiveModel = pick.model;
                 attempt = { source: 'policy', note: decision.reason };
@@ -531,7 +599,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
           // builtin keep 仅在亲和合法时出现（ctx.session.affinity 有效且支持模型）。
           backend = tenantBackends.find((candidate) => candidate.name === pinnedName);
         } else if (built.decision) {
-          const picked = await firstHealthyBackend(built.orderedBackends ?? []);
+          const picked = await firstHealthy(built.orderedBackends ?? []);
           if (res.destroyed) return;
           if (!picked) return json(res, 503, { error: { message: 'no healthy backend available', type: 'routing_error' } });
           backend = picked;
@@ -554,26 +622,30 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
         try { events.append({ kind: 'route.rebind', tenant: tenant.name, identity, backendName: backend.name, detail: { trigger: stalePin ? 'stale-pin' : 'policy-override', source: attempt?.source ?? 'builtin', ...(attempt?.note ? { note: attempt.note } : {}) } }); }
         catch (error) { logger.warn?.(`[events] route.rebind append failed: ${messageOf(error)}`); }
       }
+      span.routeEnd();
       const startedAt = Date.now();
       // 正文捕获（observability 票 01）：仅租户 opt-in 且请求已走到转发路径时捕获客户端
       // 原始 body（转发前、路由决策后——未发出的请求不占存储）。锚点 captureId 随账本行落
       // capture_id 列，02-05 的关联查询靠它；侧库降级/队列满时 turn 可能缺行（不可宣称完整）。
       let captureId: string | null = null;
       if (capture && captureTenantNames.has(tenant.name)) {
-        const outcome = capture.capture({ tenant: tenant.name, identity: identity.key, identityKind: identity.kind, model: requestedModel.id, body: parsed, rawBytes: bytes.length });
+        const outcome = span.run('capture', () => capture.capture({ tenant: tenant.name, identity: identity.key, identityKind: identity.kind, model: requestedModel.id, body: parsed, rawBytes: bytes.length }));
         captureId = outcome.captureId;
         if (outcome.skipped === 'oversize') logger.warn?.(`[capture] request body ${bytes.length} bytes exceeds capture.max_body_bytes; turn skipped`);
       }
       let quotaRetries = 0;
       let lastResult: QuotaResult | undefined;
       while (true) {
+        span.countAttempt();
         // Narrowed per iteration: migration reassigns `backend` between attempts.
         const active: Backend = backend;
         const upstreamKey = env[active.key_env];
         if (!upstreamKey) return json(res, 500, { error: { message: `missing credential environment variable: ${active.key_env}`, type: 'configuration_error' } });
-        const translated = chatCompletions.prepareRequest({ config: { models: p.models, identityHeader: identityHeaderOf(p) }, model: effectiveModel, body, headers: req.headers, backend: active, upstreamKey, identity });
+        const translated = span.run('prepare', () => chatCompletions.prepareRequest({ config: { models: p.models, identityHeader: identityHeaderOf(p) }, model: effectiveModel, body, headers: req.headers, backend: active, upstreamKey, identity }));
         const translatedModel = translated.body.model;
+        const bodyStr = span.run('prepare', () => JSON.stringify(translated.body));
         const record: (status: number, payload: string | ChatUsage | null, timings?: ForwardTimings) => void = (status, payload, timings) => {
+          span.setForward(timings);
           audit.record({
             ts: startedAt, tenant: tenant.name, identity: identity.key, identity_kind: identity.kind, subscription: active.name,
             account: active.account ?? active.name, model: requestedModel.id, translated_model: typeof translatedModel === 'string' ? translatedModel : null,
@@ -588,7 +660,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
           account: active.account ?? active.name, model: requestedModel.id, translated_model: typeof translatedModel === 'string' ? translatedModel : null,
           path: req.url, status, ms: Date.now() - startedAt, capture_id: captureId,
         });
-        const result = await forwardAttempt({ res, backend: active, body: JSON.stringify(translated.body), headers: translated.headers, startedAt, onComplete: record, timeoutMs: upstreamTimeoutMs });
+        const result = await forwardAttempt({ res, backend: active, body: bodyStr, headers: translated.headers, startedAt, onComplete: record, timeoutMs: upstreamTimeoutMs });
         if (result.forwarded) return;
         if (res.destroyed) { record(499, null); return; }
         lastResult = result;
@@ -646,7 +718,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
               policyErrorEvent(`invalid decision: ${JSON.stringify(decision)}`);
             }
             const pick = resolvePolicyPick(decision, requestedModel);
-            if (pick && pick.backend.name !== active.name && await healthyBackend(pick.backend)) {
+            if (pick && pick.backend.name !== active.name && await probeHealthy(pick.backend)) {
               if (rebindTo(pick.backend, { source: 'policy', note: decision.reason })) continue;
               return passthroughError(res, lastResult!); // 事务失败（degraded）：放弃改绑，保持原亲和透传
             }
@@ -661,7 +733,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
             giveUp(built.hold ?? 'no-alternate');
             return passthroughError(res, lastResult!);
           }
-          const replacement = await firstHealthyBackend(built.orderedBackends ?? []);
+          const replacement = await firstHealthy(built.orderedBackends ?? []);
           if (res.destroyed) { record(499, null); return; }
           if (replacement) {
             if (rebindTo(replacement, { source: 'builtin', note: built.note })) continue;
