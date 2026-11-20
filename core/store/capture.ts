@@ -15,6 +15,8 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { chatCompletionsItems, type CaptureItem } from '../protocols/items.ts';
 import { scanForLeaks } from '../observability/leaks.ts';
+import { computeCacheEfficiency, DEFAULT_RATES, threadKeyOf } from '../observability/cache-efficiency.ts';
+import type { EfficiencyRates, EfficiencyUsage } from '../observability/cache-efficiency.ts';
 import type { LeakCategory, LeakHit } from '../observability/leaks.ts';
 import type { Logger } from '../contracts.ts';
 
@@ -110,6 +112,30 @@ export interface CacheChainEntry {
   // 本轮 bytes − 上一轮 bytes（与哈希结论互校的 chars 口径）。
   chars_delta: number | null;
   prev_message_count: number | null;
+  // ---- 线程维度（family-observability 票 02）：deleg 家族共享身份，时间序「上一轮」可能
+  // 是另一个孩子的轮次——断裂判定必须在线程内做，跨线程边界单列不算断裂。 ----
+  // 线程键 = refs[1]（首条 user 消息哈希；refs[0] 是 system，兄弟间相同；不足两条回落）。
+  thread_key: string;
+  // 与时间序上一轮的关系：'first'（窗口内首轮）/ 'same-thread' / 'thread-switch'（切了孩子）。
+  boundary: 'first' | 'same-thread' | 'thread-switch';
+  // 线程内上一轮（窗口截断或缺行时为 null——不算错误，只缺对比基线）。
+  prev_in_thread_id: number | null;
+  prev_in_thread_ts: number | null;
+  // 线程内口径的前缀对比（与 common_prefix 同算法，previous 换成线程内上一轮）。
+  common_prefix_in_thread: number | null;
+  first_diff_in_thread_index: number | null;
+  first_diff_in_thread_role: string | null;
+}
+
+// 线程汇总（票 02）：一个 identity（deleg 家族）内按首条 user 消息拆出的并行孩子清单。
+export interface CacheThreadSummary {
+  key: string;
+  // refs[1] 消息正文截断（goal 开场白）；内容缺失（TTL 清理/降级）时为占位文案。
+  label: string;
+  first_ts: number;
+  last_ts: number;
+  turn_count: number;
+  bytes: number;
 }
 
 // 工具/skill 分析（票 05）读侧产物：tokens_est 沿用 3.5 字符/token 折算口径。
@@ -425,22 +451,34 @@ export class CaptureStore {
     } catch { return null; }
   }
 
-  // 缓存取证（票 03）：同 (tenant, identity) 轮序相邻对比。common_prefix = 与上一轮逐位
-  // 同哈希的条数（prompt cache 前缀连续性的代理指标）；first_diff = 第一条分歧的位置与角色；
-  // chars_delta 供与哈希结论互校。归因（改绑/压缩/改提示词）由端点层合并事件账做，措辞「证据指向」。
+  // 缓存取证（observability 票 03 + family-observability 票 02）：同 (tenant, identity)
+  // 轮序相邻对比 + 线程内对比。common_prefix = 与上一轮逐位同哈希的条数（prompt cache
+  // 前缀连续性的代理指标）；first_diff = 第一条分歧的位置与角色；chars_delta 供与哈希结论
+  // 互校。deleg 家族（多 subagent 共享一个会话身份）交错落库时时间序「上一轮」可能是另一个
+  // 孩子的轮次——那时 common_prefix 只剩 system 一条是**假断裂**，所以另给线程内口径
+  // （thread_key = refs[1]，首条 user 消息哈希；孩子的 goal 全程留上下文，键恒定），
+  // 断裂判定看 common_prefix_in_thread，跨线程边界单列 boundary='thread-switch'。
+  // 归因（改绑/压缩/改提示词）由端点层合并事件账做，措辞「证据指向」。
   // limit 在 SQL 层限行（review P1：长会话全量读取会拖住同进程转发），取最新 N 轮再逆序恢复升序。
-  cacheChain(tenant: string | undefined, identity: string, limit = 100): CacheChainEntry[] {
+  cacheChain(tenant: string | undefined, identity: string, limit = 100): { chain: CacheChainEntry[]; threads: CacheThreadSummary[] } {
     const count = Math.max(2, Math.min(500, Math.trunc(Number(limit) || 100)));
     const rawRows = tenant === undefined
       ? this.#db.prepare('SELECT id,capture_id,ts,message_count,bytes,refs FROM turns WHERE identity=? ORDER BY ts DESC, id DESC LIMIT ?').all(identity, count)
       : this.#db.prepare('SELECT id,capture_id,ts,message_count,bytes,refs FROM turns WHERE tenant=? AND identity=? ORDER BY ts DESC, id DESC LIMIT ?').all(tenant, identity, count);
     const rows = (rawRows as unknown as Array<{ id: number; capture_id: string; ts: number; message_count: number; bytes: number; refs: string }>).reverse();
     const chain: CacheChainEntry[] = [];
-    let previous: { id: number; ts: number; refs: string[]; message_count: number; bytes: number } | null = null;
+    const threadMeta = new Map<string, { first_ts: number; last_ts: number; turn_count: number; bytes: number }>();
+    const lastInThread = new Map<string, { id: number; ts: number; refs: string[] }>();
+    let previous: { id: number; ts: number; refs: string[]; message_count: number; bytes: number; thread_key: string } | null = null;
     for (const row of rows) {
       const refs = JSON.parse(row.refs) as string[];
+      // 线程键：refs[1] = 首条 user 消息（refs[0] 是 system，兄弟间相同）；不足两条回落——
+      // 与 cache-efficiency.ts 的 threadKeyOf 是同一把钥匙（直接复用，防两份实现漂移）。
+      const threadKey = threadKeyOf(refs);
       const entry: CacheChainEntry = { id: row.id, capture_id: row.capture_id, ts: row.ts, bytes: row.bytes, message_count: row.message_count,
-        prev_id: null, prev_ts: null, common_prefix: refs.length, first_diff_index: null, first_diff_role: null, chars_delta: null, prev_message_count: null };
+        prev_id: null, prev_ts: null, common_prefix: refs.length, first_diff_index: null, first_diff_role: null, chars_delta: null, prev_message_count: null,
+        thread_key: threadKey, boundary: 'first', prev_in_thread_id: null, prev_in_thread_ts: null,
+        common_prefix_in_thread: null, first_diff_in_thread_index: null, first_diff_in_thread_role: null };
       if (previous) {
         const bound = Math.min(previous.refs.length, refs.length);
         let i = 0;
@@ -455,10 +493,89 @@ export class CaptureStore {
           entry.first_diff_role = refs[i] !== undefined ? this.contentRole(refs[i]) : null; // 本轮在该位置的消息（i===refs.length 时本轮是删减）
         }
       }
+      // boundary 按**时间序上一轮**的线程键判定（票 02 定义）：无上一轮=first；同键=same-thread；
+      // 异键=thread-switch（切了孩子，不算断裂——哪怕本线程在线程内已有过轮次，见 b2 场景）。
+      // 线程内延续信息由 prev_in_thread_* 携带，与 boundary 正交。
+      const prevInThread = lastInThread.get(threadKey) ?? null;
+      if (previous) {
+        if (previous.thread_key === threadKey) entry.boundary = 'same-thread';
+        else entry.boundary = 'thread-switch';
+      }
+      if (prevInThread) {
+        entry.prev_in_thread_id = prevInThread.id;
+        entry.prev_in_thread_ts = prevInThread.ts;
+        const bound = Math.min(prevInThread.refs.length, refs.length);
+        let i = 0;
+        while (i < bound && prevInThread.refs[i] === refs[i]) i += 1;
+        entry.common_prefix_in_thread = i;
+        if (i < bound || i < prevInThread.refs.length || i < refs.length) {
+          entry.first_diff_in_thread_index = i;
+          entry.first_diff_in_thread_role = refs[i] !== undefined ? this.contentRole(refs[i]) : null;
+        }
+      }
+      lastInThread.set(threadKey, { id: row.id, ts: row.ts, refs });
+      const meta = threadMeta.get(threadKey);
+      if (meta) {
+        meta.last_ts = row.ts;
+        meta.turn_count += 1;
+        meta.bytes += row.bytes;
+      } else {
+        threadMeta.set(threadKey, { first_ts: row.ts, last_ts: row.ts, turn_count: 1, bytes: row.bytes });
+      }
       chain.push(entry);
-      previous = { id: row.id, ts: row.ts, refs, message_count: row.message_count, bytes: row.bytes };
+      previous = { id: row.id, ts: row.ts, refs, message_count: row.message_count, bytes: row.bytes, thread_key: threadKey };
     }
-    return chain;
+    const threads: CacheThreadSummary[] = [...threadMeta.entries()]
+      .map(([key, meta]) => ({
+        key,
+        label: key === '(none)' ? '(no messages)' : this.contentText(key, 160),
+        first_ts: meta.first_ts, last_ts: meta.last_ts, turn_count: meta.turn_count, bytes: meta.bytes,
+      }))
+      .sort((a, b) => a.first_ts - b.first_ts || a.key.localeCompare(b.key));
+    return { chain, threads };
+  }
+
+  // 内容哈希对应消息的正文文本（线程 label 用）：字符串 content 原样截断，结构化 content 转字符串。
+  contentText(hash: string, clip = 160): string {
+    const row = this.#db.prepare('SELECT body FROM content WHERE hash=?').get(hash) as { body: string } | undefined;
+    if (!row) return '(content unavailable)';
+    try {
+      const parsed = JSON.parse(row.body) as { content?: unknown };
+      const text = typeof parsed.content === 'string' ? parsed.content : JSON.stringify(parsed.content ?? parsed);
+      return text.length > clip ? `${text.slice(0, clip)}…` : text;
+    } catch { return '(content unavailable)'; }
+  }
+
+  // 缓存效率（family-observability 票 03）：理想消耗/实际消耗。CaptureStore 只出侧库数据
+  // （轮次 + content.bytes + 线程 label），usage 三分量 + 原始 usage_json 来自 data.db，
+  // 由 admin 层按 capture_id 精确喂入（audit.usageByCaptureIds）——本库不碰账本连接，
+  // 且窗口按轮次锚点取 usage，不会与「最新 N 行」错位（review P3-6）。rates 可覆盖。
+  turnRefsWindow(tenant: string | undefined, identity: string, limit = 100): Array<{ capture_id: string; ts: number; refs: string[] }> {
+    const count = Math.max(1, Math.min(500, Math.trunc(Number(limit) || 100)));
+    const rawRows = tenant === undefined
+      ? this.#db.prepare('SELECT capture_id,ts,refs FROM turns WHERE identity=? ORDER BY ts DESC, id DESC LIMIT ?').all(identity, count)
+      : this.#db.prepare('SELECT capture_id,ts,refs FROM turns WHERE tenant=? AND identity=? ORDER BY ts DESC, id DESC LIMIT ?').all(tenant, identity, count);
+    return (rawRows as unknown as Array<{ capture_id: string; ts: number; refs: string }>).reverse()
+      .map((row) => ({ capture_id: row.capture_id, ts: row.ts, refs: JSON.parse(row.refs) as string[] }));
+  }
+
+  cacheEfficiency(turns: Array<{ capture_id: string; ts: number; refs: string[] }>,
+    usageByCaptureId: Map<string, EfficiencyUsage>,
+    rates: EfficiencyRates = DEFAULT_RATES): ReturnType<typeof computeCacheEfficiency> {
+    const bytesCache = new Map<string, number | null>();
+    const labels = new Map<string, string>();
+    for (const turn of turns) {
+      for (const hash of turn.refs) if (!bytesCache.has(hash)) bytesCache.set(hash, this.contentBytes(hash));
+      const key = threadKeyOf(turn.refs);
+      if (!labels.has(key) && key !== '(none)') labels.set(key, this.contentText(key, 160));
+    }
+    return computeCacheEfficiency(turns, usageByCaptureId, (hash) => bytesCache.get(hash) ?? null, rates, labels);
+  }
+
+  // 内容哈希对应消息的字节数（token 分摊用）。
+  contentBytes(hash: string): number | null {
+    const row = this.#db.prepare('SELECT bytes FROM content WHERE hash=?').get(hash) as { bytes: number } | undefined;
+    return row ? Number(row.bytes) : null;
   }
 
   // 工具/skill 分析（票 05）：窗口内逐轮解析正文聚合。读侧按需（默认 7 天 / 最多 500 轮），

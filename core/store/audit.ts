@@ -130,6 +130,30 @@ export class UsageAudit {
     });
   }
 
+  // family-observability 票 03：按 capture_id 精确取 usage 三分量 + 原始 usage_json（账本形状
+  // 探测用）。「最新 N 行」窗口会与轮次窗口错位（无 capture_id 的行占位），按锚点直查根除缺口
+  // （review P3-6）；查无行的轮 = 账本真缺行，由调用方双侧剔除如实报数。上限 500（轮次窗口同宽）。
+  usageByCaptureIds(captureIds: string[]): Map<string, { prompt_tokens: number | null; cache_hit_tokens: number | null; cache_write_tokens: number | null; cache_observed: boolean | null; usage_json: string | null }> {
+    const out = new Map<string, { prompt_tokens: number | null; cache_hit_tokens: number | null; cache_write_tokens: number | null; cache_observed: boolean | null; usage_json: string | null }>();
+    const ids = [...new Set(captureIds)].slice(0, 500);
+    if (ids.length === 0) return out;
+    return this.#read(out, (db) => {
+      const placeholders = ids.map(() => '?').join(',');
+      const rows = db.prepare(`SELECT capture_id, prompt_tokens, cache_hit_tokens, cache_write_tokens, cache_observed, usage_json FROM requests WHERE capture_id IN (${placeholders})`).all(...ids) as Array<Record<string, unknown>>;
+      for (const row of rows) {
+        if (typeof row.capture_id !== 'string') continue;
+        out.set(row.capture_id, {
+          prompt_tokens: typeof row.prompt_tokens === 'number' ? row.prompt_tokens : null,
+          cache_hit_tokens: typeof row.cache_hit_tokens === 'number' ? row.cache_hit_tokens : null,
+          cache_write_tokens: typeof row.cache_write_tokens === 'number' ? row.cache_write_tokens : null,
+          cache_observed: row.cache_observed === 1 ? true : row.cache_observed === 0 ? false : null,
+          usage_json: typeof row.usage_json === 'string' ? row.usage_json : null,
+        });
+      }
+      return out;
+    });
+  }
+
   // 管理口分页读（后台 v2）：页码/排序/筛选在服务端裁决，前端不再拉全量自排。
   // 排序列走白名单字典（排序键永不拼进 SQL 之外的东西）；days 按北京时间日切（用户在 UTC+8）。
   static readonly #REQUEST_SORT: Record<string, string> = {

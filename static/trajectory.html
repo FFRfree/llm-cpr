@@ -5,13 +5,31 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>轨迹 · LLM CPR 后台</title>
 <link rel="stylesheet" href="/assets/app.css">
+<style>
+/* family-observability 票 01：中列树形（父会话 → 线程 → 轮次）。单线程会话退化为平铺，不加折叠层。 */
+#traj-family{padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted)}
+#traj-family .fam-line{margin:0 0 2px}
+.traj-thread>.th-head{display:flex;gap:6px;align-items:baseline;padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border);background:var(--surface)}
+.traj-thread>.th-head:hover{background:var(--hover)}
+.th-dot{flex:none;width:8px;height:8px;border-radius:50%;transform:translateY(-1px)}
+.th-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+.th-meta{flex:none;color:var(--muted);font-size:10px;font-variant-numeric:tabular-nums}
+.th-caret{flex:none;color:var(--muted);font-size:10px}
+.traj-thread>ul{list-style:none;margin:0;padding:0}
+.traj-thread>ul.hidden{display:none}
+/* 树形层级感：轮次行缩进 + 左侧引导线挂到所属线程。 */
+.traj-thread>ul li{padding-left:18px;margin-left:14px;border-left:2px solid color-mix(in srgb, var(--border) 70%, transparent)}
+.t-flag.switch{color:var(--muted)}
+</style>
 </head>
 <body>
 <main>
 <h2>轨迹查看器</h2>
 <p class="muted" style="font-size:12px;margin:0 0 4px">
-  每轮请求的完整 messages 数组（内容寻址侧库逐字节还原）。左侧挑会话 → 中间按轮翻 → 右侧读正文。
-  绿色「同上轮」= 这条消息与上一轮哈希一致（客户端重发的历史，正是缓存命中的部分）；黄色「新」= 本轮才出现的内容。
+  每轮请求的完整 messages 数组（内容寻址侧库逐字节还原）。左侧挑会话 → 中间按「线程」看（deleg
+  家族共享会话身份：多个 subagent 的轮次交错落库，线程键 = 首条 user 消息指纹，同一孩子的所有轮恒定）
+  → 右侧读正文。绿色「同上轮」= 与线程内上一轮哈希一致（缓存命中的部分）；红色 = 线程内前缀断裂；
+  「切线」= 时间序上一轮是另一个孩子的轮次，不算断裂。
 </p>
 <div class="toolbar">
   <input id="f-search" type="search" placeholder="会话 ID 过滤…" autocomplete="off">
@@ -23,7 +41,8 @@
     <ul id="traj-sessions"></ul>
   </section>
   <section id="pane-turns">
-    <h3>轮次</h3>
+    <h3>线程 / 轮次</h3>
+    <div id="traj-family"></div>
     <ul id="traj-turns"></ul>
   </section>
   <section id="pane-view">
@@ -37,6 +56,9 @@
 <script>
 'use strict';
 const state = { sessions: [], identity: null, tenant: null, turns: [], refsByTurn: new Map(), turnId: null, chainByTurn: new Map() };
+const THREAD_COLORS = ['#5b8def', '#3fae7a', '#d29a3a', '#9a6fd0', '#d05b6a', '#3a9ad2', '#7aa23f', '#b06fd0'];
+// 树形里的紧凑时间（HH:MM:SS）：fmtClock 带全日期，260px 中列会撑出横向滚动。
+const fmtTime = (ts) => ts ? new Date(ts).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
 
 /* ---- 左列：会话清单（取账本会话，租户按全局筛选；无捕获的会话点开轮次会是空列表） ---- */
 async function loadSessions() {
@@ -50,42 +72,97 @@ async function loadSessions() {
     </li>`).join('') || '<li class="empty">没有匹配的会话</li>';
 }
 
-/* ---- 中列：选中会话的轮次时间线（升序），用缓存取证链标「前缀命中 / 断裂」 ---- */
+/* 会话头部：家族徽标 + 缓存效率（family-observability 票 03；获取失败静默）。 */
+async function loadFamilyHeader(turns) {
+  const chainCount = state.chainByTurn.size;
+  const threadKeys = new Set();
+  for (const entry of state.chainByTurn.values()) threadKeys.add(entry.thread_key);
+  const totalTurns = turns.length;
+  let line1 = `<div class="fam-line"><b>${threadKeys.size > 1 ? 'deleg 家族' : '单线程'}</b> · ${threadKeys.size || '?'} 线程 · ${totalTurns} 轮${chainCount ? '' : ' · 取证链不可用'}</div>`;
+  $('#traj-family').innerHTML = line1;
+  if (!state.identity) return;
+  try {
+    const eff = await fetchJson(`/api/capture/cache-efficiency?identity=${encodeURIComponent(state.identity)}&tenant=${encodeURIComponent(state.tenant)}&limit=500`);
+    const pct = (v) => v == null ? '—' : `${(v * 100).toFixed(1)}%`;
+    const k = (v) => v == null ? '—' : v.toLocaleString(undefined, { maximumFractionDigits: 0 });
+    $('#traj-family').innerHTML =
+      `${line1}<div class="fam-line">缓存效率 <b>${pct(eff.totals?.efficiency)}</b> · 浪费 ${pct(eff.totals?.waste_share)} · 重读 ×${k(eff.totals?.read_multiplier)} · 语料 ~${k(eff.totals?.corpus_tokens_est)} tok${eff.totals?.turns_skipped_no_usage ? ` · ${eff.totals.turns_skipped_no_usage} 轮无 usage 未计入` : ''}</div>`;
+  } catch { /* 效率条失败不挡轨迹 */ }
+}
+
+/* ---- 中列：选中会话的轮次，按线程分组成树（升序） ---- */
 async function loadTurns(identity, tenant) {
   state.identity = identity; state.tenant = tenant;
   state.turnId = null; state.refsByTurn = new Map(); state.chainByTurn = new Map();
   const [turns, forensics] = await Promise.all([
     fetchJson(`/api/capture/turns?identity=${encodeURIComponent(identity)}&tenant=${encodeURIComponent(tenant)}&limit=500`),
-    fetchJson(`/api/capture/cache-forensics?identity=${encodeURIComponent(identity)}&tenant=${encodeURIComponent(tenant)}&limit=200`).catch(() => null),
+    fetchJson(`/api/capture/cache-forensics?identity=${encodeURIComponent(identity)}&tenant=${encodeURIComponent(tenant)}&limit=500`).catch(() => null),
   ]);
   state.turns = (turns.turns || []).slice().reverse(); // API 返回新→旧，时间线要旧→新
   if (forensics) {
-    for (let i = 0; i < forensics.chain.length; i++) state.chainByTurn.set(forensics.chain[i].id, forensics.chain[i]);
+    for (let i = 0; i < (forensics.chain || []).length; i++) state.chainByTurn.set(forensics.chain[i].id, forensics.chain[i]);
   }
-  $('#traj-turns').innerHTML = state.turns.map((t, i) => {
+  // 分线程：turn → threadKey（取证链缺行的老轮次落 '(窗口外)' 桶）。
+  const byThread = new Map();
+  for (const t of state.turns) {
     const chain = state.chainByTurn.get(t.id);
-    const prevId = i > 0 ? state.turns[i - 1].id : null;
+    const key = chain ? chain.thread_key : '(窗口外)';
+    (byThread.get(key) || byThread.set(key, []).get(key)).push(t);
+  }
+  const threadOrder = (forensics?.threads || []).map((th) => th.key).filter((key) => byThread.has(key));
+  for (const key of byThread.keys()) if (!threadOrder.includes(key)) threadOrder.push(key);
+  const labelOf = (key) => (forensics?.threads || []).find((th) => th.key === key)?.label ?? key;
+  const multi = threadOrder.length > 1;
+
+  const turnHtml = (t, seq, threadLabel) => {
+    const chain = state.chainByTurn.get(t.id);
     let flag = '';
-    if (i === 0) flag = '<div class="t-flag ok">首轮 · 基线</div>';
-    else if (chain) {
-      if (chain.common_prefix === 0 && t.message_count > 0)
-        flag = `<div class="t-flag break">⚠ 前缀断裂：0 条与上轮相同（第 ${chain.first_diff_index + 1} 条起全新）</div>`;
-      else if (chain.first_diff_index != null)
-        flag = `<div class="t-flag">新增：第 ${chain.first_diff_index + 1} 条起（${esc(chain.first_diff_role || '?')}）</div>`;
-      else flag = '<div class="t-flag ok">全部与上轮相同</div>';
+    if (chain) {
+      // 切线（family-observability 票 01）：时间序上一轮属其他孩子——不算断裂，小标提示。
+      const switchTag = chain.boundary === 'thread-switch'
+        ? '<div class="t-flag switch">↩ 切线（时间序上一轮属其他孩子）</div>' : '';
+      if (chain.prev_in_thread_id == null) flag = `${switchTag}<div class="t-flag ok">线程起点（窗口内基线）</div>`;
+      else if (chain.first_diff_in_thread_index != null) {
+        if (chain.common_prefix_in_thread === 0 && t.message_count > 0)
+          flag = `${switchTag}<div class="t-flag break">⚠ 线程内前缀断裂：0 条与上轮相同</div>`;
+        else flag = `${switchTag}<div class="t-flag">新增：第 ${chain.first_diff_in_thread_index + 1} 条起（${esc(chain.first_diff_in_thread_role || '?')}）</div>`;
+      } else flag = `${switchTag}<div class="t-flag ok">全部与上轮相同</div>`;
     }
-    void prevId;
-    return `<li data-id="${t.id}">
-      <div>#${i + 1} · <span class="t-model">${esc(t.model ?? '—')}</span> · ${t.message_count} 条 · ${fmtBytes(t.bytes)}</div>
-      <div class="meta muted">${fmtClock(t.ts)}</div>
+    return `<li data-id="${t.id}" title="${esc(threadLabel)}">
+      <div>#${seq} · <span class="t-model">${esc(t.model ?? '—')}</span> · ${t.message_count} 条 · ${fmtBytes(t.bytes)}</div>
+      <div class="meta muted">${fmtTime(t.ts)}</div>
       ${flag}
     </li>`;
-  }).join('') || '<li class="empty">该会话没有捕获轮次（租户未开 capture 或轮次已过 TTL 清理）</li>';
+  };
+
+  if (!multi) {
+    // 单线程退化：与旧版平铺等价（无线程层）。
+    $('#traj-turns').innerHTML = state.turns.map((t, i) => turnHtml(t, i + 1, labelOf(threadOrder[0] ?? ''))).join('')
+      || '<li class="empty">该会话没有捕获轮次（租户未开 capture 或轮次已过 TTL 清理）</li>';
+  } else {
+    $('#traj-turns').innerHTML = threadOrder.map((key, i) => {
+      const list = byThread.get(key) || [];
+      const color = THREAD_COLORS[i % THREAD_COLORS.length];
+      const span = list.length ? `${fmtTime(list[0].ts)} → ${fmtTime(list[list.length - 1].ts)}` : '';
+      const label = labelOf(key);
+      const baseSeq = state.turns.indexOf(list[0]) + 1;
+      return `<li class="traj-thread">
+        <div class="th-head" data-thread="${esc(key)}" title="${esc(label)}">
+          <span class="th-dot" style="background:${color}"></span>
+          <span class="th-label">${esc(label)}</span>
+          <span class="th-meta">${list.length}轮 · ${span}</span>
+          <span class="th-caret">▾</span>
+        </div>
+        <ul>${list.map((t, j) => turnHtml(t, baseSeq + j, label)).join('')}</ul>
+      </li>`;
+    }).join('');
+  }
+  loadFamilyHeader(state.turns).catch(() => {});
   $('#view-title').textContent = `正文 · ${identity}`;
   $('#traj-view').innerHTML = '<div id="traj-empty">选一轮看正文</div>';
 }
 
-/* ---- 右列：单轮完整 messages 渲染。逐条消息用 refs 与上一轮 refs 对比标重复/新增 ---- */
+/* ---- 右列：单轮完整 messages 渲染。逐条消息用 refs 与线程内上一轮 refs 对比标重复/新增 ---- */
 function renderMessage(msg, index, prevRefs, refHash) {
   const role = String(msg.role ?? '?');
   const dup = Array.isArray(prevRefs) && prevRefs.includes(refHash);
@@ -112,11 +189,13 @@ function renderMessage(msg, index, prevRefs, refHash) {
 async function loadTurn(id) {
   state.turnId = id;
   const idx = state.turns.findIndex((t) => t.id === id);
-  const prevTurn = idx > 0 ? state.turns[idx - 1] : null;
+  const chain = state.chainByTurn.get(id);
+  // 「上一轮」用线程内上一轮（deleg 家族时间序上一轮可能是别的孩子，比对无意义）。
+  const prevTurn = chain?.prev_in_thread_id != null ? state.turns.find((t) => t.id === chain.prev_in_thread_id) ?? null : null;
   const data = await fetchJson(`/api/capture/turns/${id}`);
   state.refsByTurn.set(id, data.refs || []);
   if (prevTurn && !state.refsByTurn.has(prevTurn.id)) {
-    // 上一轮的 refs 没拿过：轻量补一次（缓存起来，翻轮次时零成本）
+    // 线程内上一轮的 refs 没拿过：轻量补一次（缓存起来，翻轮次时零成本）
     try { const prev = await fetchJson(`/api/capture/turns/${prevTurn.id}`); state.refsByTurn.set(prevTurn.id, prev.refs || []); } catch {}
   }
   const prevRefs = state.refsByTurn.get(prevTurn?.id ?? '') ?? null;
@@ -143,9 +222,17 @@ $('#traj-sessions').addEventListener('click', (e) => {
   loadTurns(li.dataset.identity, li.dataset.tenant).catch((err) => { $('#err').textContent = `轮次加载失败：${err.message}`; });
 });
 $('#traj-turns').addEventListener('click', (e) => {
+  const threadHead = e.target.closest('.th-head');
+  if (threadHead) {
+    const kids = threadHead.nextElementSibling;
+    if (kids && kids.tagName === 'UL') kids.classList.toggle('hidden');
+    const caret = threadHead.querySelector('.th-caret');
+    if (caret) caret.textContent = kids.classList.contains('hidden') ? '▸' : '▾';
+    return;
+  }
   const li = e.target.closest('li[data-id]');
   if (!li) return;
-  $$('#traj-turns li').forEach((x) => x.classList.remove('active'));
+  $$('#traj-turns li[data-id]').forEach((x) => x.classList.remove('active'));
   li.classList.add('active');
   loadTurn(Number(li.dataset.id)).catch((err) => { $('#err').textContent = `正文加载失败：${err.message}`; });
 });

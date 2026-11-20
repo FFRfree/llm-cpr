@@ -12,6 +12,8 @@ import type { UsageAudit } from '../store/audit.ts';
 import type { SystemEventStore, EventKind } from '../store/events.ts';
 import type { UsageSnapshots } from '../store/snapshots.ts';
 import type { CaptureStore } from '../store/capture.ts';
+import type { EfficiencyRates } from '../observability/cache-efficiency.ts';
+import { DEFAULT_RATES } from '../observability/cache-efficiency.ts';
 import type { RouterPolicy } from '../policy/contract.ts';
 
 // ---- 后台 v2 静态分发（多页 Admin）：static/ 目录白名单扩展名，路径解析后必须仍落在
@@ -199,15 +201,42 @@ export function createAdminServer({ policy, policyAdmin, tenants, snapshots, aud
       const tenant = url.searchParams.get('tenant') ?? undefined;
       if (!identity) return json(res, 400, { error: { message: 'identity query parameter is required (pick a session from /api/audit/sessions)', type: 'invalid_request_error' } });
       const limitParam = Number(url.searchParams.get('limit') ?? 100);
-      const chain = capture.cacheChain(tenant, identity, Number.isFinite(limitParam) ? limitParam : undefined);
+      const { chain, threads } = capture.cacheChain(tenant, identity, Number.isFinite(limitParam) ? limitParam : undefined);
       const rebinds = events.listEvents({ kind: 'route.rebind', tenant, limit: 500 })
         .map((event) => ({ ts: event.ts, backend: event.backend_name, detail: event.detail ? JSON.parse(event.detail) as Record<string, unknown> : {} }));
       return json(res, 200, {
-        tenant: tenant ?? null, identity, chain,
+        tenant: tenant ?? null, identity, chain, threads,
         rebinds,
-        // 哈希结论与 chars 口径互校的说明随响应给出（票 03 验收「不一致要能解释」）：
-        hint: 'common_prefix 骤降 ↔ 前缀断裂（证据指向改绑/改提示词/插消息，以同时间窗 rebind 与 first_diff_role 定位）；chars_delta 与 common_prefix 不一致时以哈希结论为准（chars 还受非消息字段影响）',
+        // 哈希结论与 chars 口径互校的说明随响应给出（observability 票 03 验收「不一致要能解释」）：
+        // 断裂判定看**线程内**前缀（common_prefix_in_thread）；boundary='thread-switch' 是 deleg
+        // 家族切孩子的交错边界（时间序上一轮是另一个孩子的轮次），不是前缀断裂。
+        hint: '前缀断裂看 common_prefix_in_thread 骤降（证据指向改绑/改提示词/压缩，以同时间窗 rebind 与 first_diff_in_thread_role 定位）；boundary=thread-switch 只是切了孩子（deleg 家族共享会话身份）不算断裂；chars_delta 与哈希结论不一致时以哈希结论为准（chars 还受非消息字段影响）',
       });
+    }
+    // 缓存效率（family-observability 票 03）：理想消耗/实际消耗（口径见 core/observability/
+    // cache-efficiency.ts 头注）。usage 三分量 + 原始 usage_json 按轮次锚点直查（audit.
+    // usageByCaptureIds，不与「最新 N 行」窗口错位）。capture 未启用 404、缺 identity 400、
+    // rates 越界 400（对齐 cache-forensics 的守卫口径；rates 经 ?fresh=/?write=/?read= 覆盖）。
+    if (url.pathname === '/api/capture/cache-efficiency') {
+      if (!capture) return json(res, 404, { error: { message: 'capture is not enabled for any tenant', type: 'not_found_error' } });
+      const identity = url.searchParams.get('identity');
+      const tenant = url.searchParams.get('tenant') ?? undefined;
+      if (!identity) return json(res, 400, { error: { message: 'identity query parameter is required (pick a session from /api/audit/sessions)', type: 'invalid_request_error' } });
+      const limitParam = Number(url.searchParams.get('limit') ?? 100);
+      const limit = Number.isFinite(limitParam) ? limitParam : undefined;
+      const rates: Partial<EfficiencyRates> = {};
+      for (const [name, hi] of [['fresh', 10], ['write', 10], ['read', 1]] as const) {
+        const raw = url.searchParams.get(name);
+        if (raw === null) continue;
+        const value = Number(raw);
+        if (!Number.isFinite(value) || value < 0 || value > hi) {
+          return json(res, 400, { error: { message: `invalid ${name} rate (expected 0..${hi})`, type: 'invalid_request_error' } });
+        }
+        rates[name] = value;
+      }
+      const turns = capture.turnRefsWindow(tenant, identity, limit);
+      const usage = audit.usageByCaptureIds(turns.map((turn) => turn.capture_id));
+      return json(res, 200, capture.cacheEfficiency(turns, usage, { ...DEFAULT_RATES, ...rates }));
     }
     // 工具/skill 分析（票 05）：读侧聚合，按需慢查询（默认 7 天 / 500 轮上限）。
     // tenant 缺省 = 全租户合计（与 /api/audit/* 口径一致；review 后修正——缺省写死 'default'
