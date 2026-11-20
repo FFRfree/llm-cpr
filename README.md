@@ -31,7 +31,7 @@
    ```
 
    它做四件事：npm 把引擎下载进固定位置 `~/.local/lib/llm-cpr/`（npm 只是下载器，代码住哪我们自己定，ADR-0009）；建命令软链 `~/.local/bin/cpr`；在你的用户目录建 `~/.llm-cpr/`（policy 模板 + 随机 master key 的 `.env`，已 chmod 600）；写用户级 systemd unit、自举冒烟通过后启动。macOS 走 LaunchAgent（experimental）。
-2. 编辑 `~/.llm-cpr/policy.ts`——配置即代码：订阅声明与路由策略就在这个 TS 类里（`name` 定了绝不改，写法见 [docs/policy-guide.md](docs/policy-guide.md)）；上游凭据按 `key_env` 名填进 `~/.llm-cpr/.env`。改完 `systemctl --user restart llm-cpr` 生效。
+2. 编辑 `~/.llm-cpr/policy.ts`——配置即代码：订阅声明与路由策略就在这个 TS 类里（`name` 定了绝不改，写法见 [docs/policy-guide.md](docs/policy-guide.md)）；上游凭据按 `key_env` 名填进 `~/.llm-cpr/.env`。策略改动（decide/routing）下一条请求即生效；改了租户/订阅声明这类冷区字段会提示 `systemctl --user restart llm-cpr`，`cpr reload` 随时给结论。
 3. 客户端配 OpenAI 兼容地址 `http://127.0.0.1:8741/v1`，API key 用 `.env` 里 `CPR_MASTER_KEY` 的值；请求带 `Authorization: Bearer ***`。
 4. 打开看板 `http://127.0.0.1:8740/` 看额度与会话；`cpr doctor` 随时体检。
 

@@ -10,7 +10,7 @@
 - **声明区**（backends/models/listen/routing…）：网关的静态配置，等价于旧 config.json。
 - **策略区**：唯一一个钩子 `decide(ctx)`。引擎在每个请求的选路点调用它，它回答「这次发给谁」；它不回答的部分由**内置逻辑**兜底（月欠账评分选新会话 / 长会话保亲和不改绑 / 尊重亲和）。
 
-配置即代码：**改策略 = 改文件，改完 `systemctl --user restart llm-cpr` 即生效**（外置 policy 随引擎启动重载，没有热重载按钮，也不再需要发版）。`backends[].name` 是身份键（亲和事件与账本都存它），**绝不改 name**；`alias` 只是显示名，可随便改且可能撞名，凡需要唯一标识订阅的地方一律用 `name`。引擎层（`core/`）的改动仍属开发范畴，走 clone/发布流程。
+配置即代码：**改策略 = 改文件**。热区字段（`decide`、`routing.*`（除 `snapshot_interval_ms`）、`identity_header`）改完**下一条请求即生效**——daemon 每次决策前按文件签名懒检查（不轮询不起 watcher），无需任何动作；想立刻要个确定性结论就跑 `cpr reload`。冷区字段（`backends`/`models`/`tenants`/`capture`/`db_file`/`listen` 等启动定型物）热加载会整份拒绝并提示重启，此时 `systemctl --user restart llm-cpr` 生效（`cpr reload` 检出冷区变更可 y/N 代跑）。改坏文件（语法错/校验失败）**保旧不换**——流量继续走旧策略，绝不静默回落内置模板；`cpr reload` 或 `GET /api/policy` 能看到失败现场，审计与快照见「改动纪律」。`backends[].name` 是身份键（亲和事件与账本都存它），**绝不改 name**；`alias` 只是显示名，可随便改且可能撞名，凡需要唯一标识订阅的地方一律用 `name`。引擎层（`core/`）的改动仍属开发范畴，走 clone/发布流程。
 
 **一个核心边界，全指南建立在这句话上**：decide 回答两个决策点——**正常路由**（每个请求一次）和**改绑决策**（撞墙、原地重试烧尽后问一次，ctx 带 `error` 标记）。但出错的**机械动作**（原地重试、长会话保亲和、改绑冷却）全部引擎自治，policy 碰不到。
 
@@ -180,6 +180,7 @@ decide(ctx) {
 
 ## 7. 改动纪律
 
-- 外置 `~/.llm-cpr/policy.ts` 是你自己的文件，改动随意；改完 `systemctl --user restart llm-cpr` 生效，验证用 `cpr doctor` 与看板。
+- 外置 `~/.llm-cpr/policy.ts` 是你自己的文件，改动随意。热区字段（decide/routing 参数）下一条请求自动生效；冷区字段改了会拒热换并提示重启。`cpr reload` 给一句话结论（生效了 / 保旧了 + 原因 / 冷区要重启），也可以什么都不跑等懒检查自然拾取。验证用 `cpr doctor` 与看板。
+- **热更新的审计三件套**：`system_events` 的 `policy.reload`（成功，带新旧 sha256 与 trigger）与 `policy.reload.error`（保旧现场，带原因与错误摘要）；每次成功加载往 `~/.llm-cpr/backups/policy/<时间>-<哈希>.ts` 拷一份声明快照（「当时跑的是哪份文件」的字节级证据）；启动行与 `GET /api/policy`（管理口）随时报当前生效声明的 sha256 与最近一次失败。同一份坏文件反复触发不刷事件（内容签名去重），改好即恢复。
 - 包内 `mine.ts` 是引擎开发者的事：改前看 `git status` 别覆盖并行改动，改完在仓库根跑 `node --test` 与 `npm run typecheck`，发布冒烟用 `scripts/xdg-deploy/smoke-release.ts` 的假上游（不烧真额度）。
 - 亲和 + 撞墙不改绑 = 真·不回退（TCP 挂 → 503、撞墙 → 429 原样透传），这是诚实行为，引擎不会偷偷软化成「尽量固定」。
