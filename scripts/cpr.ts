@@ -267,14 +267,42 @@ function serviceStart(): RunResult {
   return systemctl('enable', '--now', UNIT_NAME);
 }
 
-// 升级健康门：重启 → 轮询 is-active。engine fail-fast（坏 policy/迁移失败）会让 unit 进 failed 态，这里抓得住。
-async function serviceUpAfterRestart(): Promise<boolean> {
-  const restart = serviceRestart();
-  if (!restart.ok) return false;
+// ---- supervisor 换版本编排接缝（supervisor-upgrade 票 03）----
+// CLI 只是编排的发起人：POST /api/supervisor/swap → worker IPC 转发 supervisor 编排。
+// 软链由 supervisor 翻转/回拨（票 02），CLI 不自己拨；失败如实报「升级未完成」，绝不假成功。
+type SwapResult = { kind: 'done' } | { kind: 'in-progress' } | { kind: 'unsupported' } | { kind: 'failed'; message: string }
+
+const adminPort = (): number => Number(process.env.CPR_ADMIN_PORT) || 8740;
+const receiptPath = (): string => path.join(dataDir(), 'upgrade-receipt.json');
+
+async function supervisorSwap(payload: Record<string, unknown>): Promise<SwapResult> {
+  let body: { ok?: boolean; status?: string; error?: { message?: string } } = {};
+  try {
+    const res = await fetch(`http://127.0.0.1:${adminPort()}/api/supervisor/swap`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(180_000), // ready 门 + 排水上限 + 富余；supervisor 先答话后排水，正常远小于此
+    });
+    body = await res.json().catch(() => ({})) as typeof body;
+    if (res.ok && body.ok) return { kind: 'done' };
+    if (res.status === 409 || body.status === 'in-progress') return { kind: 'in-progress' };
+    if (res.status === 501 || res.status === 404) return { kind: 'unsupported' };
+    return { kind: 'failed', message: body?.error?.message ?? `管理口 HTTP ${res.status}` };
+  } catch (error) {
+    return { kind: 'failed', message: `管理口 127.0.0.1:${adminPort()} 不可达或换版本应答超时（${error instanceof Error ? error.message : String(error)}）——服务在跑吗？先 cpr doctor` };
+  }
+}
+
+// 换版本健康门：/api/version 报新版才算完成（真门即活门——新 worker 已在服务，不再需要假上游冒烟）。
+async function versionGate(target: string): Promise<boolean> {
   const delayMs = Number(process.env.CPR_HEALTH_DELAY_MS ?? 1000);
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, delayMs));
-    if (serviceActive()) return true;
+    try {
+      const res = await fetch(`http://127.0.0.1:${adminPort()}/api/version`, { signal: AbortSignal.timeout(3000) });
+      if (res.ok && ((await res.json()) as { version?: string }).version === target) return true;
+    } catch { /* 排水窗口里的连接池抖动：重试 */ }
   }
   return false;
 }
@@ -682,20 +710,38 @@ async function upgrade(yes: boolean, toVersion: string | undefined): Promise<num
     return 1;
   }
   // 切换前冒烟：临时库 + 0 端口，验的是补丁后的新引擎；失败 = current 未切换，服务未动。
-  // DB 不由 CLI 备份：引擎启动路径的迁移三件套开库先备份（migrate.ts），单一来源；CLI 只管换代码+重启+健康门。
+  // DB 不由 CLI 备份：引擎启动路径的迁移三件套开库先备份（migrate.ts），单一来源；CLI 只管下载+冒烟+发起换版本。
   if (!(await bootSmoke(targetRoot))) {
     console.error('cpr: 新版冒烟未通过——current 未切换，服务未动。');
     return 1;
   }
-  flipCurrent(target);
-  console.log(`cpr: current → ${target}`);
-  if (await serviceUpAfterRestart()) {
-    console.log(`cpr: 完成。${current} → ${target}，服务健康。`);
-    pruneVersions(target, current);
-    console.log(`cpr: 验证：journalctl --user -u ${UNIT_NAME} 应有启动日志（版本/租户/schema 行）；管理口 /api/route/status 应返回订阅清单。`);
-    return 0;
+  // supervisor 换版本（票 03）：冒烟过门 → 调 supervisor「换到 <v>」→ 健康门。CLI 不拨软链、不碰 systemd
+  // （软链由 supervisor 翻转/回拨——票 02；失败如实报「升级未完成」——hermes 纪律，绝不假成功）。
+  console.log(`cpr: 调 supervisor 换到 ${target}…`);
+  const swap = await supervisorSwap({ root: targetRoot, version: target, appRoot: appRoot() });
+  if (swap.kind === 'in-progress') {
+    console.error('cpr: 升级未完成：上一次升级还在进行中（supervisor 拒绝并发换版本）——等它结束后重试。');
+    return 1;
   }
-  return await rollbackAfterFailedUpgrade(current, target, '未通过健康检查（systemd is-active 非 active）');
+  if (swap.kind === 'unsupported') {
+    console.error('cpr: 升级未完成：运行中的引擎不是 supervisor 形态（旧版共存的过渡期），换版本编排不可用。');
+    console.error(`  兜底口径：部署 supervisor unit（ExecStart 指 core/supervisor.ts）后重试；或手工 systemctl --user restart ${UNIT_NAME}。`);
+    return 1;
+  }
+  if (swap.kind === 'failed') {
+    console.error(`cpr: 升级未完成：换版本被 supervisor 拒绝或失败（${swap.message}）。`);
+    console.error(`cpr: 软链是否回拨由 supervisor 决定（收据：${receiptPath()}）；旧 worker 未受影响。`);
+    return 1;
+  }
+  // 健康门：/api/version 报新版（真门即活门——新 worker 已经在服务，假上游冒烟不再需要）。
+  if (!(await versionGate(target))) {
+    console.error('cpr: 升级未完成：换版本已提交但 /api/version 未在时限内报新版本——查 supervisor 日志与收据。');
+    return 1;
+  }
+  console.log(`cpr: 完成。${current} → ${target}，worker 已切换、服务健康（收据：${receiptPath()}）。`);
+  pruneVersions(target, current);
+  console.log(`cpr: 验证：journalctl --user -u ${UNIT_NAME} 应有 supervisor/worker 启动行；管理口 /api/version 应报 ${target}。`);
+  return 0;
 }
 
 // 版本保留策略：当前 + 上一版垫背（回滚零网络的前提），更老的升级成功后顺手清——代码可再生，npm 随时重下。
@@ -709,19 +755,8 @@ function pruneVersions(keep: string, alsoKeep: string): void {
   }
 }
 
-// 升级失败回滚（工单 10 新语义）：current 软链拨回去——原子、零网络、瞬时。
-// 旧版本目录是「验证过的完整品」（补丁在建成时就打过），拨回去就能跑；回滚不碰数据（加法迁移纪律）。
-async function rollbackAfterFailedUpgrade(current: string, target: string, reason: string): Promise<number> {
-  console.error(`cpr: 升级失败（${reason}）——把 current 拨回 ${current}（零网络、瞬时）`);
-  flipCurrent(current);
-  if (await serviceUpAfterRestart()) {
-    console.error(`cpr: 已自动退回 ${current}，服务已恢复。失败原因：journalctl --user -u ${UNIT_NAME} -n 50`);
-    console.error(`cpr: 解决根因后重试：cpr upgrade --to ${target}`);
-    return 1; // 升级失败（尽管服务已恢复）
-  }
-  console.error(`cpr: 回滚后服务仍未起来——手工口径：journalctl --user -u ${UNIT_NAME} -n 50；确认 ${versionRoot(current)} 完整后 systemctl --user restart ${UNIT_NAME}`);
-  return 1;
-}
+// 升级失败回滚（工单 10 旧语义，已随 supervisor 形态退役）：回拨归 supervisor 的收据自愈（票 02），
+// CLI 不拨软链、不代跑 systemctl——保留本注释说明口径迁移，函数体删除。
 
 // ---- uninstall ----
 
@@ -830,17 +865,27 @@ async function reloadPolicy(yes: boolean): Promise<number> {
   if (outcome.reason === 'cold-zone-change') {
     console.log('cpr: 声明改了冷区字段（热更新不覆盖，重启才生效）：');
     for (const field of outcome.coldChanged ?? []) console.log(`  - ${field}`);
-    if (!(await confirm('是否现在重启服务让全部变更生效？（重启会中断在途请求）', yes))) {
+    if (!(await confirm('是否换一次 worker 让全部变更生效？（supervisor 排水切换，在途请求跑完才退场）', yes))) {
       console.log(`cpr: 未重启。手工口径：systemctl --user restart ${UNIT_NAME}`);
       return 1;
     }
-    const restart = serviceRestart();
-    if (!restart.ok) {
-      console.error(`cpr: 重启失败：${restart.err}`);
+    // 换一次同版本 worker = 新 boot，冷区自然生效（编排复用 supervisor.swap——票 02/03 语义合一）。
+    const swap = await supervisorSwap({});
+    if (swap.kind === 'done') {
+      console.log('cpr: 已换 worker，全部变更生效。');
+      return 0;
+    }
+    if (swap.kind === 'in-progress') {
+      console.error('cpr: 上一次换版本还在进行中，未执行——等它结束后重跑 cpr reload。');
       return 1;
     }
-    console.log('cpr: 已重启，全部变更生效。');
-    return 0;
+    if (swap.kind === 'unsupported') {
+      console.error('cpr: 运行中的引擎不是 supervisor 形态（旧版共存的过渡期），换 worker 不可用。');
+      console.error(`  兜底口径：systemctl --user restart ${UNIT_NAME}（重启会中断在途请求）。`);
+      return 1;
+    }
+    console.error(`cpr: 换 worker 失败（${swap.message}）——冷区变更未生效，流量不受影响。`);
+    return 1;
   }
   console.error(`cpr: 热更新失败，继续用旧策略（${outcome.reason ?? '未知原因'}）——当前流量不受影响：`);
   console.error(`  ${outcome.error ?? outcome.reason}`);

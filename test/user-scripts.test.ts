@@ -268,7 +268,7 @@ test('install 重复执行幂等：.env 与 policy.ts 不被重置', () => {
 
 // ---- upgrade ----
 
-// ---- upgrade（v0.2.0 npm 形态）----
+// ---- upgrade（v0.2.0 npm 形态；v0.6.0 起切换走 supervisor 换版本编排——票 03）----
 
 test('upgrade：clone 形态拒绝（引擎开发者走 git）', () => {
   const f = makeFixture();
@@ -300,44 +300,87 @@ test('upgrade：已是最新 → 零动作退出 0', () => {
   assert.equal(systemctlLog(f).length, sysBefore); // 零 systemd 动作
 });
 
-test('upgrade --yes：下载新版目录 → 软链切换 → is-active 门通过', () => {
+test('upgrade --yes：下载新版 → supervisor swap 200 → /api/version 健康门过 → 完成（零 systemd 动作）', async (t) => {
   const f = makeFixture();
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
-  const r = cpr(f.work, ['upgrade', '--yes'], f.env);
+  const sysBefore = systemctlLog(f).length;
+  const admin = await adminRoutesStub(t, {
+    swap: { status: 200, body: { ok: true, fromVersion: '0.1.0', toVersion: '0.2.0', workerPid: 4242 } },
+    version: { status: 200, body: { version: '0.2.0', latest: null, checkedAt: null, workerPid: 4242 } },
+  });
+  const r = await cprAsync(f.work, ['upgrade', '--yes'], { ...f.env, CPR_ADMIN_PORT: String(admin.port) });
   assert.equal(r.status, 0, r.stderr + r.stdout);
   assert.ok(npmLog(f).includes(`install -g --prefix ${path.join(f.env.CPR_APP_ROOT, 'versions', '0.2.0')} @ffrfree/llm-cpr@0.2.0`));
-  assert.ok(systemctlLog(f).includes(`--user restart ${UNIT}`));
-  assert.equal(path.basename(fs.readlinkSync(f.env.CPR_CURRENT_LINK)), '0.2.0');
-  assert.ok(fs.existsSync(path.join(engineOf(f, '0.2.0'), 'package.json')));
-  assert.match(r.stdout, /完成。0\.1\.0 → 0\.2\.0，服务健康/);
+  // CLI 不拨链、不碰 systemd：升级段零 restart（软链由 supervisor 翻转）
+  assert.equal(systemctlLog(f).length, sysBefore);
+  assert.equal(path.basename(fs.readlinkSync(f.env.CPR_CURRENT_LINK)), '0.1.0', 'CLI 不自己拨 current（stub 世界里 supervisor 没翻，原样不动）');
+  assert.deepEqual(admin.swaps, [{ root: path.join(f.env.CPR_APP_ROOT, 'versions', '0.2.0', 'app'), version: '0.2.0', appRoot: f.env.CPR_APP_ROOT }]);
+  assert.match(r.stdout, /完成。0\.1\.0 → 0\.2\.0/);
+  assert.match(r.stdout, /收据/);
   // 版本保留策略：当前 + 上一版垫背
   assert.deepEqual(fs.readdirSync(path.join(f.env.CPR_APP_ROOT, 'versions')).sort(), ['0.1.0', '0.2.0']);
 });
 
-test('upgrade --yes：新版起不来 → 软链拨回（零网络回滚），服务恢复', () => {
+test('upgrade --yes：swap 被拒（in-progress）→ 升级未完成 + exit 1（绝不假成功）', async (t) => {
   const f = makeFixture();
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
-  const logBefore = npmLog(f).length;
-  // systemctl stub：current 指 0.2.0 时 is-active 判为起不来
-  const r = cpr(f.work, ['upgrade', '--yes'], { ...f.env, CPR_BAD_VERSION: '0.2.0' });
-  assert.equal(r.status, 1); // 升级失败（尽管服务已恢复）
-  const log = npmLog(f).slice(logBefore); // 只看升级这一段（首装日志不算）
-  assert.ok(log.some((line) => line.includes('@ffrfree/llm-cpr@0.2.0')));
-  assert.ok(!log.some((line) => line.includes('@ffrfree/llm-cpr@0.1.0'))); // 回滚零 npm：软链拨回，不重新下载
-  assert.match(r.stderr, /未通过健康检查/);
-  assert.match(r.stderr, /已自动退回 0\.1\.0，服务已恢复/);
-  assert.equal(path.basename(fs.readlinkSync(f.env.CPR_CURRENT_LINK)), '0.1.0'); // 磁盘上确实回到旧版
+  const admin = await adminRoutesStub(t, { swap: { status: 409, body: { ok: false, status: 'in-progress', error: { message: '上一次换版本还在进行中' } } } });
+  const r = await cprAsync(f.work, ['upgrade', '--yes'], { ...f.env, CPR_ADMIN_PORT: String(admin.port) });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /升级未完成/);
+  assert.match(r.stderr, /上一次升级还在进行中/);
+  assert.equal(path.basename(fs.readlinkSync(f.env.CPR_CURRENT_LINK)), '0.1.0'); // current 未动
 });
 
-test('upgrade --to 0.0.5 --yes：跳过 registry 查询直装指定版', () => {
+test('upgrade --yes：swap 失败 → 升级未完成 + exit 1 + 指收据（回拨归 supervisor）', async (t) => {
   const f = makeFixture();
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
-  const r = cpr(f.work, ['upgrade', '--to', '0.0.5', '--yes'], f.env);
+  const admin = await adminRoutesStub(t, { swap: { status: 502, body: { ok: false, status: 'failed', error: { message: 'worker ready 超时' } } } });
+  const r = await cprAsync(f.work, ['upgrade', '--yes'], { ...f.env, CPR_ADMIN_PORT: String(admin.port) });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /升级未完成/);
+  assert.match(r.stderr, /worker ready 超时/);
+  assert.match(r.stderr, /收据/);
+  assert.equal(path.basename(fs.readlinkSync(f.env.CPR_CURRENT_LINK)), '0.1.0');
+});
+
+test('upgrade --yes：非 supervisor 形态（501）→ 升级未完成 + restart 兜底提示', async (t) => {
+  const f = makeFixture();
+  assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
+  const admin = await adminRoutesStub(t, { swap: { status: 501, body: { error: { message: '非 supervisor 形态' } } } });
+  const r = await cprAsync(f.work, ['upgrade', '--yes'], { ...f.env, CPR_ADMIN_PORT: String(admin.port) });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /升级未完成/);
+  assert.match(r.stderr, /不是 supervisor 形态/);
+  assert.match(r.stderr, /restart/);
+});
+
+test('upgrade --yes：swap 成功但 /api/version 不报新版 → 升级未完成（健康门）', async (t) => {
+  const f = makeFixture();
+  assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
+  const admin = await adminRoutesStub(t, {
+    swap: { status: 200, body: { ok: true, fromVersion: '0.1.0', toVersion: '0.2.0', workerPid: 4242 } },
+    version: { status: 200, body: { version: '0.1.0', latest: null, checkedAt: null, workerPid: 4242 } },
+  });
+  const r = await cprAsync(f.work, ['upgrade', '--yes'], { ...f.env, CPR_ADMIN_PORT: String(admin.port), CPR_HEALTH_DELAY_MS: '10' });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /升级未完成/);
+  assert.match(r.stderr, /api\/version/);
+});
+
+test('upgrade --to 0.0.5 --yes：跳过 registry 查询直装指定版 → swap → 健康门过', async (t) => {
+  const f = makeFixture();
+  assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
+  const admin = await adminRoutesStub(t, {
+    swap: { status: 200, body: { ok: true, fromVersion: '0.1.0', toVersion: '0.0.5', workerPid: 4242 } },
+    version: { status: 200, body: { version: '0.0.5', latest: null, checkedAt: null, workerPid: 4242 } },
+  });
+  const r = await cprAsync(f.work, ['upgrade', '--to', '0.0.5', '--yes'], { ...f.env, CPR_ADMIN_PORT: String(admin.port), CPR_HEALTH_DELAY_MS: '10' });
   assert.equal(r.status, 0, r.stderr + r.stdout);
   const log = npmLog(f).slice(1); // 首装之外
   assert.ok(!log.some((line) => line.includes('view'))); // --to 不查 registry
   assert.ok(log.some((line) => line.includes('@ffrfree/llm-cpr@0.0.5')));
-  assert.equal(path.basename(fs.readlinkSync(f.env.CPR_CURRENT_LINK)), '0.0.5');
+  assert.deepEqual(admin.swaps, [{ root: path.join(f.env.CPR_APP_ROOT, 'versions', '0.0.5', 'app'), version: '0.0.5', appRoot: f.env.CPR_APP_ROOT }]);
 });
 
 test('upgrade --to 含路径字符的版本 → 白名单拒绝，零动作（review-2 P2）', () => {
@@ -415,16 +458,20 @@ test('upgrade --yes：补丁与新版本冲突 → 拒绝，current 未切换、
   assert.ok(npmLog(f).some((line) => line.includes('@ffrfree/llm-cpr@0.2.0'))); // 新版目录已下载（修好补丁重试可复用）
 });
 
-test('upgrade --yes：新版目录全新 → 补丁重打在新版上', () => {
+test('upgrade --yes：新版目录全新 → 补丁重打在新版上', async (t) => {
   const f = makeFixture();
   writeUserPatch(f, 'user.patch', 'core/main.ts', '// fixture stub\n', '// fixture stub\n// patched by user\n');
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
-  const r = cpr(f.work, ['upgrade', '--yes'], f.env);
+  const admin = await adminRoutesStub(t, {
+    swap: { status: 200, body: { ok: true, fromVersion: '0.1.0', toVersion: '0.2.0', workerPid: 4242 } },
+    version: { status: 200, body: { version: '0.2.0', latest: null, checkedAt: null, workerPid: 4242 } },
+  });
+  const r = await cprAsync(f.work, ['upgrade', '--yes'], { ...f.env, CPR_ADMIN_PORT: String(admin.port), CPR_HEALTH_DELAY_MS: '10' });
   assert.equal(r.status, 0, r.stderr + r.stdout);
   // 新版目录是全新拷贝 → 补丁重打（而不是幂等跳过）
   assert.match(r.stdout, /已打用户补丁：user\.patch/);
   assert.match(fs.readFileSync(path.join(engineOf(f, '0.2.0'), 'core', 'main.ts'), 'utf8'), /patched by user/);
-  assert.match(r.stdout, /完成。0\.1\.0 → 0\.2\.0，服务健康/);
+  assert.match(r.stdout, /完成。0\.1\.0 → 0\.2\.0/);
 });
 
 test('bootstrap：从 node_modules 路径跑 .ts 被 Node 拒 → cpr.js 引导搬离后拉起（工单 12 真机火情回归）', () => {
@@ -595,7 +642,8 @@ test('main.ts：坏 ~/.llm-cpr/policy.ts 拒绝启动且报错指向该文件', 
 
 // ---- reload（policy 热更新 CLI，工单 .scratch/policy-hot-reload/）----
 // 管理口 stub：CLI 只认 /api/policy/reload 的响应 JSON；判定单源原则下 CLI 不做本地验真。
-
+// 多路 stub（supervisor-upgrade 票 03）：/api/supervisor/swap + /api/version 健康门按路径应答，
+// 记录 swap 收到的 body（断言 CLI 发的编排载荷）。
 async function adminStub(t: TestContext, response: unknown, status = 200): Promise<number> {
   const server = http.createServer((_req, res) => res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(response)));
   const port = await freePort();
@@ -603,6 +651,44 @@ async function adminStub(t: TestContext, response: unknown, status = 200): Promi
   await once(server, 'listening');
   t.after(() => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }));
   return port;
+}
+
+interface AdminRoutesStub { port: number; swaps: unknown[]; versionHits: () => number }
+
+async function adminRoutesStub(t: TestContext, routes: { swap?: { status: number; body: unknown }; version?: { status: number; body: unknown }; policy?: { status: number; body: unknown } }): Promise<AdminRoutesStub> {
+  const swaps: unknown[] = [];
+  let versionHits = 0;
+  const server = http.createServer((req, res) => {
+    const reply = (status: number, body: unknown): void => { res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body)); };
+    if (req.method === 'POST' && (req.url ?? '').startsWith('/api/supervisor/swap')) {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        swaps.push(raw === '' ? null : JSON.parse(raw));
+        const route = routes.swap ?? { status: 200, body: { ok: true } };
+        reply(route.status, route.body);
+      });
+      return;
+    }
+    if (req.method === 'GET' && (req.url ?? '').startsWith('/api/version')) {
+      versionHits += 1;
+      const route = routes.version ?? { status: 200, body: { version: '0.2.0', latest: null, checkedAt: null, workerPid: process.pid } };
+      reply(route.status, route.body);
+      return;
+    }
+    if (req.method === 'POST' && (req.url ?? '').startsWith('/api/policy/reload')) {
+      const route = routes.policy ?? { status: 200, body: { outcome: { kind: 'unchanged' }, status: {} } };
+      reply(route.status, route.body);
+      return;
+    }
+    reply(404, { error: { message: 'stub: no route' } });
+  });
+  const port = await freePort();
+  server.listen(port, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }));
+  return { port, swaps, versionHits: () => versionHits };
 }
 
 
@@ -642,14 +728,21 @@ test('cpr reload：load-failed 保旧 → 退出 1 + 指回文件', async (t) =>
   assert.deepEqual(systemctlLog(f), []); // 失败路径绝不带重启
 });
 
-test('cpr reload：冷区变更 --yes 代跑重启（stub 记 argv）', async (t) => {
+test('cpr reload：冷区变更 --yes → 同版本换 worker（swap stub 记载荷），零 systemctl', async (t) => {
   const f = makeFixture();
-  const port = await adminStub(t, { outcome: { kind: 'kept', reason: 'cold-zone-change', coldChanged: ['backends'] }, status: {} });
-  const r = await cprAsync(f.work, ['reload', '--yes'], { ...f.env, CPR_ADMIN_PORT: String(port) });
-  assert.equal(r.status, 0, r.stderr);
+  assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
+  const sysBefore = systemctlLog(f).length;
+  const admin = await adminRoutesStub(t, {
+    policy: { status: 200, body: { outcome: { kind: 'kept', reason: 'cold-zone-change', coldChanged: ['backends'] }, status: {} } },
+    swap: { status: 200, body: { ok: true, fromVersion: '0.1.0', toVersion: '0.1.0', workerPid: 4242 } },
+  });
+  const r = await cprAsync(f.work, ['reload', '--yes'], { ...f.env, CPR_ADMIN_PORT: String(admin.port) });
+  assert.equal(r.status, 0, r.stderr + r.stdout);
   assert.match(r.stdout, /冷区字段/);
   assert.match(r.stdout, /- backends/);
-  assert.ok(systemctlLog(f).some((line) => line.includes('restart llm-cpr.service')), systemctlLog(f).join('\n'));
+  assert.match(r.stdout, /已换 worker/);
+  assert.deepEqual(admin.swaps, [{}]); // 同版本换：空载荷（编排复用 supervisor.swap）
+  assert.equal(systemctlLog(f).length, sysBefore); // 零 systemd 动作（编排归 supervisor）
 });
 
 test('cpr reload：冷区变更 非交互不代重启 → 1 分 + 手工口径', async (t) => {
@@ -659,6 +752,18 @@ test('cpr reload：冷区变更 非交互不代重启 → 1 分 + 手工口径',
   assert.equal(r.status, 1);
   assert.match(r.stdout, /未重启/);
   assert.ok(!systemctlLog(f).some((line) => line.includes('restart')), systemctlLog(f).join('\n'));
+});
+
+test('cpr reload：冷区变更 + 非 supervisor 形态（501）→ restart 兜底提示', async (t) => {
+  const f = makeFixture();
+  const admin = await adminRoutesStub(t, {
+    policy: { status: 200, body: { outcome: { kind: 'kept', reason: 'cold-zone-change', coldChanged: ['backends'] }, status: {} } },
+    swap: { status: 501, body: { error: { message: '非 supervisor 形态' } } },
+  });
+  const r = await cprAsync(f.work, ['reload', '--yes'], { ...f.env, CPR_ADMIN_PORT: String(admin.port) });
+  assert.equal(r.status, 1, r.stderr + r.stdout);
+  assert.match(r.stderr, /不是 supervisor 形态/);
+  assert.match(r.stderr, /restart/);
 });
 
 test('cpr reload：daemon 不可达 → 退出 1 + 不做本地兜底', async (t) => {
