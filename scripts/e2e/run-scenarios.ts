@@ -56,7 +56,7 @@ const piHomeName = 'pi-home';
 
 const FORBIDDEN_PORTS: readonly number[] = [8740, 8741];
 const PROTECTED_PREFIXES: readonly string[] = ['/root/.llm-cpr', '/root/.config', '/root/.hermes'];
-const SANCTIONED_TMP = '/root/.hermes/cache/scratch';
+const SANCTIONED_TMP = process.env.TMPDIR || os.tmpdir();
 const PROD_UNIT = 'llm-cpr';
 const PROD_ENV = { XDG_RUNTIME_DIR: '/run/user/0' };
 

@@ -1,3 +1,4 @@
+import os from 'node:os';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import http from 'node:http';
@@ -38,7 +39,7 @@ const close = (server: Server): Promise<Error | undefined> => new Promise<Error 
   server.close(resolve);
 });
 async function fixture(t: TestContext, handlers: UpstreamHandler[], routing: RoutingConfig = {}): Promise<P2Fixture> {
-  const dir = fs.mkdtempSync('/root/.hermes/cache/scratch/cpr-p2-');
+  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'cpr-p2-'));
   const seen: number[] = [];
   const upstreams = handlers.map((handler, index) => http.createServer(async (req: IncomingMessage, res: ServerResponse): Promise<void | ServerResponse> => {
     for await (const _chunk of req) {}

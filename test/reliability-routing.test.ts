@@ -1,3 +1,4 @@
+import os from 'node:os';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { TestContext } from 'node:test';
@@ -51,7 +52,7 @@ const close = (server: Server): Promise<void | Error> => new Promise<void | Erro
   server.closeAllConnections();
   server.close(resolve);
 });
-const scratch = process.env.TMPDIR || '/root/.hermes/cache/scratch';
+const scratch = process.env.TMPDIR || os.tmpdir();
 const iso = (offset: number): string => new Date(Date.now() + offset).toISOString();
 const usage = (overrides: Partial<Usage> = {}): Usage => ({
   rolling: { percent: 10, resetsAt: iso(3_600_000) },

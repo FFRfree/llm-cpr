@@ -1,3 +1,4 @@
+import os from 'node:os';
 import type { AddressInfo } from 'node:net';
 import type { GatewayConfig } from '../core/contracts.ts';
 import assert from 'node:assert/strict';
@@ -20,7 +21,7 @@ test('numeric millisecond quota reset expires and monthly timestamps score corre
     res.writeHead(404).end();
   });
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
-  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/root/.hermes/cache/scratch', 'cpr-time-'));
+  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'cpr-time-'));
   const config: GatewayConfig = { master_key_env: 'MASTER', models: [{ id: 'm', backends: { ccg: 'native' } }], backends: [{ name: 'ccg', family: 'ccg', base_url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, key_env: 'KEY' }] };
   const gateway = createGatewayServers(config, { env: { MASTER: 'master', KEY: 'test', CPR_SESSIONS_DB: path.join(dir, 'sessions.db') }, logger: { warn() {} } });
   gateway.forwardServer.listen(0, '127.0.0.1'); gateway.adminServer.listen(0, '127.0.0.1');

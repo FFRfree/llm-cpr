@@ -8,6 +8,7 @@
 //   node fake-upstream.ts --port <p> --scenario <名> --record <path.jsonl>
 //        [--tool-call <工具名>] [--tool-args <json串>] [--wall-after <N>] [--usage-chunk <on|off>]
 // 剧本：ok | always-429 | always-403 | quota-wall-then-ok | midstream-cut | hang-ttft
+import os from 'node:os';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -34,7 +35,7 @@ const SCENARIOS: readonly Scenario[] = [
 const FORBIDDEN_PORTS = new Set(['8740', '8741']);
 // 硬约束自保：record 落点不允许进受保护的运行层目录（TMPDIR 指向的 Hermes 合规 scratch 区除外）。
 const FORBIDDEN_PREFIXES = ['/root/.llm-cpr', '/root/.config', '/root/.hermes'];
-const SANCTIONED_TMP = '/root/.hermes/cache/scratch';
+const SANCTIONED_TMP = process.env.TMPDIR || os.tmpdir();
 
 const CREATED = 1_700_000_000; // 固定纪元，保证内容确定
 const MODEL = 'fake-model';

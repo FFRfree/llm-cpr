@@ -1,3 +1,4 @@
+import os from 'node:os';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { TestContext } from 'node:test';
@@ -37,7 +38,7 @@ interface Fixture {
   upstreams: Server[];
   config: GatewayConfig;
 }
-const scratch = '/root/.hermes/cache/scratch';
+const scratch = process.env.TMPDIR || os.tmpdir();
 const listen = async (server: Server, port: number = 0): Promise<string> => {
   server.listen(port, '127.0.0.1');
   await once(server, 'listening');

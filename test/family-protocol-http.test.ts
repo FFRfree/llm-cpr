@@ -1,3 +1,4 @@
+import os from 'node:os';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import http from 'node:http';
@@ -57,7 +58,7 @@ const close = (server: Server): Promise<Error | undefined> => new Promise<Error 
 const future = (days: number): string => new Date(Date.now() + days * 86400000).toISOString();
 
 async function fixture(t: TestContext, { family = 'ocg', prefix = '', identity_header, direct = true, account = 'quota-account', reply }: FixtureOptions = {}): Promise<FamilyFixture> {
-  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/root/.hermes/cache/scratch', 'cpr-family-http-'));
+  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'cpr-family-http-'));
   const inference: InferenceRequest[] = [], quota: CapturedRequest[] = [];
   const upstream = http.createServer(async (req: IncomingMessage, res: ServerResponse): Promise<void | ServerResponse> => {
     const chunks: Buffer[] = [];
@@ -214,7 +215,7 @@ test('Chat SSE remains byte-transparent on both families; unimplemented protocol
 });
 
 test('unchanged main entry runs native typed modules with disposable config and no installed runtime packages', { timeout: 10000 }, async (t: TestContext): Promise<void> => {
-  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/root/.hermes/cache/scratch', 'cpr-main-'));
+  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'cpr-main-'));
   let child: ChildProcessByStdio<null, Readable, Readable> | undefined;
   const seen: (string | string[] | undefined)[] = [];
   const upstream = http.createServer(async (req: IncomingMessage, res: ServerResponse): Promise<void | ServerResponse> => {
