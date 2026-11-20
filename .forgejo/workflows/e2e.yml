@@ -16,7 +16,8 @@ jobs:
       CPR_E2E_SKIP_PID_GUARD: '1'
     steps:
       - name: clone（自托管：直接从本机 Forgejo 克隆，不经外部 actions）
-        run: git clone --depth 1 "http://oauth2:${GITHUB_TOKEN}@127.0.0.1:3001/${GITHUB_REPOSITORY}.git" .
+        # 显式钉住触发分支：仓的 HEAD 曾被指到别的分支，克隆默认分支会测错代码。
+        run: git clone --depth 1 --branch "${GITHUB_REF_NAME}" "http://oauth2:${GITHUB_TOKEN}@127.0.0.1:3001/${GITHUB_REPOSITORY}.git" .
       - name: 对齐提交
         run: git log --oneline -1
       - name: 安装依赖（typecheck 需要 typescript）
