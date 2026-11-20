@@ -5,3 +5,6 @@ config.json
 *.db-shm
 *.db-wal
 *.tgz
+# e2e 套件运行产物（runs/）与第三方 vendor（pi-vendor/ 由 ensurePiVendor 首跑自装，不进仓不进包）
+scripts/e2e/pi-vendor/
+scripts/e2e/runs/
