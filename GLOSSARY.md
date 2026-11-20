@@ -78,6 +78,14 @@ _Avoid_: request（另指账本行）
 每条消息正文按盐化 sha256 只存一份（content 表），每轮重发的系统提示与历史不重复落盘；turns 只存哈希引用，TTL 清理判引用（仍被引用的正文不删）。
 _Avoid_: 去重缓存、dedup cache
 
+**Thread（线程）/ deleg 家族**:
+Hermes 对 delegate subagent 的会话身份是全家族共享一个（父会话根 id；业界四家对标同阵营）——data.db 里一个 identity 的轮次可能交错来自多个并行孩子。线程键 = 每轮 refs[1]（首条 user 消息哈希；refs[0] 是 system，兄弟间相同），孩子的 goal 全程留上下文故键恒定；压缩改写历史后键变化 = 线程分裂（预期）。轨迹页与取证链都按线程键分组，断裂判定只在线程内做，跨线程边界（boundary='thread-switch'）是切孩子、不是前缀断裂。
+_Avoid_: session=agent 假设（一个身份 ≠ 一个 agent）, 子会话 id（家族不发独立会话头）
+
+**Cache efficiency（缓存效率）**:
+理想消耗 / 实际消耗 ∈ (0,1]，浪费占比 = 1 − 效率 =「中间丢缓存多付的差值」。理想（分子）：线程内每条唯一消息首现付首现价、之后每次复用付读价；实际（分母）：账本三分量加权 fresh×1 + write×1 + read×0.1（Anthropic 形状部署把 write 调 1.25）。替代传统口径（Σread/Σprompt 跨请求求和把同一前缀算 N 遍）；`/api/capture/cache-efficiency`。
+_Avoid_: 命中率（作为汇总头条——只留在单请求行）
+
 ### 交付与运行
 
 **Release**:
