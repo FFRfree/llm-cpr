@@ -9,7 +9,8 @@ import type { Logger } from '../contracts.ts';
 // 否则新会话首绑会自带一小时改绑锁）。状态即查询，历史即全部事件。
 
 export type EventKind = 'route.bind' | 'route.rebind' | 'route.hold' | 'policy.error' | 'privacy.hit'
-  | 'policy.reload' | 'policy.reload.error';
+  | 'policy.reload' | 'policy.reload.error'
+  | 'upgrade.swap' | 'upgrade.rollback';
 
 // detail 的形状按 kind 分工：
 // route.bind / route.rebind → { trigger, source, note? }（引擎事实 + 来源 + policy 的 reason 或内置短语）
@@ -17,8 +18,10 @@ export type EventKind = 'route.bind' | 'route.rebind' | 'route.hold' | 'policy.e
 // policy.error → { error }（decide 抛错/非法的现场）
 // policy.reload → { trigger: file-change|manual, from_hash?, to_hash }（热换成功，工单 policy-hot-reload）
 // policy.reload.error → { trigger?, reason, error, cold_changed? }（保旧现场；error=摘要，绝不落文件全文防密钥进账本）
-// privacy.hit → { rule, item_hash, capture_id, message_index, role }（泄漏取证命中，票 04；
-//   绝不落命中原文——借 item_hash 回查 capture.db 定位「哪一轮、哪个角色、哪条消息」）
+// privacy.hit → { rule, item_hash, capture_id, message_index, role }（泄漏取证命中，票 04；绝不落命中原文——
+//   借 item_hash 回查 capture.db 定位「哪一轮、哪个角色、哪条消息」）
+// upgrade.swap → { from_version, to_version, same_version }（supervisor 换 worker 成功，supervisor-upgrade 票 02）
+// upgrade.rollback → { reason, from_version, to_version }（收据自愈拨回上一版，from/to 按升级方向记）
 export interface RouteEventDetail {
   trigger?: 'new-session' | 'stale-pin' | 'policy-override' | 'quota-wall' | 'file-change' | 'manual';
   source?: 'policy' | 'builtin';
@@ -34,6 +37,9 @@ export interface RouteEventDetail {
   role?: string | null;
   from_hash?: string;
   to_hash?: string;
+  from_version?: string;
+  to_version?: string;
+  same_version?: boolean;
   reason?: string;
   cold_changed?: string[];
 }

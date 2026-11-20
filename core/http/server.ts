@@ -24,6 +24,7 @@ import { forwardAttempt, passthroughError, retryAfterMs, sleep, type ForwardTimi
 import { createPerfSpan } from './perf.ts';
 import { healthyBackend, createHealthTracker } from './health.ts';
 import { createAdminServer, type AdminTenantView } from './admin.ts';
+import type { SwapCoordinator } from '../swap.ts';
 import type { AuditEntry, Backend, ChatBody, ChatUsage, Environment, Logger, Model, SnapshotView } from '../contracts.ts';
 import type { Decision, DecisionCtx, RouterPolicy } from '../policy/contract.ts';
 
@@ -55,6 +56,12 @@ export interface CreateGatewayOptions {
   listenHandles?: { forward: unknown; admin: unknown };
   // 快照轮询延迟开（worker 模式）：ready 发出后由调用方 startSnapshots——防与旧 worker 并存窗口翻倍探上游（票 02 行为清点）。
   deferSnapshots?: boolean;
+  // 换版本编排桥（票 02/03）：给出时 admin 面开放 POST /api/supervisor/swap（worker 桥经 IPC 转发 supervisor）。
+  // 缺省（直跑/测试直传）= 端点 501——非 supervisor 形态如实报错。
+  swapCoordinator?: SwapCoordinator;
+  // 并存窗口的事件静默（票 02 行为清点）：true 时 policy.reload/policy.reload.error 不落账
+  // （旧 worker 仍是事件记录者，防同一文件变更双记）；setPolicyEventsQuiet(false) 解除。
+  policyEventsQuiet?: boolean;
 }
 export interface Gateway {
   forwardServer: Server;
@@ -69,9 +76,11 @@ export interface Gateway {
   dbPath: string;
   // deferSnapshots 时补开快照轮询（worker 发完 ready 再调，存续窗口不双跑）。
   startSnapshots(): void;
+  // 并存窗口的事件静默开关（worker 收 promote 后置 false，policy.reload 事件恢复落账）。
+  setPolicyEventsQuiet(quiet: boolean): void;
 }
 
-export function createGatewayServers(policy: RouterPolicy, { env = process.env, fetchImpl = fetch, logger = console, policyFile, deferSnapshots }: CreateGatewayOptions = {}): Gateway {
+export function createGatewayServers(policy: RouterPolicy, { env = process.env, fetchImpl = fetch, logger = console, policyFile, deferSnapshots, swapCoordinator, policyEventsQuiet }: CreateGatewayOptions = {}): Gateway {
   const identityHeaderOf = (p: RouterPolicy): string => String(p.identity_header || p.identityHeader || 'x-session-id').trim().toLowerCase();
   const masterKeyOf = (p: RouterPolicy): string | undefined => env[p.masterKeyEnv || p.master_key_env || 'CPR_MASTER_KEY'];
   // 租户 = 一类调用方的身份键（ADR-0007）。声明了 tenants：Bearer 命中哪个租户的 key 就归属哪个租户，
@@ -169,6 +178,9 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
   });
   // 重载的审计与日志：成功必落 policy.reload（trigger + 新旧 sha256）；失败落 policy.reload.error
   // 仅当内容是新的（reloader 的 deduped 标记防同一坏文件每请求刷账）。事件归 'default' 租户（非请求事件）。
+  // 并存窗口的 quiet（票 02 行为清点）：worker 模式新 worker 在旧 worker 活着期间不落 policy.reload
+  // 事件（旧 worker 是记录者）——同一文件变更只记一次账；promote 后解除。
+  let eventsQuiet = policyEventsQuiet === true;
   let lastReloadTrigger: ReloadTrigger | undefined; // 语义 = 最近一次「实际生效换新」的 trigger（review-1 P3-5）
   let reloadInflight: Promise<unknown> | null = null;
   const applyReload = async (trigger: ReloadTrigger) => {
@@ -176,6 +188,10 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
     if (reloadInflight) return reloadInflight;
     const run = reloader.maybeReload(trigger).then((outcome) => {
       const event = (kind: 'policy.reload' | 'policy.reload.error', detail: RouteEventDetail): void => {
+        if (eventsQuiet) {
+          logger.warn?.(`[policy] ${kind} quiet 窗口内不落账（并存期旧 worker 是事件记录者）: ${JSON.stringify(detail)}`);
+          return;
+        }
         try { events.append({ kind, tenant: 'default', detail }); }
         catch (cause) { logger.warn?.(`[events] ${kind} append failed: ${messageOf(cause)}`); }
       };
@@ -527,6 +543,8 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
     audit,
     events,
     capture,
+    // 换版本编排桥（票 02/03）：worker 模式由 main.ts 注入（IPC 转发 supervisor）；缺省 = 端点 501。
+    swapCoordinator,
   });
   if (!deferSnapshots) snapshots.start(); // worker 模式延迟开：ready 发出后 startSnapshots（票 01/02 并存窗口清点）
   forwardServer.once('close', () => { audit.close(); snapshots.stop(); capture?.close(); });
@@ -539,13 +557,14 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
     capture,
     dbPath,
     startSnapshots(): void { snapshots.start(); },
+    setPolicyEventsQuiet(quiet: boolean): void { eventsQuiet = quiet; },
   };
 }
 
-export async function startGateway(policy: RouterPolicy, { env = process.env, logger = console, policyFile, listenHandles, deferSnapshots }: CreateGatewayOptions = {}): Promise<Gateway> {
+export async function startGateway(policy: RouterPolicy, { env = process.env, logger = console, policyFile, listenHandles, deferSnapshots, swapCoordinator, policyEventsQuiet }: CreateGatewayOptions = {}): Promise<Gateway> {
   // 配置即代码：声明在启动入口（main.ts）经 validateConfig 校验，坏声明拒绝启动。
   // policyFile（工单 policy-hot-reload）：声明文件路径下传，启用热更新懒检查。
-  const gateway = createGatewayServers(policy, { env, logger, policyFile, deferSnapshots });
+  const gateway = createGatewayServers(policy, { env, logger, policyFile, deferSnapshots, swapCoordinator, policyEventsQuiet });
   const { forwardServer, adminServer } = gateway;
   if (listenHandles) {
     // supervisor 形态（票 01）：两口 fd 由 supervisor bind 并交接，worker 只挂 handle 不自 bind。

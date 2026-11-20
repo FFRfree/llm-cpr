@@ -15,6 +15,7 @@ import type { CaptureStore } from '../store/capture.ts';
 import type { EfficiencyRates } from '../observability/cache-efficiency.ts';
 import { DEFAULT_RATES } from '../observability/cache-efficiency.ts';
 import type { RouterPolicy } from '../policy/contract.ts';
+import type { SwapCoordinator, SwapRequest } from '../swap.ts';
 
 // ---- 后台 v2 静态分发（多页 Admin）：static/ 目录白名单扩展名，路径解析后必须仍落在
 // static/ 内（防穿越）；HTML no-store、资产 60s。旧单页 dashboard.html 已废弃删除。
@@ -40,7 +41,7 @@ function serveStatic(url: URL, res: http.ServerResponse): boolean {
 }
 
 // /api/events 的 kind 白名单（非法值 → 不过滤，不把枚举面打开）。
-const EVENT_KINDS: ReadonlySet<string> = new Set(['route.bind', 'route.rebind', 'route.hold', 'policy.error', 'privacy.hit', 'policy.reload', 'policy.reload.error']);
+const EVENT_KINDS: ReadonlySet<string> = new Set(['route.bind', 'route.rebind', 'route.hold', 'policy.error', 'privacy.hit', 'policy.reload', 'policy.reload.error', 'upgrade.swap', 'upgrade.rollback']);
 
 // ---- 版本信息（工单 07）：打开看板才现查 npm registry，缓存 1 小时；进程其余时间零 registry 请求 ----
 const PKG = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json'), 'utf8')) as { name?: string; version?: string };
@@ -78,9 +79,12 @@ export interface AdminDeps {
   audit: UsageAudit;
   events: SystemEventStore;
   capture: CaptureStore | null;
+  // 换版本编排桥（supervisor-upgrade 票 02/03）：worker 模式由 main.ts 注入（IPC 转发 supervisor 编排）。
+  // 缺省（直跑/测试直传）= 端点 501——非 supervisor 形态如实报错，提示走 restart 兜底。
+  swapCoordinator?: SwapCoordinator;
 }
 
-export function createAdminServer({ policy, policyAdmin, tenants, snapshots, audit, events, capture }: AdminDeps): Server {
+export function createAdminServer({ policy, policyAdmin, tenants, snapshots, audit, events, capture, swapCoordinator }: AdminDeps): Server {
   return http.createServer(async (req, res) => {
     let url: URL;
     try { url = new URL(req.url ?? '/', 'http://127.0.0.1'); }
@@ -95,6 +99,30 @@ export function createAdminServer({ policy, policyAdmin, tenants, snapshots, aud
     // policy 手动 reload：同一套懒检查/冷区守卫，trigger=manual 进审计事件。
     if (req.method === 'POST' && url.pathname === '/api/policy/reload') {
       return json(res, 200, await policyAdmin.manualReload());
+    }
+    // 换版本编排（supervisor-upgrade 票 02/03）：worker 只是转发哨，编排与裁决全在 supervisor。
+    // cpr upgrade（跨版本）与 cpr reload 冷区分支（同版本换 worker）都打这一个口。
+    if (req.method === 'POST' && url.pathname === '/api/supervisor/swap') {
+      if (!swapCoordinator) {
+        return json(res, 501, { error: { message: '非 supervisor 形态（直跑/测试直传）：换版本编排不可用。重启兜底：systemctl --user restart llm-cpr', type: 'not_supported_error' } });
+      }
+      // body 可省（同版本换 worker）；给了就按 JSON 解（坏体 400）。
+      let payload: SwapRequest = {};
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) {
+        if (!Buffer.isBuffer(chunk)) throw new TypeError('unexpected chunk');
+        chunks.push(chunk);
+        if (chunks.reduce((n, c) => n + c.length, 0) > 64 * 1024) return json(res, 400, { error: { message: 'swap payload too large', type: 'invalid_request_error' } });
+      }
+      const raw = Buffer.concat(chunks).toString('utf8');
+      if (raw.trim() !== '') {
+        try { payload = JSON.parse(raw) as SwapRequest; }
+        catch { return json(res, 400, { error: { message: 'swap payload must be JSON (or empty)', type: 'invalid_request_error' } }); }
+      }
+      const outcome = await swapCoordinator.swap(payload);
+      if (outcome.ok) return json(res, 200, outcome);
+      if (outcome.status === 'in-progress') return json(res, 409, { ok: false, status: outcome.status, error: { message: outcome.error, type: 'upgrade_in_progress' } });
+      return json(res, 502, { ok: false, status: outcome.status, error: { message: outcome.error, type: 'server_error' } });
     }
     if (req.method !== 'GET') return json(res, 405, { error: { message: 'method not allowed', type: 'method_not_allowed_error' } });
     if (serveStatic(url, res)) return;
