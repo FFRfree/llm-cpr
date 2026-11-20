@@ -27,8 +27,12 @@ cd /root/ffr-projects/llm-cpr && node scripts/e2e/run-scenarios.ts
 
 ## 待办（issues/）
 
-- `01-slow-lane.md` — podman 慢车道（容器化隔离跑 e2e，去掉对生产 PID 只读比对的依赖）。
-- `02-actions.md` — CI Actions 接线（e2e + 全量测试进 workflow）。
+- `01-slow-lane.md` — podman 慢车道（completed：独立入口 `scripts/e2e/slow-lane/run-slow-lane.sh`，安装层 17 步容器内真跑）。
+- `02-actions.md` — 接线 CI Actions（completed：Forgejo runner 本机铺好，workflow 推 master 即跑，run 5 全绿）。
+
+## 状态
+
+两条票均已 completed（2026-11-20）。套件三车道齐活：本机快车道（一行命令）、CI 快车道（推 master 即跑）、慢车道（安装层/发版前）。
 
 ## Comments
 
