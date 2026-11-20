@@ -16,6 +16,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { chatCompletionsItems, type CaptureItem } from '../protocols/items.ts';
 import { scanForLeaks } from '../observability/leaks.ts';
 import { computeCacheEfficiency, DEFAULT_RATES, threadKeyOf } from '../observability/cache-efficiency.ts';
+import type { EfficiencyRates, EfficiencyUsage } from '../observability/cache-efficiency.ts';
 import type { LeakCategory, LeakHit } from '../observability/leaks.ts';
 import type { Logger } from '../contracts.ts';
 
@@ -466,13 +467,14 @@ export class CaptureStore {
       : this.#db.prepare('SELECT id,capture_id,ts,message_count,bytes,refs FROM turns WHERE tenant=? AND identity=? ORDER BY ts DESC, id DESC LIMIT ?').all(tenant, identity, count);
     const rows = (rawRows as unknown as Array<{ id: number; capture_id: string; ts: number; message_count: number; bytes: number; refs: string }>).reverse();
     const chain: CacheChainEntry[] = [];
-    const threadMeta = new Map<string, { first_ts: number; last_ts: number; turn_count: number; bytes: number; label_hash: string }>();
+    const threadMeta = new Map<string, { first_ts: number; last_ts: number; turn_count: number; bytes: number }>();
     const lastInThread = new Map<string, { id: number; ts: number; refs: string[] }>();
     let previous: { id: number; ts: number; refs: string[]; message_count: number; bytes: number; thread_key: string } | null = null;
     for (const row of rows) {
       const refs = JSON.parse(row.refs) as string[];
-      // 线程键：refs[1] = 首条 user 消息（refs[0] 是 system，兄弟间相同）；不足两条回落 refs[0]/'(none)'。
-      const threadKey = refs.length >= 2 ? refs[1] : refs.length === 1 ? refs[0] : '(none)';
+      // 线程键：refs[1] = 首条 user 消息（refs[0] 是 system，兄弟间相同）；不足两条回落——
+      // 与 cache-efficiency.ts 的 threadKeyOf 是同一把钥匙（直接复用，防两份实现漂移）。
+      const threadKey = threadKeyOf(refs);
       const entry: CacheChainEntry = { id: row.id, capture_id: row.capture_id, ts: row.ts, bytes: row.bytes, message_count: row.message_count,
         prev_id: null, prev_ts: null, common_prefix: refs.length, first_diff_index: null, first_diff_role: null, chars_delta: null, prev_message_count: null,
         thread_key: threadKey, boundary: 'first', prev_in_thread_id: null, prev_in_thread_ts: null,
@@ -518,7 +520,7 @@ export class CaptureStore {
         meta.turn_count += 1;
         meta.bytes += row.bytes;
       } else {
-        threadMeta.set(threadKey, { first_ts: row.ts, last_ts: row.ts, turn_count: 1, bytes: row.bytes, label_hash: threadKey === '(none)' ? '' : threadKey });
+        threadMeta.set(threadKey, { first_ts: row.ts, last_ts: row.ts, turn_count: 1, bytes: row.bytes });
       }
       chain.push(entry);
       previous = { id: row.id, ts: row.ts, refs, message_count: row.message_count, bytes: row.bytes, thread_key: threadKey };
@@ -545,16 +547,21 @@ export class CaptureStore {
   }
 
   // 缓存效率（family-observability 票 03）：理想消耗/实际消耗。CaptureStore 只出侧库数据
-  // （轮次 + content.bytes + 线程 label），usage 三分量来自 data.db，由 admin 层按 capture_id
-  // 喂入——本库不碰账本连接。limit 口径与 cacheChain 相同（最新 N 轮再升序）。
-  cacheEfficiency(tenant: string | undefined, identity: string, limit = 100,
-    usageByCaptureId: Map<string, { prompt_tokens: number | null; cache_hit_tokens: number | null; cache_write_tokens: number | null; cache_observed: boolean | null }>): ReturnType<typeof computeCacheEfficiency> {
-    const count = Math.max(2, Math.min(500, Math.trunc(Number(limit) || 100)));
+  // （轮次 + content.bytes + 线程 label），usage 三分量 + 原始 usage_json 来自 data.db，
+  // 由 admin 层按 capture_id 精确喂入（audit.usageByCaptureIds）——本库不碰账本连接，
+  // 且窗口按轮次锚点取 usage，不会与「最新 N 行」错位（review P3-6）。rates 可覆盖。
+  turnRefsWindow(tenant: string | undefined, identity: string, limit = 100): Array<{ capture_id: string; ts: number; refs: string[] }> {
+    const count = Math.max(1, Math.min(500, Math.trunc(Number(limit) || 100)));
     const rawRows = tenant === undefined
-      ? this.#db.prepare('SELECT capture_id,ts,bytes,refs FROM turns WHERE identity=? ORDER BY ts DESC, id DESC LIMIT ?').all(identity, count)
-      : this.#db.prepare('SELECT capture_id,ts,bytes,refs FROM turns WHERE tenant=? AND identity=? ORDER BY ts DESC, id DESC LIMIT ?').all(tenant, identity, count);
-    const turns = (rawRows as unknown as Array<{ capture_id: string; ts: number; bytes: number; refs: string }>).reverse()
-      .map((row) => ({ capture_id: row.capture_id, ts: row.ts, bytes: row.bytes, refs: JSON.parse(row.refs) as string[] }));
+      ? this.#db.prepare('SELECT capture_id,ts,refs FROM turns WHERE identity=? ORDER BY ts DESC, id DESC LIMIT ?').all(identity, count)
+      : this.#db.prepare('SELECT capture_id,ts,refs FROM turns WHERE tenant=? AND identity=? ORDER BY ts DESC, id DESC LIMIT ?').all(tenant, identity, count);
+    return (rawRows as unknown as Array<{ capture_id: string; ts: number; refs: string }>).reverse()
+      .map((row) => ({ capture_id: row.capture_id, ts: row.ts, refs: JSON.parse(row.refs) as string[] }));
+  }
+
+  cacheEfficiency(turns: Array<{ capture_id: string; ts: number; refs: string[] }>,
+    usageByCaptureId: Map<string, EfficiencyUsage>,
+    rates: EfficiencyRates = DEFAULT_RATES): ReturnType<typeof computeCacheEfficiency> {
     const bytesCache = new Map<string, number | null>();
     const labels = new Map<string, string>();
     for (const turn of turns) {
@@ -562,7 +569,7 @@ export class CaptureStore {
       const key = threadKeyOf(turn.refs);
       if (!labels.has(key) && key !== '(none)') labels.set(key, this.contentText(key, 160));
     }
-    return computeCacheEfficiency(turns, usageByCaptureId, (hash) => bytesCache.get(hash) ?? null, DEFAULT_RATES, labels);
+    return computeCacheEfficiency(turns, usageByCaptureId, (hash) => bytesCache.get(hash) ?? null, rates, labels);
   }
 
   // 内容哈希对应消息的字节数（token 分摊用）。

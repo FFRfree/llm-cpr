@@ -12,6 +12,8 @@ import type { UsageAudit } from '../store/audit.ts';
 import type { SystemEventStore, EventKind } from '../store/events.ts';
 import type { UsageSnapshots } from '../store/snapshots.ts';
 import type { CaptureStore } from '../store/capture.ts';
+import type { EfficiencyRates } from '../observability/cache-efficiency.ts';
+import { DEFAULT_RATES } from '../observability/cache-efficiency.ts';
 import type { RouterPolicy } from '../policy/contract.ts';
 
 // ---- 后台 v2 静态分发（多页 Admin）：static/ 目录白名单扩展名，路径解析后必须仍落在
@@ -212,8 +214,9 @@ export function createAdminServer({ policy, policyAdmin, tenants, snapshots, aud
       });
     }
     // 缓存效率（family-observability 票 03）：理想消耗/实际消耗（口径见 core/observability/
-    // cache-efficiency.ts 头注）。usage 三分量从 data.db requests 按 capture_id 喂入；
-    // limit 与轮次窗口同宽（≤500）。capture 未启用 404、缺 identity 400（对齐 cache-forensics）。
+    // cache-efficiency.ts 头注）。usage 三分量 + 原始 usage_json 按轮次锚点直查（audit.
+    // usageByCaptureIds，不与「最新 N 行」窗口错位）。capture 未启用 404、缺 identity 400、
+    // rates 越界 400（对齐 cache-forensics 的守卫口径；rates 经 ?fresh=/?write=/?read= 覆盖）。
     if (url.pathname === '/api/capture/cache-efficiency') {
       if (!capture) return json(res, 404, { error: { message: 'capture is not enabled for any tenant', type: 'not_found_error' } });
       const identity = url.searchParams.get('identity');
@@ -221,17 +224,19 @@ export function createAdminServer({ policy, policyAdmin, tenants, snapshots, aud
       if (!identity) return json(res, 400, { error: { message: 'identity query parameter is required (pick a session from /api/audit/sessions)', type: 'invalid_request_error' } });
       const limitParam = Number(url.searchParams.get('limit') ?? 100);
       const limit = Number.isFinite(limitParam) ? limitParam : undefined;
-      const usageByCaptureId = new Map<string, { prompt_tokens: number | null; cache_hit_tokens: number | null; cache_write_tokens: number | null; cache_observed: boolean | null }>();
-      for (const row of audit.listRequests({ identity, tenant, limit })) {
-        if (typeof row.capture_id !== 'string') continue;
-        usageByCaptureId.set(row.capture_id, {
-          prompt_tokens: typeof row.prompt_tokens === 'number' ? row.prompt_tokens : null,
-          cache_hit_tokens: typeof row.cache_hit_tokens === 'number' ? row.cache_hit_tokens : null,
-          cache_write_tokens: typeof row.cache_write_tokens === 'number' ? row.cache_write_tokens : null,
-          cache_observed: row.cache_observed === 1 ? true : row.cache_observed === 0 ? false : null,
-        });
+      const rates: Partial<EfficiencyRates> = {};
+      for (const [name, hi] of [['fresh', 10], ['write', 10], ['read', 1]] as const) {
+        const raw = url.searchParams.get(name);
+        if (raw === null) continue;
+        const value = Number(raw);
+        if (!Number.isFinite(value) || value < 0 || value > hi) {
+          return json(res, 400, { error: { message: `invalid ${name} rate (expected 0..${hi})`, type: 'invalid_request_error' } });
+        }
+        rates[name] = value;
       }
-      return json(res, 200, capture.cacheEfficiency(tenant, identity, limit, usageByCaptureId));
+      const turns = capture.turnRefsWindow(tenant, identity, limit);
+      const usage = audit.usageByCaptureIds(turns.map((turn) => turn.capture_id));
+      return json(res, 200, capture.cacheEfficiency(turns, usage, { ...DEFAULT_RATES, ...rates }));
     }
     // 工具/skill 分析（票 05）：读侧聚合，按需慢查询（默认 7 天 / 500 轮上限）。
     // tenant 缺省 = 全租户合计（与 /api/audit/* 口径一致；review 后修正——缺省写死 'default'

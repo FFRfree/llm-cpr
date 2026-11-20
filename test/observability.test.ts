@@ -158,10 +158,14 @@ test('cache forensics limit is enforced in SQL and returns the LATEST turns in a
     assert.equal((await chat(app.forwardUrl, 'main-key', JSON.stringify({ model: 'm', messages: [{ role: 'system', content: 's' }, { role: 'user', content: q }] }), { 'x-session-id': 'chain-limit' })).status, 200);
   }
   await settle();
-  const forensics = await fetch(`${app.adminUrl}/api/capture/cache-forensics?tenant=main&identity=chain-limit&limit=3`).then((r) => r.json()) as { chain: Array<{ id: number; prev_id: number | null }> };
+  const forensics = await fetch(`${app.adminUrl}/api/capture/cache-forensics?tenant=main&identity=chain-limit&limit=3`).then((r) => r.json()) as { chain: Array<{ id: number; prev_id: number | null; boundary: string; prev_in_thread_id: number | null; common_prefix_in_thread: number | null }> };
   assert.equal(forensics.chain.length, 3);
   // 最新 3 轮（丢最旧一轮）且升序：首条 prev 为 null（它前面那轮不在窗口里）。
   assert.equal(forensics.chain[0].prev_id, null);
+  // 窗口截断（票 02 验收）：线程内基线缺失 → prev_in_thread_id null、无线程内对比，不抛错。
+  assert.equal(forensics.chain[0].boundary, 'first');
+  assert.equal(forensics.chain[0].prev_in_thread_id, null);
+  assert.equal(forensics.chain[0].common_prefix_in_thread, null);
   assert.ok(forensics.chain[0].id < forensics.chain[1].id && forensics.chain[1].id < forensics.chain[2].id);
   assert.equal(forensics.chain[1].prev_id, forensics.chain[0].id);
 });
@@ -397,6 +401,13 @@ test('cache efficiency: perfect append-only thread scores 1.0, cache-drop thread
   // t1 1000 全价 + t2 命中 0 → 1500 全价 = 2500；理想 = 1000 + (1000×0.1 + 500) = 1600 → 效率 0.64。
   assert.ok(Math.abs((drop.totals.efficiency ?? 0) - 0.64) < 0.01, `efficiency=${JSON.stringify(drop.totals)}`);
   assert.ok(Math.abs((drop.totals.waste_share ?? 0) - 0.36) < 0.01);
+  // rates 覆盖（票 03 验收）：?read=1 让「丢缓存也全价」的世界里理想==实际 → 效率 1.0。
+  const dropRead1 = await fetch(`${app.adminUrl}/api/capture/cache-efficiency?tenant=main&identity=eff-drop&read=1`).then((r) => r.json()) as { totals: { efficiency: number | null }; assumptions: { rates: { read: number } } };
+  assert.equal(dropRead1.assumptions.rates.read, 1);
+  assert.ok(Math.abs((dropRead1.totals.efficiency ?? 0) - 1) < 1e-9, `eff=${dropRead1.totals.efficiency}`);
+  // rates 越界 → 400。
+  assert.equal((await fetch(`${app.adminUrl}/api/capture/cache-efficiency?tenant=main&identity=eff-drop&read=5`)).status, 400);
+  assert.equal((await fetch(`${app.adminUrl}/api/capture/cache-efficiency?tenant=main&identity=eff-drop&write=abc`)).status, 400);
 });
 
 test('cache efficiency: skips turns without usage and guards 404/400', async (t: TestContext): Promise<void> => {

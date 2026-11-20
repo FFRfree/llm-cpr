@@ -1,6 +1,6 @@
 # 02 cacheChain 线程化
 
-Status: ready-for-agent
+Status: completed
 
 ## 背景
 
@@ -37,14 +37,23 @@ Status: ready-for-agent
 
 ## 验收
 
-- [ ] 交错 fixture（两个线程 A/B 轮流落轮）：切孩子边界 `boundary='thread-switch'`，
+- [x] 交错 fixture（两个线程 A/B 轮流落轮）：切孩子边界 `boundary='thread-switch'`，
       线程内对比字段与线程内上一轮正确配对
-- [ ] `threads` 汇总数组正确（条数、label、轮数、时间范围、升序）
-- [ ] 单线程 fixture 行为与现状等价（boundary='same-thread'，线程内口径 = 老口径）
-- [ ] 老字段（common_prefix/first_diff_index/first_diff_role/chars_delta）值不回归
-- [ ] 窗口截断时线程内缺上一轮 → `prev_in_thread_id: null`，不抛错
-- [ ] node --test 全绿
+- [x] `threads` 汇总数组正确（条数、label、轮数、时间范围、升序）
+- [x] 单线程 fixture 行为与现状等价（boundary='same-thread'，线程内口径 = 老口径）
+- [x] 老字段（common_prefix/first_diff_index/first_diff_role/chars_delta）值不回归
+- [x] 窗口截断时线程内缺上一轮 → `prev_in_thread_id: null`，不抛错
+- [x] node --test 全绿
 
 ## Comments
 
 - 2026-11-20：立项。实测探针 probe6.mjs（批次目录）。
+- 完成 commit：e6dca52（初版）+ review 修复批（本提交）。实现注记：boundary 判定
+  **纯按时间序上一轮的线程键**（同键=same-thread / 异键=thread-switch / 无=first），
+  线程内延续信息由 prev_in_thread_* 正交携带——测试中 b2（线程 B 第二轮但时间序邻居是
+  A2）因此标 switch；threadKey 复用 cache-efficiency.ts 的 threadKeyOf（防双份实现漂移）。
+- 验证：`node --test` 218/218（含新交错 fixture「cache forensics threads: interleaved…」、
+  单线程等价、limit=3 窗口截断的 prev_in_thread_id null 断言）；老 cache-forensics 测试
+  （common_prefix/first_diff/limit）原样通过；sessions.html 老消费方未被形状变化破坏
+  （review 确认）。
+- 没做的验证：生产真实家族数据上的链路走查（合成夹具覆盖）。

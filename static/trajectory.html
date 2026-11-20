@@ -12,12 +12,13 @@
 .traj-thread>.th-head{display:flex;gap:6px;align-items:baseline;padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border);background:var(--surface)}
 .traj-thread>.th-head:hover{background:var(--hover)}
 .th-dot{flex:none;width:8px;height:8px;border-radius:50%;transform:translateY(-1px)}
-.th-label{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+.th-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
 .th-meta{flex:none;color:var(--muted);font-size:10px;font-variant-numeric:tabular-nums}
 .th-caret{flex:none;color:var(--muted);font-size:10px}
 .traj-thread>ul{list-style:none;margin:0;padding:0}
 .traj-thread>ul.hidden{display:none}
-.traj-thread>ul li{padding-left:14px}
+/* 树形层级感：轮次行缩进 + 左侧引导线挂到所属线程。 */
+.traj-thread>ul li{padding-left:18px;margin-left:14px;border-left:2px solid color-mix(in srgb, var(--border) 70%, transparent)}
 .t-flag.switch{color:var(--muted)}
 </style>
 </head>
@@ -56,6 +57,8 @@
 'use strict';
 const state = { sessions: [], identity: null, tenant: null, turns: [], refsByTurn: new Map(), turnId: null, chainByTurn: new Map() };
 const THREAD_COLORS = ['#5b8def', '#3fae7a', '#d29a3a', '#9a6fd0', '#d05b6a', '#3a9ad2', '#7aa23f', '#b06fd0'];
+// 树形里的紧凑时间（HH:MM:SS）：fmtClock 带全日期，260px 中列会撑出横向滚动。
+const fmtTime = (ts) => ts ? new Date(ts).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
 
 /* ---- 左列：会话清单（取账本会话，租户按全局筛选；无捕获的会话点开轮次会是空列表） ---- */
 async function loadSessions() {
@@ -111,33 +114,38 @@ async function loadTurns(identity, tenant) {
   const labelOf = (key) => (forensics?.threads || []).find((th) => th.key === key)?.label ?? key;
   const multi = threadOrder.length > 1;
 
-  const turnHtml = (t) => {
+  const turnHtml = (t, seq, threadLabel) => {
     const chain = state.chainByTurn.get(t.id);
     let flag = '';
-    if (!chain) flag = '';
-    else if (chain.prev_in_thread_id == null) flag = '<div class="t-flag ok">线程起点 · 基线</div>';
-    else if (chain.first_diff_in_thread_index != null) {
-      if (chain.common_prefix_in_thread === 0 && t.message_count > 0)
-        flag = '<div class="t-flag break">⚠ 线程内前缀断裂：0 条与上轮相同</div>';
-      else flag = `<div class="t-flag">新增：第 ${chain.first_diff_in_thread_index + 1} 条起（${esc(chain.first_diff_in_thread_role || '?')}）</div>`;
-    } else flag = '<div class="t-flag ok">全部与上轮相同</div>';
-    return `<li data-id="${t.id}" title="${esc(labelOf(t.__threadKey || ''))}">
-      <div>#${state.turns.indexOf(t) + 1} · <span class="t-model">${esc(t.model ?? '—')}</span> · ${t.message_count} 条 · ${fmtBytes(t.bytes)}</div>
-      <div class="meta muted">${fmtClock(t.ts)}</div>
+    if (chain) {
+      // 切线（family-observability 票 01）：时间序上一轮属其他孩子——不算断裂，小标提示。
+      const switchTag = chain.boundary === 'thread-switch'
+        ? '<div class="t-flag switch">↩ 切线（时间序上一轮属其他孩子）</div>' : '';
+      if (chain.prev_in_thread_id == null) flag = `${switchTag}<div class="t-flag ok">线程起点（窗口内基线）</div>`;
+      else if (chain.first_diff_in_thread_index != null) {
+        if (chain.common_prefix_in_thread === 0 && t.message_count > 0)
+          flag = `${switchTag}<div class="t-flag break">⚠ 线程内前缀断裂：0 条与上轮相同</div>`;
+        else flag = `${switchTag}<div class="t-flag">新增：第 ${chain.first_diff_in_thread_index + 1} 条起（${esc(chain.first_diff_in_thread_role || '?')}）</div>`;
+      } else flag = `${switchTag}<div class="t-flag ok">全部与上轮相同</div>`;
+    }
+    return `<li data-id="${t.id}" title="${esc(threadLabel)}">
+      <div>#${seq} · <span class="t-model">${esc(t.model ?? '—')}</span> · ${t.message_count} 条 · ${fmtBytes(t.bytes)}</div>
+      <div class="meta muted">${fmtTime(t.ts)}</div>
       ${flag}
     </li>`;
   };
 
   if (!multi) {
     // 单线程退化：与旧版平铺等价（无线程层）。
-    $('#traj-turns').innerHTML = state.turns.map(turnHtml).join('')
+    $('#traj-turns').innerHTML = state.turns.map((t, i) => turnHtml(t, i + 1, labelOf(threadOrder[0] ?? ''))).join('')
       || '<li class="empty">该会话没有捕获轮次（租户未开 capture 或轮次已过 TTL 清理）</li>';
   } else {
     $('#traj-turns').innerHTML = threadOrder.map((key, i) => {
       const list = byThread.get(key) || [];
       const color = THREAD_COLORS[i % THREAD_COLORS.length];
-      const span = list.length ? `${fmtClock(list[0].ts)} → ${fmtClock(list[list.length - 1].ts)}` : '';
+      const span = list.length ? `${fmtTime(list[0].ts)} → ${fmtTime(list[list.length - 1].ts)}` : '';
       const label = labelOf(key);
+      const baseSeq = state.turns.indexOf(list[0]) + 1;
       return `<li class="traj-thread">
         <div class="th-head" data-thread="${esc(key)}" title="${esc(label)}">
           <span class="th-dot" style="background:${color}"></span>
@@ -145,7 +153,7 @@ async function loadTurns(identity, tenant) {
           <span class="th-meta">${list.length}轮 · ${span}</span>
           <span class="th-caret">▾</span>
         </div>
-        <ul>${list.map((t) => { t.__threadKey = key; return turnHtml(t); }).join('')}</ul>
+        <ul>${list.map((t, j) => turnHtml(t, baseSeq + j, label)).join('')}</ul>
       </li>`;
     }).join('');
   }

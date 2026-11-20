@@ -26,8 +26,10 @@ capture 正文核对）：两个并行孩子在 data.db 里是同一 identity �
    前缀算 N 遍。用户拍板的口径（2026-11-20）：**缓存效率 = 理想消耗 / 实际消耗**——
    - 理想消耗（分子）：线程内每条唯一消息首次出现付写价，之后每次出现付读价
      （"每条 message 缓存起来、从不丢"的完美世界）；
-   - 实际消耗（分母）：账本三分量加权求和 fresh×1 + write×1.25 + read×0.1（输出两侧相同，
-     不计入）；消息级 token 按 `content.bytes × (prompt_tokens / turn.bytes)` 分摊估算；
+   - 实际消耗（分母）：账本三分量加权求和 fresh×1 + write×1（默认；Anthropic 形状部署调
+     1.25）+ read×0.1（输出两侧相同，不计入）；消息级 token 按
+     `content.bytes × (分摊总量 / Σ本轮 content.bytes)` 分摊（分摊总量 inclusive=prompt、
+     exclusive=prompt+hit+write；实现为逐行形状自适应，review P2-1 后定稿）；
    - 浪费占比 = 1 − 效率，即"中间丢缓存多付的差值"。实测（probe7.mjs）：串行孩子
      效率 71.2%、并行孩子 92.6%，而传统口径两者都是 93–97%——区分度是本指标的价值。
 

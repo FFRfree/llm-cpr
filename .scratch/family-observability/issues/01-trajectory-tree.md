@@ -1,6 +1,6 @@
 # 01 轨迹页树形（deleg 家族视角）
 
-Status: ready-for-agent
+Status: completed
 
 ## 背景
 
@@ -26,12 +26,21 @@ trajectory.html 中列把一个身份的轮次按时间平铺。deleg 家族（�
 
 ## 验收
 
-- [ ] 交错落库的两个线程在树中各归各的分支（label 可读、互不串行）
-- [ ] 单线程会话退化为单行，不出现多余的折叠层
-- [ ] 轮次 flag 用线程内口径；切孩子边界不显示「前缀断裂」警示
-- [ ] capture_id URL 参数直定位行为保持
-- [ ] node --test 全绿（admin-dashboard.test.ts 覆盖静态分发不回归）
+- [x] 交错落库的两个线程在树中各归各的分支（label 可读、互不串行）
+- [x] 单线程会话退化为单行，不出现多余的折叠层
+- [x] 轮次 flag 用线程内口径；切孩子边界渲染「↩ 切线」小标、不显示「前缀断裂」
+- [x] capture_id URL 参数直定位行为保持
+- [x] node --test 全绿（admin-dashboard.test.ts 覆盖静态分发不回归）
 
 ## Comments
 
 - 2026-11-20：立项。树形交互原型已经用户过目认可（批次目录 trajectory-proto-tree.html）。
+- 完成 commit：e6dca52（初版）+ review 修复批（本提交）。中列栅格 200→260px；
+  轮次行缩进 + 引导线；紧凑 HH:MM:SS（fmtClock 带全日期会撑出横向滚动，视觉复查后修）。
+- 验证：`node --test` 218/218、`npm run typecheck` 过、trajectory.html 内联脚本
+  `node --check` 过；**真浏览器 UI 冒烟 13/13 全过**（无头 Chrome + CDP，探针
+  `/root/ffr-scratch/2026-11-20-llm-cpr-subagent-capture/ui-probe.mjs`，截图
+  ui-smoke-trajectory.png）——覆盖树形分组/label/切线/线程内断裂标记/折叠/正文展开/
+  单线程退化/效率条/零运行时错误；截图复查确认无横向溢出、层级清晰。
+- 独立 review findings 正本：`/root/ffr-scratch/2026-11-20-llm-cpr-subagent-capture/review-findings.md`。
+- 没做的验证：生产真实数据下的视觉走查（冒烟为合成三会话夹具）；手机视口（桌面后台页）。
