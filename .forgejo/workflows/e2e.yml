@@ -19,6 +19,8 @@ jobs:
         run: git clone --depth 1 "http://oauth2:${GITHUB_TOKEN}@127.0.0.1:3001/${GITHUB_REPOSITORY}.git" .
       - name: 对齐提交
         run: git log --oneline -1
+      - name: 安装依赖（typecheck 需要 typescript）
+        run: npm ci
       - name: typecheck
         run: npm run typecheck
       - name: 全量单测
