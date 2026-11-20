@@ -56,7 +56,7 @@ async function startGateway(t: TestContext, tenants: Tenant[] | undefined, backe
   gateway.forwardServer.listen(0, '127.0.0.1');
   gateway.adminServer.listen(0, '127.0.0.1');
   await Promise.all([once(gateway.forwardServer, 'listening'), once(gateway.adminServer, 'listening')]);
-  t.after(async () => { await close(gateway.forwardServer); await close(gateway.adminServer); });
+  t.after(async () => { await close(gateway.forwardServer); await close(gateway.adminServer); fs.rmSync(dir, { recursive: true, force: true }); });
   return {
     gateway,
     forwardUrl: `http://127.0.0.1:${(gateway.forwardServer.address() as AddressInfo).port}`,
@@ -154,6 +154,7 @@ function gatewayCaptureNull(app: GatewayHandle): boolean { return app.gateway.ca
 
 test('capture TTL sweep deletes expired turns and unreferenced content, keeps still-referenced content', async (t: TestContext): Promise<void> => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-capture-sweep-'));
+  t.after(() => { fs.rmSync(dir, { recursive: true, force: true }); });
   const store = new CaptureStore({ dbFile: path.join(dir, 'capture.db'), ttlDays: 1, maxBodyBytes: 0, logger: {}, scheduleSweep: false });
   const systemMessage = { role: 'system', content: 'shared-system' };
   const a = store.capture({ tenant: 't', identity: 'i', identityKind: 'session', model: 'm', body: { model: 'm', messages: [systemMessage, { role: 'user', content: 'old turn' }] }, rawBytes: 100 });
@@ -217,6 +218,7 @@ test('capture degrade: failed flush latches, drops the turn, forwarding and ledg
   const fake = await fakeBackend('first', []);
   t.after(async () => await close(fake.server));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-capture-broken-'));
+  t.after(() => { fs.rmSync(dir, { recursive: true, force: true }); });
   const captureDb = path.join(dir, 'capture.db');
   // 预建侧库 + 拒写触发器（账本降级测试同款手段）：turns 插入永远 ABORT。
   const seeded = new DatabaseSync(captureDb);
@@ -239,6 +241,7 @@ test('capture degrade: failed flush latches, drops the turn, forwarding and ledg
 
 test('requests.capture_id is an additive migration: old schema gains the column, rows survive', (t: TestContext): void => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-capture-migrate-'));
+  t.after(() => { fs.rmSync(dir, { recursive: true, force: true }); });
   const dbFile = path.join(dir, 'data.db');
   const old = new DatabaseSync(dbFile);
   old.exec(`CREATE TABLE requests (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, identity TEXT, identity_kind TEXT NOT NULL, subscription TEXT, account TEXT, model TEXT, translated_model TEXT, path TEXT, status INTEGER, ms INTEGER, prompt_tokens INTEGER, completion_tokens INTEGER, cache_hit_tokens INTEGER, cache_miss_tokens INTEGER, cache_write_tokens INTEGER, total_tokens INTEGER, cache_observed INTEGER NOT NULL DEFAULT 0, cache_outcome TEXT, ttft_ms INTEGER, stream_ms INTEGER, usage_json TEXT);

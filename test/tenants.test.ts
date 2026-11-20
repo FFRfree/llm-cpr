@@ -55,7 +55,7 @@ async function startTenanted(t: TestContext, tenants: Tenant[], backendUrls: str
   gateway.forwardServer.listen(0, '127.0.0.1');
   gateway.adminServer.listen(0, '127.0.0.1');
   await Promise.all([once(gateway.forwardServer, 'listening'), once(gateway.adminServer, 'listening')]);
-  t.after(async () => { await close(gateway.forwardServer); await close(gateway.adminServer); });
+  t.after(async () => { await close(gateway.forwardServer); await close(gateway.adminServer); fs.rmSync(dir, { recursive: true, force: true }); });
   return {
     gateway,
     forwardUrl: `http://127.0.0.1:${(gateway.forwardServer.address() as AddressInfo).port}`,

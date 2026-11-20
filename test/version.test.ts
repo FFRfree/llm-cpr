@@ -1,7 +1,7 @@
 // 工单 07：管理口版本端点——打开看板才现查 npm registry（缓存 1h），进程零轮询；
 // registry 不可达时降级只报当前版不炸。夹具 = core 拷贝 + twin policy + 本地假 registry。
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -64,7 +64,7 @@ async function freePort(): Promise<number> {
 
 interface Engine { adminUrl: string; stop(): Promise<void> }
 
-async function bootEngine(registryUrl: string, extra: Record<string, string> = {}): Promise<Engine> {
+async function bootEngine(t: TestContext, registryUrl: string, extra: Record<string, string> = {}): Promise<Engine> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-ver-'));
   fs.cpSync(path.join(REPO, 'core'), path.join(root, 'core'), { recursive: true });
   // package.json 带 name/version：RUNTIME_VERSION 从这里读（server.ts 同源）
@@ -72,6 +72,7 @@ async function bootEngine(registryUrl: string, extra: Record<string, string> = {
   fs.writeFileSync(path.join(root, 'core', 'policy', 'mine.ts'), TWIN_MINE);
   const [forwardPort, adminPort] = await Promise.all([freePort(), freePort()]);
   const dbs = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-ver-db-'));
+  t.after(() => { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(dbs, { recursive: true, force: true }); });
   const child = spawn(process.execPath, ['core/main.ts'], {
     cwd: root,
     env: {
@@ -112,9 +113,9 @@ async function bootEngine(registryUrl: string, extra: Record<string, string> = {
   };
 }
 
-test('版本端点：现查一次 + 缓存窗口内零重复请求（默认 TTL 1h）', async () => {
+test('版本端点：现查一次 + 缓存窗口内零重复请求（默认 TTL 1h）', async (t) => {
   const reg = await makeRegistry();
-  const engine = await bootEngine(reg.url);
+  const engine = await bootEngine(t, reg.url);
   try {
     const r1 = (await fetch(`${engine.adminUrl}/api/version`).then((r) => r.json())) as { version: string; latest: string | null; checkedAt: number };
     assert.equal(r1.version, '0.1.0'); // 当前运行版（engine package.json 同源）
@@ -130,9 +131,9 @@ test('版本端点：现查一次 + 缓存窗口内零重复请求（默认 TTL 
   }
 });
 
-test('版本端点：TTL=0 接缝下每次现查（验证缓存窗口逻辑）', async () => {
+test('版本端点：TTL=0 接缝下每次现查（验证缓存窗口逻辑）', async (t) => {
   const reg = await makeRegistry();
-  const engine = await bootEngine(reg.url, { CPR_LATEST_TTL_MS: '0' });
+  const engine = await bootEngine(t, reg.url, { CPR_LATEST_TTL_MS: '0' });
   try {
     await fetch(`${engine.adminUrl}/api/version`).then((r) => r.json());
     const hitsBefore = reg.hits();
@@ -144,9 +145,9 @@ test('版本端点：TTL=0 接缝下每次现查（验证缓存窗口逻辑）',
   }
 });
 
-test('版本端点：registry 不可达 → latest=null 降级不炸（看板照常显示当前版）', async () => {
+test('版本端点：registry 不可达 → latest=null 降级不炸（看板照常显示当前版）', async (t) => {
   const deadPort = await freePort(); // 没人监听的端口 = registry 不可达
-  const engine = await bootEngine(`http://127.0.0.1:${deadPort}`);
+  const engine = await bootEngine(t, `http://127.0.0.1:${deadPort}`);
   try {
     const res = await fetch(`${engine.adminUrl}/api/version`);
     assert.equal(res.status, 200);

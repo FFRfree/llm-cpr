@@ -24,11 +24,16 @@ interface Fixture { base: string; work: string; env: Env }
 // npm stub 模拟真 npm 的 -g --prefix 落盘：把 CPR_NPM_SOURCE 拷进 <prefix>/lib/node_modules/@ffrfree/llm-cpr
 // 并建 <prefix>/bin/cpr 软链（实测形状）；systemctl stub 的 is-active 按真实 current 软链判活——
 // 靠这对联动端到端复现「新版起不来 → 软链拨回 → 服务恢复」的零网络回滚主线。
-function makeFixture(): Fixture {
+function makeFixture(t: TestContext): Fixture {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-user-scripts-'));
+  t.after(() => { fs.rmSync(base, { recursive: true, force: true }); });
   const work = path.join(base, 'work');
   fs.mkdirSync(work);
-  fs.cpSync(path.join(REPO, 'scripts'), path.join(work, 'scripts'), { recursive: true });
+  // 只拷 CLI 真正用到的两个文件：整棵 scripts 会把 e2e 的本地搭车目录（pi-vendor 等，
+  // .gitignore 排除）拖进每个用例的临时副本——2026-11-20 单日堆出 90G+ 的磁盘火情根源。
+  fs.mkdirSync(path.join(work, 'scripts'), { recursive: true });
+  fs.cpSync(path.join(REPO, 'scripts', 'cpr.ts'), path.join(work, 'scripts', 'cpr.ts'));
+  fs.cpSync(path.join(REPO, 'scripts', 'cpr.js'), path.join(work, 'scripts', 'cpr.js'));
   fs.cpSync(path.join(REPO, 'package.json'), path.join(work, 'package.json'));
   fs.cpSync(path.join(REPO, '.env.example'), path.join(work, '.env.example'));
   fs.mkdirSync(path.join(work, 'core', 'policy'), { recursive: true });
@@ -164,8 +169,8 @@ async function freePort(): Promise<number> {
 
 // ---- doctor ----
 
-test('doctor（bootstrap 副本）：PKGROOT/VERSION/NEXT=先 install', () => {
-  const f = makeFixture();
+test('doctor（bootstrap 副本）：PKGROOT/VERSION/NEXT=先 install', (t) => {
+  const f = makeFixture(t);
   const r = cpr(f.work, ['doctor'], f.env);
   assert.equal(r.status, 0, r.stderr);
   assert.ok(r.stdout.includes(`PKGROOT=${f.work}`));
@@ -176,8 +181,8 @@ test('doctor（bootstrap 副本）：PKGROOT/VERSION/NEXT=先 install', () => {
   assert.match(r.stdout, /NEXT=固定位置安装未建立：cpr install/);
 });
 
-test('doctor（已安装）：MODE 钉安装区、current → 版本、BIN=PATH ✓、NEXT=有新版', () => {
-  const f = makeFixture();
+test('doctor（已安装）：MODE 钉安装区、current → 版本、BIN=PATH ✓、NEXT=有新版', (t) => {
+  const f = makeFixture(t);
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
   const r = cpr(f.work, ['doctor'], f.env);
   assert.equal(r.status, 0, r.stderr);
@@ -187,8 +192,8 @@ test('doctor（已安装）：MODE 钉安装区、current → 版本、BIN=PATH 
   assert.match(r.stdout, /NEXT=有新版：cpr upgrade（当前 0\.1\.0 → 0\.2\.0）/);
 });
 
-test('doctor（clone 形态）：MODE=clone，NEXT 指向 git pull', () => {
-  const f = makeFixture();
+test('doctor（clone 形态）：MODE=clone，NEXT 指向 git pull', (t) => {
+  const f = makeFixture(t);
   fs.mkdirSync(path.join(f.work, '.git'));
   const r = cpr(f.work, ['doctor'], f.env);
   assert.equal(r.status, 0, r.stderr);
@@ -198,8 +203,8 @@ test('doctor（clone 形态）：MODE=clone，NEXT 指向 git pull', () => {
 
 // ---- install ----
 
-test('install --yes：写出 unit / .env(随机 master key) / ~/.llm-cpr policy 三件套，并 enable --now', () => {
-  const f = makeFixture();
+test('install --yes：写出 unit / .env(随机 master key) / ~/.llm-cpr policy 三件套，并 enable --now', (t) => {
+  const f = makeFixture(t);
   const r = cpr(f.work, ['install', '--yes'], f.env);
   assert.equal(r.status, 0, r.stderr + r.stdout);
 
@@ -252,8 +257,8 @@ test('install --yes：写出 unit / .env(随机 master key) / ~/.llm-cpr policy 
   assert.match(lingerLog, /enable-linger/); // install 顺手开 linger：登出后服务照跑
 });
 
-test('install 重复执行幂等：.env 与 policy.ts 不被重置', () => {
-  const f = makeFixture();
+test('install 重复执行幂等：.env 与 policy.ts 不被重置', (t) => {
+  const f = makeFixture(t);
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
   const envBefore = fs.readFileSync(path.join(f.env.CPR_CONFIG_DIR, '.env'), 'utf8');
   const localBefore = fs.readFileSync(path.join(f.env.CPR_CONFIG_DIR, 'policy.ts'), 'utf8');
@@ -270,8 +275,8 @@ test('install 重复执行幂等：.env 与 policy.ts 不被重置', () => {
 
 // ---- upgrade（v0.2.0 npm 形态）----
 
-test('upgrade：clone 形态拒绝（引擎开发者走 git）', () => {
-  const f = makeFixture();
+test('upgrade：clone 形态拒绝（引擎开发者走 git）', (t) => {
+  const f = makeFixture(t);
   fs.mkdirSync(path.join(f.work, '.git'));
   const r = cpr(f.work, ['upgrade', '--yes'], f.env);
   assert.equal(r.status, 1);
@@ -279,16 +284,16 @@ test('upgrade：clone 形态拒绝（引擎开发者走 git）', () => {
   assert.deepEqual(npmLog(f), []); // 零 npm 动作（拒绝发生在查 registry 之前，日志都可能不存在）
 });
 
-test('upgrade：未建立固定位置安装 → 拒绝并指路 install', () => {
-  const f = makeFixture();
+test('upgrade：未建立固定位置安装 → 拒绝并指路 install', (t) => {
+  const f = makeFixture(t);
   const r = cpr(f.work, ['upgrade', '--yes'], f.env);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /固定位置安装尚未建立/);
   assert.deepEqual(npmLog(f), []); // 零 npm 动作
 });
 
-test('upgrade：已是最新 → 零动作退出 0', () => {
-  const f = makeFixture();
+test('upgrade：已是最新 → 零动作退出 0', (t) => {
+  const f = makeFixture(t);
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
   const sysBefore = systemctlLog(f).length;
   const r = cpr(f.work, ['upgrade', '--yes'], { ...f.env, CPR_NPM_LATEST: '0.1.0' });
@@ -300,8 +305,8 @@ test('upgrade：已是最新 → 零动作退出 0', () => {
   assert.equal(systemctlLog(f).length, sysBefore); // 零 systemd 动作
 });
 
-test('upgrade --yes：下载新版目录 → 软链切换 → is-active 门通过', () => {
-  const f = makeFixture();
+test('upgrade --yes：下载新版目录 → 软链切换 → is-active 门通过', (t) => {
+  const f = makeFixture(t);
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
   const r = cpr(f.work, ['upgrade', '--yes'], f.env);
   assert.equal(r.status, 0, r.stderr + r.stdout);
@@ -314,8 +319,8 @@ test('upgrade --yes：下载新版目录 → 软链切换 → is-active 门通�
   assert.deepEqual(fs.readdirSync(path.join(f.env.CPR_APP_ROOT, 'versions')).sort(), ['0.1.0', '0.2.0']);
 });
 
-test('upgrade --yes：新版起不来 → 软链拨回（零网络回滚），服务恢复', () => {
-  const f = makeFixture();
+test('upgrade --yes：新版起不来 → 软链拨回（零网络回滚），服务恢复', (t) => {
+  const f = makeFixture(t);
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
   const logBefore = npmLog(f).length;
   // systemctl stub：current 指 0.2.0 时 is-active 判为起不来
@@ -329,8 +334,8 @@ test('upgrade --yes：新版起不来 → 软链拨回（零网络回滚），�
   assert.equal(path.basename(fs.readlinkSync(f.env.CPR_CURRENT_LINK)), '0.1.0'); // 磁盘上确实回到旧版
 });
 
-test('upgrade --to 0.0.5 --yes：跳过 registry 查询直装指定版', () => {
-  const f = makeFixture();
+test('upgrade --to 0.0.5 --yes：跳过 registry 查询直装指定版', (t) => {
+  const f = makeFixture(t);
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
   const r = cpr(f.work, ['upgrade', '--to', '0.0.5', '--yes'], f.env);
   assert.equal(r.status, 0, r.stderr + r.stdout);
@@ -340,8 +345,8 @@ test('upgrade --to 0.0.5 --yes：跳过 registry 查询直装指定版', () => {
   assert.equal(path.basename(fs.readlinkSync(f.env.CPR_CURRENT_LINK)), '0.0.5');
 });
 
-test('upgrade --to 含路径字符的版本 → 白名单拒绝，零动作（review-2 P2）', () => {
-  const f = makeFixture();
+test('upgrade --to 含路径字符的版本 → 白名单拒绝，零动作（review-2 P2）', (t) => {
+  const f = makeFixture(t);
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
   const r = cpr(f.work, ['upgrade', '--to', '../evil', '--yes'], f.env);
   assert.equal(r.status, 1);
@@ -350,8 +355,8 @@ test('upgrade --to 含路径字符的版本 → 白名单拒绝，零动作（re
   assert.equal(path.basename(fs.readlinkSync(f.env.CPR_CURRENT_LINK)), '0.1.0'); // current 未动
 });
 
-test('install：补丁冲突 → current 未切换，不指向未验证版本（review-2 P2）', () => {
-  const f = makeFixture();
+test('install：补丁冲突 → current 未切换，不指向未验证版本（review-2 P2）', (t) => {
+  const f = makeFixture(t);
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0); // 先装 0.1.0
   fs.mkdirSync(f.env.CPR_PATCH_DIR, { recursive: true });
   fs.writeFileSync(path.join(f.env.CPR_PATCH_DIR, 'conflict.patch'), '--- a/core/nope.ts\n+++ b/core/nope.ts\n@@ -1 +1 @@\n-x\n+y\n');
@@ -371,8 +376,8 @@ test('install：补丁冲突 → current 未切换，不指向未验证版本（
 
 // ---- 用户补丁（工单 09）----
 
-test('install：补丁打到版本目录（bootstrap 副本不动），重跑幂等跳过', () => {
-  const f = makeFixture();
+test('install：补丁打到版本目录（bootstrap 副本不动），重跑幂等跳过', (t) => {
+  const f = makeFixture(t);
   writeUserPatch(f, 'user.patch', 'core/main.ts', '// fixture stub\n', '// fixture stub\n// patched by user\n');
   const r = cpr(f.work, ['install', '--yes'], f.env);
   assert.equal(r.status, 0, r.stderr + r.stdout);
@@ -388,8 +393,8 @@ test('install：补丁打到版本目录（bootstrap 副本不动），重跑幂
   assert.equal(fs.readFileSync(engineMain, 'utf8').match(/patched by user/g)?.length, 1);
 });
 
-test('doctor：PATCH 三态探测（无 / 未应用 / 已应用），探测不改文件', () => {
-  const f = makeFixture();
+test('doctor：PATCH 三态探测（无 / 未应用 / 已应用），探测不改文件', (t) => {
+  const f = makeFixture(t);
   let r = cpr(f.work, ['doctor'], f.env);
   assert.match(r.stdout, /PATCH=无/);
   writeUserPatch(f, 'user.patch', 'core/main.ts', '// fixture stub\n', '// fixture stub\n// patched by user\n');
@@ -401,8 +406,8 @@ test('doctor：PATCH 三态探测（无 / 未应用 / 已应用），探测不�
   assert.match(r.stdout, /PATCH=已应用（user\.patch）/);
 });
 
-test('upgrade --yes：补丁与新版本冲突 → 拒绝，current 未切换、服务未动', () => {
-  const f = makeFixture();
+test('upgrade --yes：补丁与新版本冲突 → 拒绝，current 未切换、服务未动', (t) => {
+  const f = makeFixture(t);
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
   // 冲突补丁：目标文件在包里不存在，正向反向 dry-run 都不过
   fs.mkdirSync(f.env.CPR_PATCH_DIR, { recursive: true });
@@ -415,8 +420,8 @@ test('upgrade --yes：补丁与新版本冲突 → 拒绝，current 未切换、
   assert.ok(npmLog(f).some((line) => line.includes('@ffrfree/llm-cpr@0.2.0'))); // 新版目录已下载（修好补丁重试可复用）
 });
 
-test('upgrade --yes：新版目录全新 → 补丁重打在新版上', () => {
-  const f = makeFixture();
+test('upgrade --yes：新版目录全新 → 补丁重打在新版上', (t) => {
+  const f = makeFixture(t);
   writeUserPatch(f, 'user.patch', 'core/main.ts', '// fixture stub\n', '// fixture stub\n// patched by user\n');
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
   const r = cpr(f.work, ['upgrade', '--yes'], f.env);
@@ -427,8 +432,8 @@ test('upgrade --yes：新版目录全新 → 补丁重打在新版上', () => {
   assert.match(r.stdout, /完成。0\.1\.0 → 0\.2\.0，服务健康/);
 });
 
-test('bootstrap：从 node_modules 路径跑 .ts 被 Node 拒 → cpr.js 引导搬离后拉起（工单 12 真机火情回归）', () => {
-  const f = makeFixture();
+test('bootstrap：从 node_modules 路径跑 .ts 被 Node 拒 → cpr.js 引导搬离后拉起（工单 12 真机火情回归）', (t) => {
+  const f = makeFixture(t);
   // 模拟 npx/npm 全局的落盘形态：包整个住在 node_modules 树里
   const pkgDir = path.join(f.base, 'npx-cache', 'node_modules', '@ffrfree', 'llm-cpr');
   fs.mkdirSync(path.join(pkgDir, 'scripts'), { recursive: true });
@@ -451,8 +456,8 @@ test('bootstrap：从 node_modules 路径跑 .ts 被 Node 拒 → cpr.js 引导�
 
 // ---- uninstall ----
 
-test('uninstall：停服务失败 → 拒绝继续，unit 与数据原样保留', () => {
-  const f = makeFixture();
+test('uninstall：停服务失败 → 拒绝继续，unit 与数据原样保留', (t) => {
+  const f = makeFixture(t);
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0); // 先建立安装区（is-active 按真实软链判活）
   fs.writeFileSync(path.join(f.env.CPR_DATA_DIR, 'usage.db'), 'rows');
   // 服务在跑（is-active 成功）但 disable 失败——正好卡进新守卫的拒绝分支
@@ -468,8 +473,8 @@ test('uninstall：停服务失败 → 拒绝继续，unit 与数据原样保留'
   assert.equal(fs.readFileSync(path.join(f.env.CPR_DATA_DIR, 'usage.db'), 'utf8'), 'rows');
 });
 
-test('uninstall：删 unit/命令软链/代码安装区，数据原样保留；--purge 需 --yes', () => {
-  const f = makeFixture();
+test('uninstall：删 unit/命令软链/代码安装区，数据原样保留；--purge 需 --yes', (t) => {
+  const f = makeFixture(t);
   assert.equal(cpr(f.work, ['install', '--yes'], f.env).status, 0);
   fs.writeFileSync(path.join(f.env.CPR_DATA_DIR, 'usage.db'), 'rows');
 
@@ -517,17 +522,19 @@ export default class LocalPolicy {
 }
 `;
 
-function makeMainCopy(twinName: string): string {
+function makeMainCopy(t: TestContext, twinName: string): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-main-'));
+  t.after(() => { fs.rmSync(root, { recursive: true, force: true }); });
   fs.cpSync(path.join(REPO, 'core'), path.join(root, 'core'), { recursive: true });
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ type: 'module', name: '@ffrfree/llm-cpr', version: '0.1.0' }) + "\n");
   fs.writeFileSync(path.join(root, 'core', 'policy', 'mine.ts'), TWIN_MINE.replace('twin-stub', twinName));
   return root;
 }
 
-async function bootMain(root: string, extra: Env): Promise<{ subscriptions: { name: string }[]; stdout: string; child: ReturnType<typeof spawn> }> {
+async function bootMain(t: TestContext, root: string, extra: Env): Promise<{ subscriptions: { name: string }[]; stdout: string; child: ReturnType<typeof spawn> }> {
   const [forwardPort, adminPort] = await Promise.all([freePort(), freePort()]);
   const dbs = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-main-db-'));
+  t.after(() => { fs.rmSync(dbs, { recursive: true, force: true }); });
   const child = spawn(process.execPath, ['core/main.ts'], {
     cwd: root,
     env: {
@@ -560,9 +567,9 @@ async function bootMain(root: string, extra: Env): Promise<{ subscriptions: { na
   throw new Error(`main.ts 未在时限内起来：${stdout}`);
 }
 
-test('main.ts：无 ~/.llm-cpr/policy.ts 回落 core/policy/mine.ts', async () => {
-  const root = makeMainCopy('twin-stub');
-  const { subscriptions, stdout, child } = await bootMain(root, {});
+test('main.ts：无 ~/.llm-cpr/policy.ts 回落 core/policy/mine.ts', async (t) => {
+  const root = makeMainCopy(t, 'twin-stub');
+  const { subscriptions, stdout, child } = await bootMain(t, root, {});
   try {
     assert.deepEqual(subscriptions.map((s) => s.name), ['twin-stub']);
     assert.match(stdout, /^llm-cpr 0\.1\.0 — policy: core\/policy\/mine\.ts/); // 版本行 = 包内 package.json（npm 形态正源，v0.1.0 的 RELEASE.txt/git 机制已退役）
@@ -571,11 +578,12 @@ test('main.ts：无 ~/.llm-cpr/policy.ts 回落 core/policy/mine.ts', async () =
   }
 });
 
-test('main.ts：有 ~/.llm-cpr/policy.ts 则优先生效', async () => {
-  const root = makeMainCopy('twin-stub');
+test('main.ts：有 ~/.llm-cpr/policy.ts 则优先生效', async (t) => {
+  const root = makeMainCopy(t, 'twin-stub');
   const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-local-policy-'));
+  t.after(() => { fs.rmSync(cfg, { recursive: true, force: true }); });
   fs.writeFileSync(path.join(cfg, 'policy.ts'), LOCAL_POLICY('local-stub'));
-  const { subscriptions, stdout, child } = await bootMain(root, { CPR_CONFIG_DIR: cfg });
+  const { subscriptions, stdout, child } = await bootMain(t, root, { CPR_CONFIG_DIR: cfg });
   try {
     assert.deepEqual(subscriptions.map((s) => s.name), ['local-stub']);
     assert.match(stdout, /policy: .*policy\.ts/);
@@ -584,9 +592,10 @@ test('main.ts：有 ~/.llm-cpr/policy.ts 则优先生效', async () => {
   }
 });
 
-test('main.ts：坏 ~/.llm-cpr/policy.ts 拒绝启动且报错指向该文件', () => {
-  const root = makeMainCopy('twin-stub');
+test('main.ts：坏 ~/.llm-cpr/policy.ts 拒绝启动且报错指向该文件', (t) => {
+  const root = makeMainCopy(t, 'twin-stub');
   const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-bad-policy-'));
+  t.after(() => { fs.rmSync(cfg, { recursive: true, force: true }); });
   fs.writeFileSync(path.join(cfg, 'policy.ts'), 'export default class Bad { backends = []; models = [] }\n');
   const r = spawnSync(process.execPath, ['core/main.ts'], { cwd: root, encoding: 'utf8', env: { ...process.env, CPR_CONFIG_DIR: cfg } });
   assert.equal(r.status, 1);
@@ -619,12 +628,12 @@ async function cprAsync(work: string, args: string[], env: Env): Promise<{ statu
 }
 
 test('cpr reload：reloaded → 0 分；unchanged → 0 分', async (t) => {
-  const f = makeFixture();
+  const f = makeFixture(t);
   const port = await adminStub(t, { outcome: { kind: 'reloaded', toHash: 'a'.repeat(64) }, status: { source: '/tmp/policy.ts' } });
   const r = await cprAsync(f.work, ['reload'], { ...f.env, CPR_ADMIN_PORT: String(port) });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /策略已热更新（sha256 a{12}）/);
-  const f2 = makeFixture();
+  const f2 = makeFixture(t);
   const port2 = await adminStub(t, { outcome: { kind: 'unchanged' }, status: {} });
   const r2 = await cprAsync(f2.work, ['reload'], { ...f2.env, CPR_ADMIN_PORT: String(port2) });
   assert.equal(r2.status, 0, r2.stderr);
@@ -632,7 +641,7 @@ test('cpr reload：reloaded → 0 分；unchanged → 0 分', async (t) => {
 });
 
 test('cpr reload：load-failed 保旧 → 退出 1 + 指回文件', async (t) => {
-  const f = makeFixture();
+  const f = makeFixture(t);
   const port = await adminStub(t, { outcome: { kind: 'kept', reason: 'load-failed', error: '/tmp/policy.ts: Unexpected token' }, status: { source: '/tmp/policy.ts' } });
   const r = await cprAsync(f.work, ['reload'], { ...f.env, CPR_ADMIN_PORT: String(port) });
   assert.equal(r.status, 1);
@@ -643,7 +652,7 @@ test('cpr reload：load-failed 保旧 → 退出 1 + 指回文件', async (t) =>
 });
 
 test('cpr reload：冷区变更 --yes 代跑重启（stub 记 argv）', async (t) => {
-  const f = makeFixture();
+  const f = makeFixture(t);
   const port = await adminStub(t, { outcome: { kind: 'kept', reason: 'cold-zone-change', coldChanged: ['backends'] }, status: {} });
   const r = await cprAsync(f.work, ['reload', '--yes'], { ...f.env, CPR_ADMIN_PORT: String(port) });
   assert.equal(r.status, 0, r.stderr);
@@ -653,7 +662,7 @@ test('cpr reload：冷区变更 --yes 代跑重启（stub 记 argv）', async (t
 });
 
 test('cpr reload：冷区变更 非交互不代重启 → 1 分 + 手工口径', async (t) => {
-  const f = makeFixture();
+  const f = makeFixture(t);
   const port = await adminStub(t, { outcome: { kind: 'kept', reason: 'cold-zone-change', coldChanged: ['tenants'] }, status: {} });
   const r = await cprAsync(f.work, ['reload'], { ...f.env, CPR_ADMIN_PORT: String(port) });
   assert.equal(r.status, 1);
@@ -662,7 +671,7 @@ test('cpr reload：冷区变更 非交互不代重启 → 1 分 + 手工口径',
 });
 
 test('cpr reload：daemon 不可达 → 退出 1 + 不做本地兜底', async (t) => {
-  const f = makeFixture();
+  const f = makeFixture(t);
   const port = await freePort(); // 空端口 = 没服务
   const r = await cprAsync(f.work, ['reload'], { ...f.env, CPR_ADMIN_PORT: String(port) });
   assert.equal(r.status, 1);
