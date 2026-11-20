@@ -6,6 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { startGateway } from './http/server.ts';
 import { validateConfig } from './policy/config.ts';
+import { sha256File } from './policy/reload.ts';
 import { configDir, envFile } from './paths.ts';
 import { loadDotEnv } from './envfile.ts';
 import type { RouterPolicy } from './policy/contract.ts';
@@ -34,7 +35,8 @@ try {
     if (loadedKeys > 0) console.log(`env: ${envPath}（${loadedKeys} 键）`);
   }
   const localPath = path.join(configDir(), 'policy.ts');
-  const source = fs.existsSync(localPath) ? localPath : 'core/policy/mine.ts';
+  const fromFile = fs.existsSync(localPath);
+  const source = fromFile ? localPath : 'core/policy/mine.ts';
   // 动态 import 用变量路径：文件存在与否已用 existsSync 判定，import 失败（语法错/坏 import）一律原样抛。
   const loaded = source === 'core/policy/mine.ts'
     ? await import('./policy/mine.ts')
@@ -46,10 +48,13 @@ try {
   } catch (error) {
     throw new Error(`${source}: ${messageOf(error)}`);
   }
-  console.log(`llm-cpr ${bootVersion()} — policy: ${source}`);
+  // 启动行附 sha256（工单 policy-hot-reload）：「现在跑的是哪份声明」的可审计锚点，
+  // 与热更新后的 system_events policy.reload 事件、backups/policy 快照同源对账。
+  const fileHash = fromFile ? ` · sha256 ${sha256File(localPath).slice(0, 12)}` : '';
+  console.log(`llm-cpr ${bootVersion()} — policy: ${source}${fileHash}`);
   const tenantNames = (policy.tenants ?? []).map((tenant) => tenant.name);
   if (tenantNames.length) console.log(`tenants: ${tenantNames.join(', ')}`); // 鉴权按租户 key；缺 env 的租户在 authenticate 处自然 401，不在此拒启动
-  await startGateway(policy);
+  await startGateway(policy, { policyFile: fromFile ? localPath : undefined });
 } catch (error) {
   console.error(messageOf(error));
   process.exitCode = 1;

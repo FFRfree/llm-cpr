@@ -794,9 +794,63 @@ async function uninstall(yes: boolean, purge: boolean): Promise<number> {
   return 0;
 }
 
+// ---- reload（policy 热更新，工单 .scratch/policy-hot-reload/）----
+
+// 判定单源：CLI 不本地 import/validate——daemon 是唯一验真者（两套判定必然漂移）。
+// 连不上如实报错退出，不做本地兜底；热区改动忘跑本命令也不出错（daemon 每请求懒检查兜底，
+// 本命令只是把结果转成人话 + 冷区变更时代跑重启）。
+async function reloadPolicy(yes: boolean): Promise<number> {
+  const port = Number(process.env.CPR_ADMIN_PORT) || 8740;
+  interface Outcome { kind: string; reason?: string; error?: string; coldChanged?: string[]; toHash?: string }
+  let body: { outcome: Outcome; status: { source?: string; sha256?: string | null } } | null = null;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/policy/reload`, { method: 'POST', signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) {
+      // 非 200 ≠ 不可达（review-1 P3-6）：500/503 时 daemon 在跑，报错该指向 daemon 日志。
+      console.error(`cpr: 管理口返回 HTTP ${res.status}（127.0.0.1:${port}/api/policy/reload）——daemon 在跑但处理出错，查服务日志。`);
+      return 1;
+    }
+    body = await res.json() as { outcome: Outcome; status: { source?: string; sha256?: string | null } };
+  } catch {
+    console.error(`cpr: 管理口 127.0.0.1:${port} 不可达——热更新必须由运行中的进程完成，CLI 不做本地兜底判定。`);
+    console.error(`  服务没在跑？先查：systemctl --user status ${UNIT_NAME}`);
+    return 1;
+  }
+  const outcome = body!.outcome;
+  const source = body!.status.source ?? '~/.llm-cpr/policy.ts';
+  if (outcome.kind === 'reloaded') {
+    console.log(`cpr: 策略已热更新（sha256 ${(outcome.toHash ?? body!.status.sha256 ?? '').slice(0, 12)}）——下一条请求即用新策略。`);
+    return 0;
+  }
+  if (outcome.kind === 'unchanged') {
+    console.log('cpr: 声明文件未变化（或未启用外置 policy.ts，跑的是内置模板），无需重载。');
+    return 0;
+  }
+  // kept = 保旧（Hermes last-known-good 语义：改坏文件绝不让流量变道）
+  if (outcome.reason === 'cold-zone-change') {
+    console.log('cpr: 声明改了冷区字段（热更新不覆盖，重启才生效）：');
+    for (const field of outcome.coldChanged ?? []) console.log(`  - ${field}`);
+    if (!(await confirm('是否现在重启服务让全部变更生效？（重启会中断在途请求）', yes))) {
+      console.log(`cpr: 未重启。手工口径：systemctl --user restart ${UNIT_NAME}`);
+      return 1;
+    }
+    const restart = serviceRestart();
+    if (!restart.ok) {
+      console.error(`cpr: 重启失败：${restart.err}`);
+      return 1;
+    }
+    console.log('cpr: 已重启，全部变更生效。');
+    return 0;
+  }
+  console.error(`cpr: 热更新失败，继续用旧策略（${outcome.reason ?? '未知原因'}）——当前流量不受影响：`);
+  console.error(`  ${outcome.error ?? outcome.reason}`);
+  console.error(`  修好 ${source} 后重跑 cpr reload。`);
+  return 1;
+}
+
 // ---- 入口 ----
 
-const USAGE = `用法：cpr <doctor|install|upgrade|uninstall> [--yes] [--purge] [--to <版本>]（clone 里：node scripts/cpr.ts …）`;
+const USAGE = `用法：cpr <doctor|install|upgrade|uninstall|reload> [--yes] [--purge] [--to <版本>]（clone 里：node scripts/cpr.ts …）`;
 
 const [command, ...flags] = process.argv.slice(2);
 const yes = flags.includes('--yes');
@@ -814,6 +868,7 @@ switch (command) {
   case 'install': exitCode = await install(yes); break;
   case 'upgrade': exitCode = await upgrade(yes, toVersion); break;
   case 'uninstall': exitCode = await uninstall(yes, purge); break;
+  case 'reload': exitCode = await reloadPolicy(yes); break;
   default: die(USAGE);
 }
 process.exit(exitCode);

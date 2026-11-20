@@ -12,11 +12,12 @@ import { createSystemEventStore, type SystemEventStore, type RouteEventDetail } 
 import { openDatabase } from '../store/db.ts';
 import { runMigrations } from '../store/migrate.ts';
 import { CaptureStore } from '../store/capture.ts';
-import { defaultDbPath } from '../paths.ts';
+import { dataDir, defaultDbPath } from '../paths.ts';
 import { UsageSnapshots } from '../store/snapshots.ts';
 import { builtinDecide } from '../policy/builtin-decide.ts';
 import { resolveListenEndpoints } from '../policy/config.ts';
 import { decisionCtx, routeScope } from '../policy/ctx.ts';
+import { createPolicyReloader, type ReloadTrigger } from '../policy/reload.ts';
 import { UsageAudit } from '../store/audit.ts';
 import { json, messageOf, statusOf } from './respond.ts';
 import { forwardAttempt, passthroughError, retryAfterMs, sleep, type ForwardTimings, type QuotaResult } from './forward.ts';
@@ -46,6 +47,9 @@ export interface CreateGatewayOptions {
   env?: Environment;
   fetchImpl?: typeof fetch;
   logger?: Logger;
+  // policy 声明文件路径（~/.llm-cpr/policy.ts）：给出才启用热更新懒检查（工单 policy-hot-reload）。
+  // 缺省 = builtin/测试直传实例：零行为（不 stat、不建备份目录、无 reload 事件）。
+  policyFile?: string;
 }
 export interface Gateway {
   forwardServer: Server;
@@ -58,7 +62,7 @@ export interface Gateway {
   capture: CaptureStore | null;
 }
 
-export function createGatewayServers(policy: RouterPolicy, { env = process.env, fetchImpl = fetch, logger = console }: CreateGatewayOptions = {}): Gateway {
+export function createGatewayServers(policy: RouterPolicy, { env = process.env, fetchImpl = fetch, logger = console, policyFile }: CreateGatewayOptions = {}): Gateway {
   const identityHeaderOf = (p: RouterPolicy): string => String(p.identity_header || p.identityHeader || 'x-session-id').trim().toLowerCase();
   const masterKeyOf = (p: RouterPolicy): string | undefined => env[p.masterKeyEnv || p.master_key_env || 'CPR_MASTER_KEY'];
   // 租户 = 一类调用方的身份键（ADR-0007）。声明了 tenants：Bearer 命中哪个租户的 key 就归属哪个租户，
@@ -104,7 +108,8 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
   const events = createSystemEventStore(db, logger);
   // decide ctx 的 candidates[].recent 数据源：record() 挂钩喂入。
   const health = createHealthTracker();
-  // 配置即代码：policy 为进程内静态实例（无热重载），快照轮询器随启动一次构建。
+  // 配置即代码：快照轮询器随启动一次构建（backends 与 snapshot_interval_ms 属冷区——
+  // 热换的冷区守卫拒绝这两项变更，见 policy/reload.ts 的 COLD_POLICY_FIELDS）。
   const snapshots = new UsageSnapshots({ backends: policy.backends, env, intervalMs: policy.routing?.snapshot_interval_ms ?? 300_000, fetchImpl, logger });
 
   // 观测层正文捕获（observability 票 01）：租户级 opt-in，默认关；无 opt-in 租户不建侧库
@@ -141,8 +146,63 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
     logger.log?.(`capture: leak scan on（allow 清单 ${allowValues.length} 项，含用户豁免 ${(policy.capture?.privacy?.extra_allow ?? []).length} 项）`);
   }
 
+
+  // policy 热加载器（工单 policy-hot-reload）：启动定型物（declaredTenants/snapshots/capture/dbPath）
+  // 继续用构造时捕获；每请求路径读 reloader.current()——热区（decide/routing 参数/identity_header）
+  // 换实例即生效，冷区（backends/models/tenants/capture/db_file/listen 等，清单见 COLD_POLICY_FIELDS）
+  // 有变更整份拒绝并提示重启。policyFile 缺省（builtin/测试直传）时零行为。
+  const reloader = createPolicyReloader({
+    policy,
+    policyFile,
+    // 备份锚到数据目录（CPR_DATA_DIR 正主，与 docs 口径一致；review-1 P3-4——dbPath 可能被
+    // CPR_DB_FILE 指到 data/ 子目录，按 dirname 推会漂）。
+    backupDir: policyFile ? path.join(dataDir(env), 'backups', 'policy') : undefined,
+  });
+  // 重载的审计与日志：成功必落 policy.reload（trigger + 新旧 sha256）；失败落 policy.reload.error
+  // 仅当内容是新的（reloader 的 deduped 标记防同一坏文件每请求刷账）。事件归 'default' 租户（非请求事件）。
+  let lastReloadTrigger: ReloadTrigger | undefined; // 语义 = 最近一次「实际生效换新」的 trigger（review-1 P3-5）
+  let reloadInflight: Promise<unknown> | null = null;
+  const applyReload = async (trigger: ReloadTrigger) => {
+    // 合流（review-1 P2-1）：重载进行中后到者只复用结果，不重复落事件/日志——一次重载一条账。
+    if (reloadInflight) return reloadInflight;
+    const run = reloader.maybeReload(trigger).then((outcome) => {
+      const event = (kind: 'policy.reload' | 'policy.reload.error', detail: RouteEventDetail): void => {
+        try { events.append({ kind, tenant: 'default', detail }); }
+        catch (cause) { logger.warn?.(`[events] ${kind} append failed: ${messageOf(cause)}`); }
+      };
+      if (outcome.kind === 'reloaded') {
+        lastReloadTrigger = trigger;
+        logger.log?.(`[policy] reloaded ${policyFile}（sha256 ${outcome.toHash.slice(0, 12)}${outcome.fromHash ? ` ← ${outcome.fromHash.slice(0, 12)}` : ''}）${outcome.backupError ? `；声明快照备份失败：${outcome.backupError}` : ''}`);
+        event('policy.reload', { trigger, ...(outcome.fromHash ? { from_hash: outcome.fromHash } : {}), to_hash: outcome.toHash });
+      } else if (outcome.kind === 'kept' && !outcome.deduped) {
+        // 同一坏文件/缺失态重复触发：上次已报过，不再刷（deduped 只跳事件，结果照常返回）。
+        logger.warn?.(`[policy] reload kept old policy（${outcome.reason}）: ${outcome.error}`);
+        event('policy.reload.error', {
+          trigger, reason: outcome.reason, error: outcome.error,
+          ...(outcome.coldChanged ? { cold_changed: outcome.coldChanged } : {}),
+        });
+      }
+      return outcome;
+    });
+    reloadInflight = run.finally(() => { reloadInflight = null; });
+    return reloadInflight;
+  };
+  // /api/policy 的现查视图（GET 端点与手动 reload 响应共用）。
+  const policyStatusView = (): Record<string, unknown> => {
+    const status = reloader.status();
+    return {
+      source: policyFile ?? 'core/policy/mine.ts',
+      sha256: status.sha256, loadedAt: status.loadedAt,
+      reloads: status.reloads, failedReloads: status.failedReloads,
+      lastError: status.lastError, lastErrorAt: status.lastErrorAt,
+      lastColdChanged: status.lastColdChanged,
+      lastTrigger: lastReloadTrigger ?? null,
+    };
+  };
+
   const forwardServer = http.createServer(async (req, res) => {
-    const p = policy;
+    await applyReload('file-change'); // 懒检查：签名未变即刻返回（一次 stat），变了才走重载流程
+    const p = reloader.current();
     const tenant = authenticate(req);
     if (!tenant) return json(res, 401, { error: { message: 'unauthorized', type: 'authentication_error' } });
     // 租户后端池：租户带 backends 子集时收缩；亲和目标落到池外按 stale-pin 处理（与「订阅下线」同语义）。
@@ -449,6 +509,9 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
   });
   const adminServer = createAdminServer({
     policy,
+    // policy 热更新面（工单 policy-hot-reload）：管理口读状态 + 手动触发；冷区字段（backends 等）
+    // 热换被守卫拒绝，admin 读 policy 的 backends/models 与 current() 等价。
+    policyAdmin: { statusView: policyStatusView, manualReload: async () => ({ outcome: await applyReload('manual'), status: policyStatusView() }) },
     // 看板租户视图：内部 ResolvedTenant（keyEnv 不出鉴权作用域）收窄成展示形。
     tenants: declaredTenants.map((tenant) => ({ name: tenant.name, ...(tenant.backends ? { backends: tenant.backends } : {}), ...(tenant.models ? { models: tenant.models } : {}) })) satisfies AdminTenantView[],
     snapshots,
@@ -468,9 +531,10 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
   };
 }
 
-export async function startGateway(policy: RouterPolicy, { env = process.env, logger = console }: CreateGatewayOptions = {}): Promise<Gateway> {
+export async function startGateway(policy: RouterPolicy, { env = process.env, logger = console, policyFile }: CreateGatewayOptions = {}): Promise<Gateway> {
   // 配置即代码：声明在启动入口（main.ts）经 validateConfig 校验，坏声明拒绝启动。
-  const gateway = createGatewayServers(policy, { env, logger });
+  // policyFile（工单 policy-hot-reload）：声明文件路径下传，启用热更新懒检查。
+  const gateway = createGatewayServers(policy, { env, logger, policyFile });
   const { forwardServer, adminServer } = gateway;
   const { listen, admin } = resolveListenEndpoints(policy, env);
   forwardServer.listen(listen.port, listen.host);

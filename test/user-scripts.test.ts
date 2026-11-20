@@ -2,7 +2,8 @@
 // 全部经临时 fixture（最小包根拷贝）+ 注入式 systemctl/loginctl/npm stub 运行，绝不触碰本机生产服务与真实 unit。
 // 隔离口径见 .scratch/user-scripts/issues/06-test-harness.md；真 systemd 一次性 e2e 按惯例现场构造、不进常驻套件。
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
+import http from 'node:http';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -590,4 +591,81 @@ test('main.ts：坏 ~/.llm-cpr/policy.ts 拒绝启动且报错指向该文件', 
   const r = spawnSync(process.execPath, ['core/main.ts'], { cwd: root, encoding: 'utf8', env: { ...process.env, CPR_CONFIG_DIR: cfg } });
   assert.equal(r.status, 1);
   assert.match(r.stderr ?? '', /policy\.ts/);
+});
+
+// ---- reload（policy 热更新 CLI，工单 .scratch/policy-hot-reload/）----
+// 管理口 stub：CLI 只认 /api/policy/reload 的响应 JSON；判定单源原则下 CLI 不做本地验真。
+
+async function adminStub(t: TestContext, response: unknown, status = 200): Promise<number> {
+  const server = http.createServer((_req, res) => res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(response)));
+  const port = await freePort();
+  server.listen(port, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }));
+  return port;
+}
+
+
+// reload 用例专用：异步 spawn（spawnSync 会阻塞本进程事件循环，进程内 stub 就没法应答了）。
+async function cprAsync(work: string, args: string[], env: Env): Promise<{ status: number; stdout: string; stderr: string }> {
+  // 异步 spawn：spawnSync 阻塞本进程事件循环，进程内 stub 便无法应答（CLI fetch 会挂到超时）。
+  const child = spawn(process.execPath, [path.join(work, 'scripts', 'cpr.ts'), ...args], { cwd: work, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = ''; let stderr = '';
+  child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8');
+  child.stdout?.on('data', (chunk) => { stdout += chunk; });
+  child.stderr?.on('data', (chunk) => { stderr += chunk; });
+  const status = await new Promise<number>((resolve) => child.on('exit', (code) => resolve(code ?? -1)));
+  return { status, stdout, stderr };
+}
+
+test('cpr reload：reloaded → 0 分；unchanged → 0 分', async (t) => {
+  const f = makeFixture();
+  const port = await adminStub(t, { outcome: { kind: 'reloaded', toHash: 'a'.repeat(64) }, status: { source: '/tmp/policy.ts' } });
+  const r = await cprAsync(f.work, ['reload'], { ...f.env, CPR_ADMIN_PORT: String(port) });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /策略已热更新（sha256 a{12}）/);
+  const f2 = makeFixture();
+  const port2 = await adminStub(t, { outcome: { kind: 'unchanged' }, status: {} });
+  const r2 = await cprAsync(f2.work, ['reload'], { ...f2.env, CPR_ADMIN_PORT: String(port2) });
+  assert.equal(r2.status, 0, r2.stderr);
+  assert.match(r2.stdout, /声明文件未变化/);
+});
+
+test('cpr reload：load-failed 保旧 → 退出 1 + 指回文件', async (t) => {
+  const f = makeFixture();
+  const port = await adminStub(t, { outcome: { kind: 'kept', reason: 'load-failed', error: '/tmp/policy.ts: Unexpected token' }, status: { source: '/tmp/policy.ts' } });
+  const r = await cprAsync(f.work, ['reload'], { ...f.env, CPR_ADMIN_PORT: String(port) });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /热更新失败，继续用旧策略/);
+  assert.match(r.stderr, /Unexpected token/);
+  assert.match(r.stderr, /\/tmp\/policy\.ts/);
+  assert.deepEqual(systemctlLog(f), []); // 失败路径绝不带重启
+});
+
+test('cpr reload：冷区变更 --yes 代跑重启（stub 记 argv）', async (t) => {
+  const f = makeFixture();
+  const port = await adminStub(t, { outcome: { kind: 'kept', reason: 'cold-zone-change', coldChanged: ['backends'] }, status: {} });
+  const r = await cprAsync(f.work, ['reload', '--yes'], { ...f.env, CPR_ADMIN_PORT: String(port) });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /冷区字段/);
+  assert.match(r.stdout, /- backends/);
+  assert.ok(systemctlLog(f).some((line) => line.includes('restart llm-cpr.service')), systemctlLog(f).join('\n'));
+});
+
+test('cpr reload：冷区变更 非交互不代重启 → 1 分 + 手工口径', async (t) => {
+  const f = makeFixture();
+  const port = await adminStub(t, { outcome: { kind: 'kept', reason: 'cold-zone-change', coldChanged: ['tenants'] }, status: {} });
+  const r = await cprAsync(f.work, ['reload'], { ...f.env, CPR_ADMIN_PORT: String(port) });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /未重启/);
+  assert.ok(!systemctlLog(f).some((line) => line.includes('restart')), systemctlLog(f).join('\n'));
+});
+
+test('cpr reload：daemon 不可达 → 退出 1 + 不做本地兜底', async (t) => {
+  const f = makeFixture();
+  const port = await freePort(); // 空端口 = 没服务
+  const r = await cprAsync(f.work, ['reload'], { ...f.env, CPR_ADMIN_PORT: String(port) });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /不可达/);
+  assert.match(r.stderr, /不做本地兜底/);
 });
