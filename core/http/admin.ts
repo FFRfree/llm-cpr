@@ -38,7 +38,7 @@ function serveStatic(url: URL, res: http.ServerResponse): boolean {
 }
 
 // /api/events 的 kind 白名单（非法值 → 不过滤，不把枚举面打开）。
-const EVENT_KINDS: ReadonlySet<string> = new Set(['route.bind', 'route.rebind', 'route.hold', 'policy.error', 'privacy.hit']);
+const EVENT_KINDS: ReadonlySet<string> = new Set(['route.bind', 'route.rebind', 'route.hold', 'policy.error', 'privacy.hit', 'policy.reload', 'policy.reload.error']);
 
 // ---- 版本信息（工单 07）：打开看板才现查 npm registry，缓存 1 小时；进程其余时间零 registry 请求 ----
 const PKG = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json'), 'utf8')) as { name?: string; version?: string };
@@ -67,6 +67,10 @@ export interface AdminTenantView {
 
 export interface AdminDeps {
   policy: RouterPolicy;
+  // policy 热更新面（工单 policy-hot-reload）：状态现查 + 手动 reload 的执行器由 server.ts 提供
+  // （daemon 是唯一验真者，本模块不 import/validate）。admin 读 policy 的 backends/models 属冷区
+  // 字段（热换守卫拒绝变更），与 current() 等价。
+  policyAdmin: { statusView(): Record<string, unknown>; manualReload(): Promise<unknown> };
   tenants: AdminTenantView[];
   snapshots: UsageSnapshots;
   audit: UsageAudit;
@@ -74,20 +78,26 @@ export interface AdminDeps {
   capture: CaptureStore | null;
 }
 
-export function createAdminServer({ policy, tenants, snapshots, audit, events, capture }: AdminDeps): Server {
+export function createAdminServer({ policy, policyAdmin, tenants, snapshots, audit, events, capture }: AdminDeps): Server {
   return http.createServer(async (req, res) => {
     let url: URL;
     try { url = new URL(req.url ?? '/', 'http://127.0.0.1'); }
     catch { return json(res, 400, { error: { message: 'invalid URL', type: 'invalid_request_error' } }); }
-    // 唯一的写操作：手动触发一轮额度快照刷新（轮询默认 5 分钟一次，看板按钮也走这里）
+    // 写操作两处：快照手动刷新 + policy 热更新（工单 policy-hot-reload，文件拾取是另一处入口）。
     if (req.method === 'POST' && url.pathname === '/api/snapshots/refresh') {
       try { await snapshots.refresh(); } catch (error) {
         return json(res, 502, { error: { message: `snapshot refresh failed: ${messageOf(error)}`, type: 'server_error' } });
       }
       return json(res, 200, snapshots.peek());
     }
+    // policy 手动 reload：同一套懒检查/冷区守卫，trigger=manual 进审计事件。
+    if (req.method === 'POST' && url.pathname === '/api/policy/reload') {
+      return json(res, 200, await policyAdmin.manualReload());
+    }
     if (req.method !== 'GET') return json(res, 405, { error: { message: 'method not allowed', type: 'method_not_allowed_error' } });
     if (serveStatic(url, res)) return;
+    // policy 现查：当前生效声明的 source/sha256/loadedAt 与最近一次失败现场。
+    if (url.pathname === '/api/policy') return json(res, 200, policyAdmin.statusView());
     if (url.pathname === '/api/snapshots') return json(res, 200, snapshots.peek());
     if (url.pathname === '/api/version') {
       // 工单 07：只在看板/用户交互时现查（服务端缓存 1h）；无人访问时进程零网络请求。

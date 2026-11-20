@@ -8,16 +8,19 @@ import type { Logger } from '../contracts.ts';
 // 改绑次数 = rebind 事件计数，冷却 = 最新一条 rebind 的 ts（bind 不计入冷却，
 // 否则新会话首绑会自带一小时改绑锁）。状态即查询，历史即全部事件。
 
-export type EventKind = 'route.bind' | 'route.rebind' | 'route.hold' | 'policy.error' | 'privacy.hit';
+export type EventKind = 'route.bind' | 'route.rebind' | 'route.hold' | 'policy.error' | 'privacy.hit'
+  | 'policy.reload' | 'policy.reload.error';
 
 // detail 的形状按 kind 分工：
 // route.bind / route.rebind → { trigger, source, note? }（引擎事实 + 来源 + policy 的 reason 或内置短语）
 // route.hold → { cause, status }（撞墙但不改绑的护栏归因）
 // policy.error → { error }（decide 抛错/非法的现场）
+// policy.reload → { trigger: file-change|manual, from_hash?, to_hash }（热换成功，工单 policy-hot-reload）
+// policy.reload.error → { trigger?, reason, error, cold_changed? }（保旧现场；error=摘要，绝不落文件全文防密钥进账本）
 // privacy.hit → { rule, item_hash, capture_id, message_index, role }（泄漏取证命中，票 04；
 //   绝不落命中原文——借 item_hash 回查 capture.db 定位「哪一轮、哪个角色、哪条消息」）
 export interface RouteEventDetail {
-  trigger?: 'new-session' | 'stale-pin' | 'policy-override' | 'quota-wall';
+  trigger?: 'new-session' | 'stale-pin' | 'policy-override' | 'quota-wall' | 'file-change' | 'manual';
   source?: 'policy' | 'builtin';
   note?: string;
   cause?: 'keep-affinity' | 'cooldown' | 'no-alternate' | 'policy-keep';
@@ -29,6 +32,10 @@ export interface RouteEventDetail {
   capture_id?: string;
   message_index?: number;
   role?: string | null;
+  from_hash?: string;
+  to_hash?: string;
+  reason?: string;
+  cold_changed?: string[];
 }
 
 export interface SystemEventInput {
