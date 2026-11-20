@@ -88,6 +88,18 @@ _Avoid_: 命中率（作为汇总头条——只留在单请求行）
 
 ### 交付与运行
 
+**Supervisor（常驻外壳）**:
+唯一新增常驻组件：开机 bind 推理口/管理口两个监听 socket 并终生持有（bind 而不接受连接——`net._createServerHandle` 只 bind 不 listen，连接留在内核 backlog 等 worker 取走），派生 worker 并经 IPC 交接 fd，等 `ready` 才算就绪。换版本编排、排水、收据自愈都在它体内闭环；systemd 只保留兜底职责（supervisor 自身崩溃 → Restart 全量重启）。
+_Avoid_: master（cluster 语境的主进程歧义——不跑 cluster 模块）, daemon（与「管理口 daemon」混称）
+
+**Worker**:
+真正跑网关的进程（`core/main.ts --worker`）：不自 bind，收 supervisor 交接的监听 handle，开库成功 + 两口接管完成后才发 `ready`（开库失败 fail fast 原样退出，supervisor 可见退出原因）。快照轮询等 ready 后才开——与旧 worker 并存窗口不双跑探上游。
+_Avoid_: 子进程（无语义）, cluster worker（不是 cluster 模块）
+
+**Drain（排水）**:
+换版本时旧 worker 的退出方式：停接新请求（关掉自己那份 server 引用，整口还由 supervisor 持有）→ 在途请求跑完 → 退出；上限可配（默认 30s，防 SSE 长流挂死），超时强切，强切时账本收尾行为与旧形态 systemd 硬切一致。Node ≥19 的 `server.close()` 自带 idle 连接清理。
+_Avoid_: 排空、draining mode（不是状态名，是一段受时限的退出流程）
+
 **Release**:
 从 git 干净快照（git archive）产出的发布副本，独立目录 + 软链切换；运行副本永不手改。
 _Avoid_: build（本项目无构建）, deploy 目录

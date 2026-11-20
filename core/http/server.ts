@@ -50,6 +50,11 @@ export interface CreateGatewayOptions {
   // policy 声明文件路径（~/.llm-cpr/policy.ts）：给出才启用热更新懒检查（工单 policy-hot-reload）。
   // 缺省 = builtin/测试直传实例：零行为（不 stat、不建备份目录、无 reload 事件）。
   policyFile?: string;
+  // supervisor 形态（supervisor-upgrade 票 01）：监听 handle 可注入——fd 交接而非自 bind。
+  // 给出时 startGateway 不走 resolveListenEndpoints/自 bind，直 bind 模式行为不变（现有测试零改动）。
+  listenHandles?: { forward: unknown; admin: unknown };
+  // 快照轮询延迟开（worker 模式）：ready 发出后由调用方 startSnapshots——防与旧 worker 并存窗口翻倍探上游（票 02 行为清点）。
+  deferSnapshots?: boolean;
 }
 export interface Gateway {
   forwardServer: Server;
@@ -60,9 +65,13 @@ export interface Gateway {
   events: SystemEventStore;
   // 正文捕获侧库（observability 票 01）：无租户 opt-in 时为 null（capture.db 不落盘）。
   capture: CaptureStore | null;
+  // 开库路径（worker ready 消息回传给 supervisor，supervisor 借它落 upgrade.* 事件）。
+  dbPath: string;
+  // deferSnapshots 时补开快照轮询（worker 发完 ready 再调，存续窗口不双跑）。
+  startSnapshots(): void;
 }
 
-export function createGatewayServers(policy: RouterPolicy, { env = process.env, fetchImpl = fetch, logger = console, policyFile }: CreateGatewayOptions = {}): Gateway {
+export function createGatewayServers(policy: RouterPolicy, { env = process.env, fetchImpl = fetch, logger = console, policyFile, deferSnapshots }: CreateGatewayOptions = {}): Gateway {
   const identityHeaderOf = (p: RouterPolicy): string => String(p.identity_header || p.identityHeader || 'x-session-id').trim().toLowerCase();
   const masterKeyOf = (p: RouterPolicy): string | undefined => env[p.masterKeyEnv || p.master_key_env || 'CPR_MASTER_KEY'];
   // 租户 = 一类调用方的身份键（ADR-0007）。声明了 tenants：Bearer 命中哪个租户的 key 就归属哪个租户，
@@ -519,7 +528,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
     events,
     capture,
   });
-  snapshots.start();
+  if (!deferSnapshots) snapshots.start(); // worker 模式延迟开：ready 发出后 startSnapshots（票 01/02 并存窗口清点）
   forwardServer.once('close', () => { audit.close(); snapshots.stop(); capture?.close(); });
   return {
     forwardServer,
@@ -528,14 +537,26 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
     audit,
     get events() { return events; },
     capture,
+    dbPath,
+    startSnapshots(): void { snapshots.start(); },
   };
 }
 
-export async function startGateway(policy: RouterPolicy, { env = process.env, logger = console, policyFile }: CreateGatewayOptions = {}): Promise<Gateway> {
+export async function startGateway(policy: RouterPolicy, { env = process.env, logger = console, policyFile, listenHandles, deferSnapshots }: CreateGatewayOptions = {}): Promise<Gateway> {
   // 配置即代码：声明在启动入口（main.ts）经 validateConfig 校验，坏声明拒绝启动。
   // policyFile（工单 policy-hot-reload）：声明文件路径下传，启用热更新懒检查。
-  const gateway = createGatewayServers(policy, { env, logger, policyFile });
+  const gateway = createGatewayServers(policy, { env, logger, policyFile, deferSnapshots });
   const { forwardServer, adminServer } = gateway;
+  if (listenHandles) {
+    // supervisor 形态（票 01）：两口 fd 由 supervisor bind 并交接，worker 只挂 handle 不自 bind。
+    // 服务器的 accept 语义不变；端口与归属对 worker 不可见（也不需要——账本不记端口）。
+    forwardServer.listen({ handle: listenHandles.forward });
+    adminServer.listen({ handle: listenHandles.admin });
+    await Promise.all([once(forwardServer, 'listening'), once(adminServer, 'listening')]);
+    logger.log?.('forward listening on supervisor-held socket（fd 交接）');
+    logger.log?.('admin listening on supervisor-held socket（fd 交接）');
+    return gateway;
+  }
   const { listen, admin } = resolveListenEndpoints(policy, env);
   forwardServer.listen(listen.port, listen.host);
   adminServer.listen(admin.port, '127.0.0.1');

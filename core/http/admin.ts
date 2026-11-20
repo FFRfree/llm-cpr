@@ -103,8 +103,9 @@ export function createAdminServer({ policy, policyAdmin, tenants, snapshots, aud
     if (url.pathname === '/api/snapshots') return json(res, 200, snapshots.peek());
     if (url.pathname === '/api/version') {
       // 工单 07：只在看板/用户交互时现查（服务端缓存 1h）；无人访问时进程零网络请求。
+      // workerPid（supervisor-upgrade 票 01）：e2e 的「worker PID 必变」红线断言锚点（升级换 worker 防假成功）。
       const latest = await npmLatestCached();
-      return json(res, 200, { version: RUNTIME_VERSION, latest, checkedAt: latestCache?.at ?? null });
+      return json(res, 200, { version: RUNTIME_VERSION, latest, checkedAt: latestCache?.at ?? null, workerPid: process.pid });
     }
     if (url.pathname === '/api/route/status') {
       const p = policy;
