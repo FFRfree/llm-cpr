@@ -1,6 +1,6 @@
 // run-scenarios.ts — e2e 场景运行器：把 fake-upstream + cpr-instance + pi-driver 拼成三个真跑场景。
 //
-// 用法：node run-scenarios.ts [--scenario=1|2|5]（逗号分隔可多选；缺省全跑 1/2/5）
+// 用法：node run-scenarios.ts [--scenario=1|2|5|6]（逗号分隔可多选；缺省全跑 1/2/5/6）
 //            [--repo-dir=<路径>]（可选，npm pack 源；缺省=本套件所在仓的仓根自身）
 //            [--worktree=<路径>]（可选，覆盖 --repo-dir：临时工作树/别的检出的 pack 源）
 //
@@ -10,6 +10,11 @@
 //   5 热更新三连：(a) 首轮过 → (b) decide 钉 be-b（热区，policy.reload 落账）→
 //                (c) 语法坏文件保旧（policy.reload.error，错误摘要不含文件全文）→
 //                (d) 冷区加 be-c，cpr reload CLI 喂 N 拒重启，随后仍走 be-b。
+//   6 supervisor 换版本（supervisor-upgrade 票 04）：pack → 版本根 9.0.0/9.9.9 + current 软链 →
+//                (a) swap 9.0.0→9.9.9 期间持续打流量零失败，version/workerPid 必变、receipt、
+//                    upgrade.swap 落账、current 软链翻转 →
+//                (b) 坏版本（永不上报 ready）swap 失败零损伤：软链回拨、旧 worker 不动 →
+//                (c) crashy 版本（400ms 自灭）→ crash-loop → 收据自愈回滚 + upgrade.rollback。
 //
 // 硬红线（脚本内强制）：
 //   · 端口断言避开 {8740, 8741}（pickPort + startCprInstance/fake-upstream 双层各查一遍）。
@@ -19,6 +24,10 @@
 //     （XDG_RUNTIME_DIR=/run/user/0 systemctl --user show llm-cpr -p MainPID,ActiveState）；
 //     cpr reload CLI 经 CPR_SYSTEMCTL 接缝指向 stub（记 argv 进日志），喂 N 拒绝重启确认 +
 //     CPR_UNIT_NAME=e2e-cpr-test.service 安全垫双保险，跑完断言 stub 日志为空 = 零 systemctl 调用。
+//     supervisor 形态（supervisor-upgrade 票 04）下 MainPID = supervisor，worker swap 不改它；
+//     旧形态下 MainPID = 网关进程本身——e2e 从不启停生产，两种形态下「跑前记、跑后比对不变」都成立。
+//     「worker PID 必变」是 e2e 自建 supervisor 实例上的断言（场景 6，经 /api/version 的 workerPid），
+//     不适用于生产（生产 worker PID 只在真升级时变）。
 //   · 每轮 runPi / CLI 跑前记生产 MainPID、跑后验不变，变了整套判失败。
 //
 // 与任务定义的一处已声明偏差：场景 1「--record 过滤 POST 聊天请求恰 1 条」在真实工具执行回路下
@@ -36,10 +45,10 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
   startCprInstance,
+  startSupervisorInstance,
   E2E_MASTER_KEY,
   E2E_MASTER_KEY_ENV,
   E2E_MODEL_ID,
-  type CprInstance,
   type CprPorts,
 } from './cpr-instance.ts';
 import { runPi } from './pi-driver.ts';
@@ -211,11 +220,29 @@ async function adminJson(adminPort: number, pathname: string): Promise<any> {
   return await res.json();
 }
 
+// 管理口 GET 网络层抖动重试（换版本窗口里旧 worker 排水收线会掐掉客户端连接池里的 socket，
+// undici 偶发复用到正在收线的连接 → fetch failed；只重试网络错误，4xx/5xx 一律如实抛）。
+async function adminJsonRetry(adminPort: number, pathname: string, timeoutMs = 8_000): Promise<any> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  for (;;) {
+    try { return await adminJson(adminPort, pathname); } catch (error) { lastError = error; }
+    if (Date.now() >= deadline) throw lastError;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
+
 async function pollAdmin(adminPort: number, pathname: string, until: (data: any) => boolean, what: string, timeoutMs = 6_000): Promise<any> {
   const deadline = Date.now() + timeoutMs;
   let last: any;
   for (;;) {
-    last = await adminJson(adminPort, pathname);
+    try {
+      last = await adminJson(adminPort, pathname);
+    } catch (error) {
+      // 网络层抖动（排水收线掐 socket）：等到 deadline 为止；断言类错误（非 200）照抛。
+      if (error instanceof assert.AssertionError) throw error;
+      last = { __fetchError: String((error as Error).message) };
+    }
     if (until(last)) return last;
     if (Date.now() >= deadline) {
       throw new Error(`等待超时：${what}；最后数据=${JSON.stringify(last)?.slice(0, 800)}`);
@@ -258,6 +285,7 @@ async function prodState(): Promise<ProdState> {
 async function prodUnchanged(before: ProdState): Promise<void> {
   if (before.pid === null) return; // 豁免模式（CI）
   const after = await prodState();
+  // supervisor-upgrade 票 04 红线：生产 MainPID（supervisor 形态=supervisor，旧形态=网关进程）全程不变
   assert.equal(after.pid, before.pid,
     `生产 ${PROD_UNIT} 的 MainPID 变了：${before.pid} → ${after.pid}（e2e 绝不允许扰动生产进程）`);
   assert.equal(after.state, before.state,
@@ -311,10 +339,10 @@ function assertAuditRows(rows: any[], what: string): void {
   }
 }
 
-async function assertInstanceStopped(inst: CprInstance): Promise<void> {
+async function assertInstanceStopped(inst: { pid: number; stop(): Promise<void> }, what = 'cpr'): Promise<void> {
   await inst.stop();
   const gone = await waitPidGone(inst.pid, 3_000);
-  if (!gone) throw new Error(`cpr 实例 pid=${inst.pid} stop 后仍存活`);
+  if (!gone) throw new Error(`${what} 实例 pid=${inst.pid} stop 后仍存活`);
   forgetPid(inst.pid);
 }
 
@@ -620,12 +648,272 @@ export default class E2eBrokenPolicy {
   }
 }
 
+// —— 场景 6：supervisor 换版本（零断粮 / 坏版本零损伤 / crash-loop 自愈回滚） ————————
+
+// pack 一次（解到 TMPDIR），stageVersionRoot 拷成 versions/<v>/app 布局的版本根并改写 package.json 版本。
+// npm pack 是场景 6 唯一的「拿真实发布字节」手段：直接拷仓根会把 test/ 等杂物带进版本目录。
+async function packOnce(runDir: string): Promise<string> {
+  const { stdout } = await execFileAsync('npm', ['pack', '--json'], { cwd: packDir, timeout: 120_000, encoding: 'utf8' });
+  const parsed = JSON.parse(stdout) as { filename?: string }[];
+  const tgzName = parsed[0]?.filename;
+  assert.ok(tgzName, `npm pack --json 未返回 filename：${stdout.slice(0, 400)}`);
+  const tgzPath = path.join(packDir, tgzName);
+  const extractRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'cpr-e2e-s6-pack-'));
+  await execFileAsync('tar', ['-xzf', tgzPath, '-C', extractRoot], { timeout: 60_000 });
+  await fs.promises.rm(tgzPath, { force: true });
+  const pkgDir = path.join(extractRoot, 'package');
+  assert.ok(fs.existsSync(path.join(pkgDir, 'core', 'main.ts')), `pack 产物缺 core/main.ts：${pkgDir}`);
+  assertPathSafe(pkgDir, 's6 pack 解包目录');
+  return pkgDir;
+}
+
+interface StageOptions { mainTsOverride?: string }
+
+async function stageVersionRoot(pkgSource: string, dest: string, version: string, opts: StageOptions = {}): Promise<void> {
+  await fs.promises.cp(pkgSource, dest, { recursive: true });
+  const pkgPath = path.join(dest, 'package.json');
+  const pkg = JSON.parse(await fs.promises.readFile(pkgPath, 'utf8')) as { name?: string; version?: string };
+  pkg.version = version;
+  await fs.promises.writeFile(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8');
+  if (opts.mainTsOverride !== undefined) {
+    await fs.promises.writeFile(path.join(dest, 'core', 'main.ts'), opts.mainTsOverride, 'utf8');
+  }
+}
+
+async function readCurrentLink(appRoot: string): Promise<string> {
+  return path.basename(fs.readlinkSync(path.join(appRoot, 'current')));
+}
+
+interface ReceiptFile {
+  from: string; to: string; fromRoot: string; toRoot: string;
+  switchedAt: string; windowMs: number; selfHealed: null | boolean;
+  rollbackAt?: string; rollbackReason?: string;
+}
+
+async function versionInfo(adminPort: number): Promise<{ version: string; workerPid: number }> {
+  const info = await adminJsonRetry(adminPort, '/api/version') as { version?: string; workerPid?: number };
+  assert.ok(typeof info.version === 'string' && info.version, `/api/version 应报 version，实际=${JSON.stringify(info)}`);
+  assert.ok(typeof info.workerPid === 'number' && info.workerPid > 0, `/api/version 应回 workerPid，实际=${JSON.stringify(info)}`);
+  return { version: info.version, workerPid: info.workerPid };
+}
+
+async function swapRequest(adminPort: number, payload: Record<string, unknown>): Promise<{ status: number; body: any }> {
+  const res = await fetch(`http://127.0.0.1:${adminPort}/api/supervisor/swap`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(60_000),
+  });
+  const body = await res.json();
+  return { status: res.status, body };
+}
+
+// 流量泵：swap 窗口内持续打推理口（非流式 chat/completions），记账零失败——「换版本零断粮」的验收本体。
+function startTrafficPump(inferPort: number, sessionId: string): {
+  stop: () => Promise<{ fail: number; ok: number; failures: string[] }>;
+} {
+  const results = { ok: 0, fail: 0 };
+  const failures: string[] = [];
+  let stopping = false;
+  const pump = (async (): Promise<void> => {
+    let seq = 0;
+    while (!stopping) {
+      const n = seq++;
+      try {
+        const res = await fetch(`http://127.0.0.1:${inferPort}/v1/chat/completions`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${E2E_MASTER_KEY}`,
+            'content-type': 'application/json',
+            'x-session-id': `${sessionId}-${n % 8}`, // 8 个会话滚动：亲和与调度两条路都压到
+          },
+          body: JSON.stringify({ model: E2E_MODEL_ID, stream: false, messages: [{ role: 'user', content: 'say hi' }] }),
+          signal: AbortSignal.timeout(10_000),
+        });
+        const text = await res.text();
+        if (res.status === 200 && text.includes('e2e ok')) {
+          results.ok += 1;
+        } else {
+          results.fail += 1;
+          failures.push(`#${n} status=${res.status} body=${text.slice(0, 120)}`);
+        }
+      } catch (error) {
+        results.fail += 1;
+        failures.push(`#${n} ${(error as Error).message}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  })();
+  return {
+    async stop(): Promise<{ fail: number; ok: number; failures: string[] }> {
+      stopping = true;
+      await pump;
+      return { ok: results.ok, fail: results.fail, failures };
+    },
+  };
+}
+
+async function scenario6(runDir: string): Promise<void> {
+  const ports = await pickPorts();
+  const recordA = path.join(runDir, 'upstream-a.jsonl');
+  const fakeA = await startFakeUpstream({ label: 's6-be-a', port: ports.upstreamA, scenario: 'ok', recordPath: recordA });
+
+  // 版本根布局：<runDir>/app-root/versions/{9.0.0,9.9.9}/app + current → versions/9.0.0
+  // （9.9.8 是坏版本：永远不上报 ready，触发 supervisor 的 ready 超时零损伤回拨分支）。
+  const appRoot = path.join(runDir, 'app-root');
+  const versionsDir = path.join(appRoot, 'versions');
+  const goodRoot = path.join(versionsDir, '9.0.0', 'app');
+  const nextRoot = path.join(versionsDir, '9.9.9', 'app');
+  const badRoot = path.join(versionsDir, '9.9.8', 'app');
+  const receiptPath = path.join(runDir, 'cpr-data', 'upgrade-receipt.json');
+
+  // ready 门钉短（默认 15s）：坏版本分支 3s 判超时，好版本的 boot 远小于 3s。
+  // 排水上限同样钉短（默认 30s）：排水期旧 worker 不掐空闲 keep-alive 连接（票 02 语义，防掐连接池），
+  // 只等「连接清零」或上限强切——e2e 客户端有残留空闲 socket，30s 默认会让旧 worker 拖满上限才退。
+  // 收摊恢复原值。两者都只是测试提速，不改变零断粮语义（在途请求保护不变）。
+  const prevReadyTimeout = process.env.CPR_SUPERVISOR_READY_TIMEOUT_MS;
+  const prevDrainTimeout = process.env.CPR_DRAIN_TIMEOUT_MS;
+  process.env.CPR_SUPERVISOR_READY_TIMEOUT_MS = '3000';
+  process.env.CPR_DRAIN_TIMEOUT_MS = '3000';
+  let inst: Awaited<ReturnType<typeof startSupervisorInstance>> | undefined;
+  try {
+    const pkgSource = await packOnce(runDir);
+    const BAD_MAIN = [
+      '// e2e 场景 6 (b) 坏版本：worker 起来也永远不发 ready——supervisor ready 门到点杀之，',
+      '// swap 失败零损伤（软链回拨、旧 worker 不动）。挂住而非立刻退出，覆盖「ready 超时」分支。',
+      "console.error('[e2e-s6] 坏版本 worker：拒绝 ready');",
+      'setInterval(() => {}, 1000);',
+      '',
+    ].join('\n');
+    await stageVersionRoot(pkgSource, goodRoot, '9.0.0');
+    await stageVersionRoot(pkgSource, nextRoot, '9.9.9');
+    await stageVersionRoot(pkgSource, badRoot, '9.9.8', { mainTsOverride: BAD_MAIN });
+    fs.symlinkSync(path.join('versions', '9.0.0'), path.join(appRoot, 'current'), 'dir');
+
+    inst = await startSupervisorInstance({
+      repoDir: packDir, ports,
+      configDir: path.join(runDir, 'cpr-config'), dataDir: path.join(runDir, 'cpr-data'),
+      workerRoot: goodRoot, appRoot,
+    });
+    liveProcesses.push({ label: 's6-supervisor', pid: inst.pid });
+    const supervisorPid = inst.pid;
+
+    // 基线：version=9.0.0、workerPid 与 supervisor PID 不同源（worker 是 supervisor 的子进程）。
+    const baseline = await versionInfo(ports.admin);
+    assert.equal(baseline.version, '9.0.0', `(a) 基线 version 应 9.0.0，实际=${baseline.version}`);
+    assert.notEqual(baseline.workerPid, supervisorPid, '(a) workerPid 应是 worker 进程（≠ supervisor PID）');
+    assert.equal(await readCurrentLink(appRoot), '9.0.0', '(a) current 初始应指 9.0.0');
+
+    // (a) swap 9.0.0 → 9.9.9，期间持续打流量：零失败 = 换版本零断粮的真 e2e 版。
+    const pump = startTrafficPump(ports.infer, 'e2e-s6');
+    const swapRes = await swapRequest(ports.admin, { root: nextRoot, appRoot });
+    await new Promise((resolve) => setTimeout(resolve, 1_500)); // swap 回应后再压一段并存窗口
+    const traffic = await pump.stop();
+    assert.equal(swapRes.status, 200, `(a) swap 应 200，实际=${swapRes.status} body=${JSON.stringify(swapRes.body).slice(0, 300)}`);
+    assert.equal(swapRes.body?.ok, true, `(a) swap 应成功，实际=${JSON.stringify(swapRes.body).slice(0, 300)}`);
+    assert.equal(swapRes.body?.fromVersion, '9.0.0', '(a) swap 收据 fromVersion 应 9.0.0');
+    assert.equal(swapRes.body?.toVersion, '9.9.9', '(a) swap 收据 toVersion 应 9.9.9');
+    assert.ok(traffic.ok > 20, `(a) swap 窗口流量应压出可观成功数，实际 ok=${traffic.ok} fail=${traffic.fail}：${traffic.failures.slice(0, 3).join(' | ')}`);
+    assert.equal(traffic.fail, 0, `(a) swap 窗口流量应零失败，实际 fail=${traffic.fail}：${traffic.failures.slice(0, 5).join(' | ')}`);
+
+    // (a) 换人实锤：/api/version 的 version 与 workerPid 都必须变（防假成功）。
+    //     swap 回应先于排水收尾（IPC 先答话后走人），旧 worker 可能还扛着最后几个空闲 socket——
+    //     轮询到 version 翻转为止（排水上限 3s + 富余），不许等满也绝不立即断言。
+    const swapDeadline = Date.now() + 20_000;
+    let afterSwap = { version: '', workerPid: -1 };
+    while (Date.now() < swapDeadline) {
+      afterSwap = await versionInfo(ports.admin);
+      if (afterSwap.version === '9.9.9') break;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    assert.equal(afterSwap.version, '9.9.9', `(a) swap 后 version 应 9.9.9，实际=${afterSwap.version}`);
+    assert.notEqual(afterSwap.workerPid, baseline.workerPid, `(a) swap 后 workerPid 必变：${baseline.workerPid} → ${afterSwap.workerPid}`);
+    assert.equal(await readCurrentLink(appRoot), '9.9.9', '(a) swap 后 current 软链应翻转指向 9.9.9');
+
+    // (a) 收据落盘（自愈的锚）+ upgrade.swap 事件（tenant 'default'）。
+    const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8')) as ReceiptFile;
+    assert.equal(receipt.from, '9.0.0', `(a) 收据 from 应 9.0.0，实际=${JSON.stringify(receipt)}`);
+    assert.equal(receipt.to, '9.9.9', '(a) 收据 to 应 9.9.9');
+    assert.equal(receipt.selfHealed, null, '(a) 收据初始应未消费（selfHealed=null）');
+    const swapEvents = parseEvents(await pollAdmin(ports.admin, '/api/events?kind=upgrade.swap',
+      (data) => (data?.events?.length ?? 0) >= 1, 'upgrade.swap >= 1'));
+    const crossVersion = swapEvents.find((event) => event.detail?.from_version === '9.0.0' && event.detail?.to_version === '9.9.9');
+    assert.ok(crossVersion, `(a) 应有 9.0.0→9.9.9 的 upgrade.swap 事件，实际=${JSON.stringify(swapEvents.map((event) => event.detail)).slice(0, 400)}`);
+    assert.equal(crossVersion!.detail?.same_version, false, '(a) 跨版本 upgrade.swap 的 same_version 应 false');
+
+    // (b) 坏版本（永不上报 ready）：swap 失败零损伤——软链回拨、旧 worker 不动、无收据无事件。
+    const beforeBad = await versionInfo(ports.admin);
+    const badRes = await swapRequest(ports.admin, { root: badRoot, appRoot });
+    assert.equal(badRes.status, 502, `(b) 坏版本 swap 应 502，实际=${badRes.status} body=${JSON.stringify(badRes.body).slice(0, 300)}`);
+    assert.equal(badRes.body?.ok, false, '(b) 坏版本 swap 应报失败');
+    assert.match(String(badRes.body?.error?.message ?? ''), /ready 超时/, `(b) 失败原因应是 ready 超时，实际=${JSON.stringify(badRes.body).slice(0, 300)}`);
+    const afterBad = await versionInfo(ports.admin);
+    assert.equal(afterBad.version, '9.9.9', `(b) 失败后 version 应仍是 9.9.9，实际=${afterBad.version}`);
+    assert.equal(afterBad.workerPid, beforeBad.workerPid, '(b) 失败后 workerPid 应不变（旧 worker 全程未动）');
+    assert.equal(await readCurrentLink(appRoot), '9.9.9', '(b) 失败后 current 应回拨仍指 9.9.9');
+    const receiptAfterBad = JSON.parse(fs.readFileSync(receiptPath, 'utf8')) as ReceiptFile;
+    assert.equal(receiptAfterBad.to, '9.9.9', '(b) 收据不应被坏版本改写');
+    const swapEventsAfterBad = parseEvents(await adminJson(ports.admin, '/api/events?kind=upgrade.swap'));
+    assert.equal(swapEventsAfterBad.length, 1, `(b) 坏版本失败不应落 upgrade.swap 事件，实际=${swapEventsAfterBad.length}`);
+
+    // (c) crashy 版本：给 9.9.9 的 main.ts 注入 400ms 自灭，同版本换一次 worker 换上它——
+    //     crash-loop 达标后按收据自愈：拨回 9.0.0、消费收据、upgrade.rollback 事件、从旧版根重拉。
+    const crashyMain = `${fs.readFileSync(path.join(nextRoot, 'core', 'main.ts'), 'utf8')}\n// e2e 场景 6 (c) crash-loop 注入：worker 起来 400ms 后自灭（runWorker 已 resolve，定时器到点即退出）。\nsetTimeout(() => process.exit(1), 400);\n`;
+    fs.writeFileSync(path.join(nextRoot, 'core', 'main.ts'), crashyMain, 'utf8');
+    const crashySwap = await swapRequest(ports.admin, {}); // 同版本换 worker（reload 语义同款编排）
+    assert.equal(crashySwap.status, 200, `(c) 同版本 swap 应 200，实际=${crashySwap.status} body=${JSON.stringify(crashySwap.body).slice(0, 300)}`);
+    assert.equal(crashySwap.body?.ok, true, `(c) 同版本 swap 应成功，实际=${JSON.stringify(crashySwap.body).slice(0, 300)}`);
+    // 自愈闭环：worker 从 crashy 根连退两次 → supervisor 依收据拨回 9.0.0。
+    const deadline = Date.now() + 45_000;
+    let healed = false;
+    let lastInfo = { version: '', workerPid: -1 };
+    while (Date.now() < deadline) {
+      lastInfo = await versionInfo(ports.admin);
+      if (lastInfo.version === '9.0.0' && lastInfo.workerPid !== afterSwap.workerPid) { healed = true; break; }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    assert.ok(healed, `(c) 自愈应拨回 9.0.0 且 workerPid 再变，实际=${JSON.stringify(lastInfo)}（supervisor stderr 见现场）`);
+    assert.equal(await readCurrentLink(appRoot), '9.0.0', '(c) 自愈后 current 应拨回 9.0.0');
+    const receiptHealed = JSON.parse(fs.readFileSync(receiptPath, 'utf8')) as ReceiptFile;
+    assert.equal(receiptHealed.selfHealed, true, `(c) 收据应标记已消费，实际=${JSON.stringify(receiptHealed)}`);
+    assert.equal(receiptHealed.rollbackReason, 'crash-loop', '(c) 收据回滚原因应为 crash-loop');
+    const rollbackEvents = parseEvents(await pollAdmin(ports.admin, '/api/events?kind=upgrade.rollback',
+      (data) => (data?.events?.length ?? 0) >= 1, 'upgrade.rollback >= 1'));
+    const crashLoopRollback = rollbackEvents.find((event) => event.detail?.reason === 'crash-loop'
+      && event.detail?.from_version === '9.9.9' && event.detail?.to_version === '9.0.0');
+    assert.ok(crashLoopRollback, `(c) 应有 crash-loop 的 upgrade.rollback 事件，实际=${JSON.stringify(rollbackEvents.map((event) => event.detail)).slice(0, 400)}`);
+
+    // (c) 收尾：回拨后的旧版 worker 服务正常（回滚不是摆设）。
+    for (let i = 0; i < 3; i += 1) {
+      const res = await fetch(`http://127.0.0.1:${ports.infer}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${E2E_MASTER_KEY}`, 'content-type': 'application/json', 'x-session-id': 'e2e-s6-final' },
+        body: JSON.stringify({ model: E2E_MODEL_ID, stream: false, messages: [{ role: 'user', content: 'final check' }] }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const text = await res.text();
+      assert.equal(res.status, 200, `(c) 回拨后请求应 200，实际=${res.status} body=${text.slice(0, 200)}`);
+      assert.ok(text.includes('e2e ok'), `(c) 回拨后响应应为 e2e ok，实际=${text.slice(0, 200)}`);
+    }
+
+    // supervisor PID 全程不变（e2e 自建实例上的「supervisor MainPID 不变」断言，worker PID 三连变）。
+    assert.equal(inst.pid, supervisorPid, '(收尾) supervisor PID 应全程不变');
+  } finally {
+    delete process.env.CPR_SUPERVISOR_READY_TIMEOUT_MS;
+    delete process.env.CPR_DRAIN_TIMEOUT_MS;
+    if (prevReadyTimeout !== undefined) process.env.CPR_SUPERVISOR_READY_TIMEOUT_MS = prevReadyTimeout;
+    if (prevDrainTimeout !== undefined) process.env.CPR_DRAIN_TIMEOUT_MS = prevDrainTimeout;
+    if (inst) await assertInstanceStopped(inst, 's6 supervisor').catch((error) => { console.error(`[s6] supervisor 停止异常：${error}`); });
+    await fakeA.stop().catch((error) => { console.error(`[s6] 假上游停止异常：${error}`); });
+  }
+}
+
 // —— 场景调度与收尾 ——————————————————————————————————————————————————
 
 interface RunArgs { scenarios: number[]; repoDir?: string; worktree?: string }
 
 function parseArgs(argv: string[]): RunArgs {
-  const out: RunArgs = { scenarios: [1, 2, 5] };
+  const out: RunArgs = { scenarios: [1, 2, 5, 6] };
   let raw: string | undefined;
   const nextValue = (i: number, flag: string): string => {
     const value = argv[i + 1];
@@ -640,12 +928,12 @@ function parseArgs(argv: string[]): RunArgs {
     else if (arg === '--repo-dir') { out.repoDir = nextValue(i, '--repo-dir'); i += 1; }
     else if (arg.startsWith('--worktree=')) out.worktree = arg.slice('--worktree='.length);
     else if (arg === '--worktree') { out.worktree = nextValue(i, '--worktree'); i += 1; }
-    else throw new Error(`未知参数 ${arg}（支持 --scenario=1|2|5、--repo-dir=<路径>、--worktree=<路径>，缺省全跑仓根）`);
+    else throw new Error(`未知参数 ${arg}（支持 --scenario=1|2|5|6、--repo-dir=<路径>、--worktree=<路径>，缺省全跑仓根）`);
   }
   if (raw !== undefined && raw !== '' && raw !== 'all') {
     const ids = raw.split(',').map((part) => Number(part.trim()));
     for (const id of ids) {
-      if (![1, 2, 5].includes(id)) throw new Error(`--scenario 只接受 1|2|5，得到 ${String(id)}`);
+      if (![1, 2, 5, 6].includes(id)) throw new Error(`--scenario 只接受 1|2|5|6，得到 ${String(id)}`);
     }
     out.scenarios = ids;
   }
@@ -678,7 +966,7 @@ async function main(): Promise<number> {
   console.log(`[run-scenarios] 生产 ${PROD_UNIT} ${prodBefore.pid === null ? 'PID 护栏豁免（CI）' : `MainPID=${prodBefore.pid}（只读比对基准）`}`);
   console.log(`[run-scenarios] 场景=${filter.join('/')} pack 源=${packDir}（${packSource}）现场根=${runsRoot}`);
 
-  const runners: Record<number, (runDir: string) => Promise<void>> = { 1: scenario1, 2: scenario2, 5: scenario5 };
+  const runners: Record<number, (runDir: string) => Promise<void>> = { 1: scenario1, 2: scenario2, 5: scenario5, 6: scenario6 };
   const outcomes: { id: number; pass: boolean; keptDir?: string }[] = [];
 
   for (const id of filter) {

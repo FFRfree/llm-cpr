@@ -245,6 +245,102 @@ try {
   process.exit();
 }
 
+// ---- supervisor 形态冒烟段（supervisor-upgrade 票 04）----
+// 同一假上游再喂一个 supervisor 实例：临时 policy.ts + node core/supervisor.ts + 同版本 swap 一次
+// （ready 门 + fd 交接 + 排水换 worker 全链路；workerPid 必变 = 换人实锤）。旧发布件没有
+// core/supervisor.ts 时如实跳过（v0.1.0 形态副本无 supervisor 可冒烟）。
+if (fs.existsSync(path.join(releaseDir, 'core', 'supervisor.ts'))) {
+  const supConfig = path.join(tmpRoot, 'sup-config');
+  const supData = path.join(tmpRoot, 'sup-data');
+  fs.mkdirSync(supConfig, { recursive: true });
+  fs.mkdirSync(supData, { recursive: true });
+  fs.writeFileSync(path.join(supConfig, 'policy.ts'), [
+    `// 冒烟临时 policy（supervisor 形态段 @ ${new Date().toISOString()}）：与 launcher 同一套假声明，`,
+    '// 但走 policy.ts 文件加载路（supervisor 形态的实况：worker 按 CPR_CONFIG_DIR/policy.ts 起）。',
+    'export default class SmokeSupPolicy {',
+    "  master_key_env = 'CPR_MASTER_KEY';",
+    "  identity_header = 'x-session-id';",
+    `  backends = [{ name: 'fake-backend', family: 'ocg' as const, base_url: 'http://127.0.0.1:${upstreamPort}/v1', key_env: 'FAKE_UPSTREAM_KEY' }];`,
+    "  models = [{ id: 'unified-model', backends: { ocg: 'native-model' } }];",
+    '  decide() { return null; }',
+    '}',
+    '',
+  ].join('\n'));
+  const supForwardPort = await freePort();
+  const supAdminPort = await freePort();
+  const supChild = spawn(process.execPath, [path.join(releaseDir, 'core', 'supervisor.ts')], {
+    cwd: releaseDir,
+    env: {
+      ...process.env,
+      CPR_CONFIG_DIR: supConfig,
+      CPR_DATA_DIR: supData,
+      CPR_DB_FILE: path.join(supData, 'data.db'),
+      CPR_APP_ROOT: path.join(tmpRoot, 'sup-app-root'),
+      CPR_FORWARD_PORT: String(supForwardPort),
+      CPR_ADMIN_PORT: String(supAdminPort),
+      CPR_MASTER_KEY: 'smoke-master',
+      FAKE_UPSTREAM_KEY: 'fake-upstream-key',
+      CPR_REGISTRY_URL: 'http://127.0.0.1:9', // /api/version 现查 registry：钉死口，冒烟不碰网
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let supLog = '';
+  supChild.stdout.on('data', (chunk: unknown): void => { if (typeof chunk === 'string' || Buffer.isBuffer(chunk)) supLog += chunk; });
+  supChild.stderr.on('data', (chunk: unknown): void => { if (typeof chunk === 'string' || Buffer.isBuffer(chunk)) supLog += chunk; });
+  try {
+    const supAdminUrl = `http://127.0.0.1:${supAdminPort}`;
+    const supForwardUrl = `http://127.0.0.1:${supForwardPort}`;
+    const waitSupVersion = async (): Promise<Record<string, unknown>> => {
+      const deadline = Date.now() + 15_000;
+      let lastError: unknown;
+      while (Date.now() < deadline) {
+        if (supChild.exitCode !== null) throw new Error(`supervisor exited early (code ${supChild.exitCode}):\n${supLog}`);
+        try {
+          const response = await fetch(`${supAdminUrl}/api/version`, { signal: AbortSignal.timeout(1000) });
+          if (response.ok) return (await response.json()) as Record<string, unknown>;
+          lastError = new Error(`admin not ready: HTTP ${response.status}`);
+        } catch (error) { lastError = error; }
+        await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 150); });
+      }
+      throw new Error(`supervisor admin not ready: ${lastError instanceof Error ? lastError.message : ''}\n${supLog}`);
+    };
+    const supV1 = await waitSupVersion();
+    const pid1: unknown = supV1.workerPid;
+    assert.ok(typeof pid1 === 'number' && pid1 > 0, `/api/version 应回 workerPid，实际=${JSON.stringify(supV1)}`);
+    const swapRes = await fetch(`${supAdminUrl}/api/supervisor/swap`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(60_000),
+    });
+    const swapText = await swapRes.text();
+    assert.equal(swapRes.status, 200, `同版本 swap 应 200，实际 ${swapRes.status}：${swapText.slice(0, 300)}`);
+    const swapBody: unknown = JSON.parse(swapText);
+    assert.ok(isRecord(swapBody) && swapBody.ok === true, `同版本 swap 应成功：${swapText.slice(0, 300)}`);
+    assert.ok(isRecord(swapBody) && typeof swapBody.workerPid === 'number' && swapBody.workerPid !== pid1,
+      `swap 后 workerPid 必变：${String(pid1)} → ${isRecord(swapBody) ? String(swapBody.workerPid) : '?'}`);
+    const supChat = await fetch(`${supForwardUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer smoke-master', 'content-type': 'application/json', 'x-session-id': 'smoke-sup' },
+      body: JSON.stringify({ model: 'unified-model', stream: false, messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    assert.equal(supChat.status, 200, `supervisor 形态聊天转发应 200：${(await supChat.text()).slice(0, 200)}`);
+    record('supervisor 形态冒烟', `同版本 swap 换 worker（pid ${String(pid1)}→${isRecord(swapBody) ? String(swapBody.workerPid) : '?'}），经交接口转发 200`);
+  } catch (error) {
+    supChild.kill('SIGKILL');
+    upstream.close();
+    console.error(`✗ 冒烟失败（supervisor 形态段）：${error instanceof Error ? error.message : undefined}`);
+    if (steps.length) console.error(`已通过：\n- ${steps.join('\n- ')}`);
+    console.error(`临时目录保留以供排查：${tmpRoot}`);
+    process.exitCode = 1;
+    process.exit();
+  }
+  supChild.kill('SIGTERM');
+  await once(supChild, 'exit').catch((): void => {});
+} else {
+  console.log('- supervisor 形态冒烟：跳过（副本无 core/supervisor.ts——v0.1.0 形态发布件）');
+}
+
 child.kill('SIGTERM');
 await once(child, 'exit').catch((): void => {});
 upstream.close();

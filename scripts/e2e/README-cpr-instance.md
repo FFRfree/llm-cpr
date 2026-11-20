@@ -29,7 +29,7 @@ await inst.stop();
    - `models`：`[{id:'test-model', backends:{ocg:'test-model', ccg:'test-model'}}]`
    - `listen/admin` 用传入的 infer/admin 端口；`identity_header:'x-session-id'`；`decide()` 恒 null（内置路由）。
    - 刻意不写 `import type { RouterPolicy }`：类型名触发模块解析需要装包，纯声明 + 引擎 `validateConfig` 运行期校验即可。
-4. **env**：`CPR_CONFIG_DIR`、`CPR_DATA_DIR`、`CPR_MASTER_KEY=e2e-test-key`、`CPR_UNIT_NAME=e2e-cpr-test.service`（安全垫：万一走 systemctl 只指向不存在的 unit）；同时剔除 `CPR_FORWARD_PORT`、`CPR_ADMIN_PORT`、`CPR_ENV_FILE`、`CPR_NPM_SOURCE`，防宿主环境泄漏干扰。不写 `.env` 文件（密钥仅进程环境注入）。
+4. **env**：`CPR_CONFIG_DIR`、`CPR_DATA_DIR`、`CPR_MASTER_KEY=e2e-test-key`、`CPR_UNIT_NAME=e2e-cpr-test.service`（安全垫：万一走 systemctl 只指向不存在的 unit）；同时剔除 `CPR_FORWARD_PORT`、`CPR_ADMIN_PORT`、`CPR_ENV_FILE`、`CPR_NPM_SOURCE`，防宿主环境泄漏干扰。不写 `.env` 文件（密钥仅进程环境注入）。supervisor 形态（`startSupervisorInstance`）另钉 `CPR_APP_ROOT`（swap 载荷缺省）与 `CPR_REGISTRY_URL=http://127.0.0.1:9`（/api/version 现查 registry 钉死口，测试不依赖真实 registry）。
 5. **spawn** `node <tmp>/package/core/main.ts`，cwd=包目录，stdout/stderr 全程收集。
 6. **健康等待**：轮询管理口 `GET /api/route/status`（纯本地，不联网）→ 200 即就绪；候选备胎 `/api/version`（该端点会现查 npm registry，离线时慢，故只作备胎）。上限 20s，超时 SIGKILL 并把 boot 输出附在错误里。
 7. **`stop()`**：SIGTERM → 等 `stopGraceMs` → SIGKILL 兜底；`stopDetail` 标明 `'sigterm-clean' | 'sigkill-fallback' | 'already-exited'`。实测 SIGTERM 即刻干净退出（~15ms）。

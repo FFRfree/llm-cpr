@@ -310,6 +310,8 @@ async function versionGate(target: string): Promise<boolean> {
 // ---- unit / plist 内容 ----
 
 // unit 钉 current 软链（版本无关）：写一次，升级翻转软链后 restart 即用新版，unit 文件永不随版本重写。
+// ExecStart 指 supervisor（supervisor-upgrade 票 04）：常驻外壳终生持有两监听口，worker 换版本不动
+// systemd（MainPID = supervisor）；systemd 只兜底 supervisor 自身（Restart=on-failure）。
 // 沙箱四行继承自 v0.1.0 生产 unit（review-2 P2 修复：05 重写时曾丢）——用户级不等于不设防；
 // ProtectSystem=full 罩住 /usr、/boot、/etc，引擎唯一可写面 = ReadWritePaths 的用户数据目录。
 function enginePath(): string {
@@ -325,7 +327,7 @@ Description=llm-cpr — LLM 订阅路由网关
 [Service]
 Type=simple
 WorkingDirectory=${engine}
-ExecStart=${process.execPath} ${path.join(engine, 'core', 'main.ts')}
+ExecStart=${process.execPath} ${path.join(engine, 'core', 'supervisor.ts')}
 EnvironmentFile=${config}/.env
 Environment=CPR_DB_FILE=${data}/data.db
 Environment=CPR_CONFIG_DIR=${config}
@@ -352,7 +354,7 @@ function plistFileContent(): string {
   <key>Label</key><string>${DARWIN_LABEL}</string>
   <key>ProgramArguments</key><array>
     <string>${process.execPath}</string>
-    <string>${path.join(engine, 'core', 'main.ts')}</string>
+    <string>${path.join(engine, 'core', 'supervisor.ts')}</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

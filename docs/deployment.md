@@ -25,30 +25,39 @@ cpr upgrade --to <版本>     # 手动升/退到指定版本
 cpr uninstall [--purge]    # --purge 才删 ~/.llm-cpr（显式确认）
 ```
 
-## 升级与回滚语义
+## 升级与回滚语义（supervisor 形态，supervisor-upgrade 批次）
 
 ```
 npm 下载新版 → 独立版本目录（current/服务全不动）
   → 打用户补丁（~/.llm-cpr/patches/*.patch；冲突 = 拒绝，current 未切换零动作）
   → 临时库冒烟（失败 = current 未切换，服务未动）
-  → 翻转 current 软链 → systemctl --user restart → is-active 健康门
-失败 → current 拨回上一版目录 + restart（零网络、瞬时；版本目录是验证过的完整品）
+  → cpr 调 supervisor 换版本（POST /api/supervisor/swap；CLI 不拨链不碰 systemd）：
+      supervisor 翻转 current 软链 → 从新版目录起新 worker（旧的照常服务）→ 等 ready
+      → 新旧短暂并存（同一监听 socket 的两份 dup fd，内核仲裁 accept，端口零空窗）
+      → 回应换版本请求 → 旧 worker 排水（停接新请求、在途跑完）→ 退出
+失败（新 worker 起不来 / ready 超时）→ 杀新 worker、软链回拨、旧 worker 全程未动（零损伤）
+ready 后 crash-loop → supervisor 依升级收据（dataDir/upgrade-receipt.json，切换即落盘）
+      自动拨回上一版软链并重拉旧 worker（upgrade.rollback 事件）；收据窗口外或已消费 → 只拉起不回滚
 ```
 
+- **systemd 从升级链路退役**：`cpr upgrade` / `cpr reload`（冷区变更）都不再 restart——换版本 = 换 worker，MainPID（= supervisor）不变。systemd 只兜底 supervisor 自身（bind 失败 / worker ready 超时的启动路径退出非 0，Restart=on-failure 重拉）。
+- **worker 级自愈在 supervisor 内闭环**，不依赖 systemd 钩子、不依赖任何进程活着；收据「消费即作废」，防无关崩溃连环回滚老版本。
 - **DB 备份/迁移的单一来源是引擎启动路径**（`core/store/migrate.ts`）：开库先 WAL checkpoint + 拷 `~/.llm-cpr/backups/<时间戳>/` + integrity check，再按 `PRAGMA user_version` 步骤表迁移；CLI 不重复做。只做加法迁移——加法保证「旧代码跑新库」，是软链回滚的救命绳。
-- 手工排查口径：`journalctl --user -u llm-cpr -n 50`；数据回退 = 停服后从 `backups/<时间戳>/` 拷回（**会丢切换后写入**，先核行数与 `max(id)`）。
+- 手工排查口径：`journalctl --user -u llm-cpr -n 50`（supervisor 启动行 = 常驻外壳起；worker 换版行 = swap 完成，两回事）；数据回退 = 停服后从 `backups/<时间戳>/` 拷回（**会丢切换后写入**，先核行数与 `max(id)`）。
 
-## systemd unit 要点（v0.2.0）
+## systemd unit 要点（v0.2.0，supervisor 形态）
 
 - 用户级：`systemctl --user` + `loginctl enable-linger`（登出/重启后照跑）；npm 产物零依赖，不需要 `node_modules`。
-- unit 钉 `current` 软链（`WorkingDirectory`/`ExecStart` 指 `~/.local/lib/llm-cpr/current/…`）——版本无关，写一次，升级翻转软链后 restart 即用新版。
+- unit 钉 `current` 软链（`WorkingDirectory`/`ExecStart` 指 `~/.local/lib/llm-cpr/current/…`）——版本无关，写一次，升级翻转软链后**不用 restart 也生效**（swap 换 worker 直接跑新版；restart 只在 supervisor 自身重启时用到）。
+- `ExecStart` 指 `core/supervisor.ts`（常驻外壳）：bind 8741/8740 两口终生持有，worker 由它派生。`MainPID = supervisor`，升级/回滚全程不动 systemd。
 - `EnvironmentFile=~/.llm-cpr/.env`；显式传 `CPR_DB_FILE`/`CPR_CONFIG_DIR`/`CPR_DATA_DIR`（systemd 不继承安装命令的环境，缺了会静默加载另一份 policy）。
+- unit 模板改写（ExecStart 从 `core/main.ts` 换 supervisor）是**生产改动**：仓内模板已更新，部署逐次授权，并与被替换的生产 unit 逐行对拍沙箱四行（NoNewPrivileges/PrivateTmp/ProtectSystem/ReadWritePaths）。
 
 ## 发布纪律（维护者视角）
 
 1. 版本纪律：加法迁移打 minor；搬数/换表打 major。`package.json` 版本号与 `core/store/migrate.ts` 的 `SCHEMA_VERSION` 对齐推进。
 2. 打 tag `v<x.y.z>` → `npm pack` 出 `.tgz`。
-3. **对产物跑假上游冒烟**（验的即发布的字节）：`node scripts/xdg-deploy/smoke-release.ts ffrfree-llm-cpr-<版本>.tgz`——启动、鉴权、换 key 转发、SSE 直通、记账、看板、单库落位全绿才算数。
+3. **对产物跑假上游冒烟**（验的即发布的字节）：`node scripts/xdg-deploy/smoke-release.ts ffrfree-llm-cpr-<版本>.tgz`——启动、鉴权、换 key 转发、SSE 直通、记账、看板、单库落位全绿才算数；v0.6.0 起含 supervisor 形态段（临时 policy.ts + `node core/supervisor.ts` + 同版本 swap 换 worker，workerPid 必变）。
 4. `npm publish --access public`——**scoped 包默认按私有处理（私有要付费账号），公开发布必须显式 `--access public`**，这条忘了会直接报错。介意第三方 registry 的自持路线：把自托管 Forgejo 挂成 npm registry，`--registry` 指过去即可，机制不变。
 
 ## 本机生产切换（阶段 3，逐次授权）

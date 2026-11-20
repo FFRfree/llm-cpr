@@ -77,6 +77,8 @@ export default class RigPolicy {
     CPR_MASTER_KEY: 'rig-master',
     RIG_UPSTREAM_KEY: 'rig-upstream-key',
     CPR_WORKER_READY_DELAY_MS: '0',
+    // /api/version 现查 npm registry：钉到本地死口，测试不依赖真实 registry 的偶发慢。
+    CPR_REGISTRY_URL: 'http://127.0.0.1:9',
     ...extraEnv,
   };
   const lines: string[] = [];
@@ -183,6 +185,7 @@ export default class RigPolicy {
       CPR_CONFIG_DIR: dir, CPR_DATA_DIR: dir, CPR_DB_FILE: path.join(dir, 'data.db'),
       CPR_FORWARD_PORT: String(forwardPort), CPR_ADMIN_PORT: String(adminPort),
       CPR_MASTER_KEY: 'rig-master', RIG_UPSTREAM_KEY: 'rig-upstream-key',
+      CPR_REGISTRY_URL: 'http://127.0.0.1:9', // /api/version 现查 registry：钉死口
       CPR_WORKER_READY_DELAY_MS: '5000',      // 拖过 ready 门
       CPR_SUPERVISOR_READY_TIMEOUT_MS: '1500', // 门比拖延迟短：1.5s 即判超时
     },
@@ -224,6 +227,7 @@ export default class RigPolicy {
       CPR_DB_FILE: dir, // 指向目录本身 → node:sqlite 打不开（fail fast 路径；root 下 chmod 拦不住，用形状错误拦）
       CPR_FORWARD_PORT: String(forwardPort), CPR_ADMIN_PORT: String(adminPort),
       CPR_MASTER_KEY: 'rig-master', RIG_UPSTREAM_KEY: 'rig-upstream-key',
+      CPR_REGISTRY_URL: 'http://127.0.0.1:9', // /api/version 现查 registry：钉死口
     },
   }, { log: () => {}, warn: () => {}, error: (msg: string) => { stderrLines.push(msg); } } as unknown as Pick<Console, 'log' | 'warn' | 'error'>);
   const stderrLines: string[] = [];

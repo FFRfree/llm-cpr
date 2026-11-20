@@ -52,6 +52,24 @@ export interface CprInstanceOptions {
   stopGraceMs?: number;
 }
 
+export interface SupervisorInstanceOptions extends Omit<CprInstanceOptions, 'dataDir'> {
+  /** worker/supervisor 的包根（已就位的版本目录布局 <appRoot>/versions/<v>/app）；缺省 = npm pack 解包目录。 */
+  workerRoot: string;
+  /** 安装区根（current 软链所在；swap 载荷里的 appRoot 用）。 */
+  appRoot: string;
+  /** data.db 等数据目录（调用方持有；本函数预建）。 */
+  dataDir: string;
+}
+
+export interface SupervisorInstance {
+  pid: number;
+  policyPath: string;
+  supervisorEntry: string;
+  stdout: string;
+  stderr: string;
+  stop(): Promise<void>;
+}
+
 export interface CprInstance {
   pid: number;
   /** 实际加载的 policy 文件路径。 */
@@ -233,5 +251,86 @@ export async function startCprInstance(options: CprInstanceOptions): Promise<Cpr
       alive = false;
     },
     get stopDetail() { return stopDetail; },
+  };
+}
+
+/**
+ * supervisor 形态实例（supervisor-upgrade 票 04）：spawn <workerRoot>/core/supervisor.ts（e2e 的
+ * PID 红线主体——supervisor PID 全程不变，worker PID 必随 swap 变化）。workerRoot 必须已是
+ * versions/<v>/app 布局（swap 编排按它翻 current 软链）；本函数只写 policy.ts + 预建 dataDir。
+ * 健康判定与 startCprInstance 同口径：管理口 /api/version 或 /api/route/status 到 200。
+ */
+export async function startSupervisorInstance(options: SupervisorInstanceOptions): Promise<SupervisorInstance> {
+  const { repoDir, ports, configDir, dataDir, workerRoot, appRoot } = options;
+  assertPortsSafe(ports);
+  void repoDir; // pack 源由调用方消化成 workerRoot（版本目录布局）；这里只需要 ports/config/data
+  const supervisorEntry = path.join(workerRoot, 'core', 'supervisor.ts');
+  if (!fs.existsSync(supervisorEntry)) throw new CprInstanceError(`workerRoot 缺 core/supervisor.ts：${workerRoot}`);
+  const policyPath = await writePolicy(configDir, ports);
+  await fs.promises.mkdir(dataDir, { recursive: true });
+
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of ['CPR_FORWARD_PORT', 'CPR_ADMIN_PORT', 'CPR_ENV_FILE', 'CPR_NPM_SOURCE', 'CPR_MASTER_KEY']) delete env[key];
+  env.CPR_CONFIG_DIR = path.resolve(configDir);
+  env.CPR_DATA_DIR = path.resolve(dataDir);
+  env.CPR_DB_FILE = path.join(path.resolve(dataDir), 'data.db');
+  env.CPR_MASTER_KEY = E2E_MASTER_KEY;
+  env.CPR_UNIT_NAME = 'e2e-cpr-test.service';
+  env.CPR_APP_ROOT = path.resolve(appRoot);
+  // /api/version 会现查 npm registry（缓存 1h）：钉到本地死口，测试不依赖真实 registry 的偶发慢。
+  env.CPR_REGISTRY_URL = 'http://127.0.0.1:9';
+
+  const child = spawn(process.execPath, [supervisorEntry], { cwd: workerRoot, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let alive = true;
+  let stdoutBuf = '';
+  let stderrBuf = '';
+  child.stdout!.on('data', (chunk: Buffer) => { stdoutBuf += chunk.toString('utf8'); });
+  child.stderr!.on('data', (chunk: Buffer) => { stderrBuf += chunk.toString('utf8'); });
+  child.once('exit', () => { alive = false; });
+
+  const readyTimeoutMs = options.readyTimeoutMs ?? 20_000;
+  const pollOnce = async (): Promise<boolean> => {
+    for (const pathname of ['/api/version', '/api/route/status']) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${ports.admin}${pathname}`, { signal: AbortSignal.timeout(2000) });
+        if (res.status === 200) return true;
+      } catch { /* 未就绪 */ }
+    }
+    return false;
+  };
+  const exitedUnexpectedly = new Promise<never>((_resolve, reject) => {
+    child.once('exit', (code, signal) => reject(new CprInstanceError(`supervisor 提前退出（code=${code} signal=${signal}）`, stdoutBuf + stderrBuf)));
+  });
+  const deadline = Date.now() + readyTimeoutMs;
+  let ready = false;
+  while (Date.now() < deadline) {
+    ready = await Promise.race([pollOnce(), exitedUnexpectedly.then(() => false)]);
+    if (ready) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  if (!ready) {
+    void child.kill('SIGKILL');
+    throw new CprInstanceError(`supervisor ${readyTimeoutMs}ms 内未就绪（管理口 ${ports.admin} 无 200）`, stdoutBuf + stderrBuf);
+  }
+
+  return {
+    pid: child.pid!,
+    policyPath,
+    supervisorEntry,
+    get stdout() { return stdoutBuf; },
+    get stderr() { return stderrBuf; },
+    async stop(): Promise<void> {
+      if (!alive) return;
+      const grace = options.stopGraceMs ?? 8_000;
+      child.kill('SIGTERM');
+      const stopped = await Promise.race([
+        new Promise<boolean>((resolve) => { child.once('exit', () => resolve(true)); setTimeout(() => resolve(alive ? false : true), grace); }),
+      ]);
+      if (!stopped && alive) {
+        child.kill('SIGKILL');
+        await new Promise<void>((resolve) => { child.once('exit', () => resolve()); setTimeout(resolve, 3_000); });
+      }
+      alive = false;
+    },
   };
 }

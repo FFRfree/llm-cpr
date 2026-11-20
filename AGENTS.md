@@ -12,6 +12,8 @@
 **定位与开源**：未来发布到 GitHub（规划期曾名 sub-router，2026-11-16 定名）。
 三层结构：上层 per-harness 接入（薄）→ 中层路由器（本仓核心）→ 下层多家族订阅后端。
 
+**运行形态（supervisor-upgrade 批次，2026-11-20）**：常驻外壳 **supervisor**（`core/supervisor.ts`）——bind 8741/8740 两监听口终生持有，派生 worker（`core/main.ts --worker`）fd 交接而非自 bind；升级/冷区 reload = 换 worker（排水切换，端口零空窗），**不动 systemd**。unit 模板 ExecStart 指 supervisor（仓内已改；生产部署逐次授权）。失败零损伤（新 worker 起不来 → 软链回拨、旧的不动）、crash-loop 依升级收据自愈回滚（`dataDir/upgrade-receipt.json`，消费即作废）、并发第二个 swap 拒绝；`upgrade.swap`/`upgrade.rollback` 事件落 system_events（tenant 'default'）。`cpr upgrade` 冒烟过门后只发 `/api/supervisor/swap`，CLI 不拨链不碰 systemd。主事实：`docs/deployment.md`（升级/回滚语义、unit 要点）、`scripts/e2e/run-scenarios.ts` 场景 6（换版本零断粮/坏版本回拨/自愈闭环）。
+
 ## 目录
 
 ```

@@ -220,13 +220,13 @@ test('install --yes：写出 unit / .env(随机 master key) / ~/.llm-cpr policy 
   const unit = fs.readFileSync(unitPath, 'utf8');
   // unit 钉 current（版本无关）：升级翻转软链后 restart 即用新版，unit 永不随版本重写
   assert.ok(unit.includes(`WorkingDirectory=${engineLink}`));
-  assert.ok(unit.includes(`ExecStart=${process.execPath} ${engineLink}/core/main.ts`));
+  assert.ok(unit.includes(`ExecStart=${process.execPath} ${engineLink}/core/supervisor.ts`));
   assert.ok(unit.includes(`EnvironmentFile=${f.env.CPR_CONFIG_DIR}/.env`));
   assert.ok(unit.includes(`CPR_DB_FILE=${f.env.CPR_DATA_DIR}/data.db`));
   // unit 必须显式传接缝（review P2 修正）：systemd 不继承安装命令的环境，缺了会静默加载另一份 policy
   assert.ok(unit.includes(`Environment=CPR_CONFIG_DIR=${f.env.CPR_CONFIG_DIR}`));
   assert.ok(unit.includes(`Environment=CPR_DATA_DIR=${f.env.CPR_DATA_DIR}`));
-  assert.ok(unit.includes('ExecStart=') && unit.includes('core/main.ts'));
+  assert.ok(unit.includes('ExecStart=') && unit.includes('core/supervisor.ts'));
 
   const envFile = path.join(f.env.CPR_CONFIG_DIR, '.env');
   assert.ok(fs.existsSync(envFile));
