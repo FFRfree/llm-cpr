@@ -1,6 +1,6 @@
 {
   "name": "@ffrfree/llm-cpr",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "type": "module",
   "description": "LLM 订阅路由网关：多 coding-plan 订阅统一入口，按会话亲和与月欠账调度，订阅声明即代码",
   "engines": {
