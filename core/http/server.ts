@@ -154,7 +154,9 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
   const reloader = createPolicyReloader({
     policy,
     policyFile,
-    backupDir: policyFile ? path.join(path.dirname(dbPath), 'backups', 'policy') : undefined,
+    // 备份锚到数据目录（CPR_DATA_DIR 正主，与 docs 口径一致；review-1 P3-4——dbPath 可能被
+    // CPR_DB_FILE 指到 data/ 子目录，按 dirname 推会漂）。
+    backupDir: policyFile ? path.join(dataDir(env), 'backups', 'policy') : undefined,
   });
   // 重载的审计与日志：成功必落 policy.reload（trigger + 新旧 sha256）；失败落 policy.reload.error
   // 仅当内容是新的（reloader 的 deduped 标记防同一坏文件每请求刷账）。事件归 'default' 租户（非请求事件）。

@@ -91,6 +91,9 @@ interface ReloadOptions {
 
 const messageOf = (error: unknown): string => error instanceof Error ? error.message : String(error);
 const ERROR_SUMMARY_MAX = 400;
+// 动态 import 的保险丝（review-1 P3-3）：顶层 await 挂死的 policy 文件不能无限期拖死网关——
+// 超时按 load-failed 保旧；dangling 的 import Promise 无人引用即弃（真完成也不产生副作用）。
+const IMPORT_TIMEOUT_MS = 10_000;
 
 // 文件签名：mtimeMs + size。同毫秒等长改写理论可漏检，两元素同时撞上的概率对「人手改配置」
 // 频率可忽略（Hermes 用四元组同思路）；size 进签名已天然覆盖绝大多数测试与真实编辑。
@@ -119,10 +122,12 @@ export function createPolicyReloader({ policy, policyFile, validate = validateCo
     } catch { /* 启动后文件即被删/不可读：维持 builtin 实例，后续触发按文件缺失口径报 */ }
   }
 
+  let lastReason: 'load-failed' | 'cold-zone-change' | 'file-missing' | null = null; // review-1 P2-2：去重时保真 reason
   const kept = (reason: 'load-failed' | 'cold-zone-change' | 'file-missing', error: string, sig: string | null, coldChanged?: string[]): ReloadOutcome => {
     status.failedReloads += 1;
     status.lastError = error;
     status.lastErrorAt = now();
+    lastReason = reason;
     if (coldChanged) status.lastColdChanged = coldChanged;
     lastFailureSig = sig;
     return coldChanged ? { kind: 'kept', reason, error, coldChanged } : { kind: 'kept', reason, error };
@@ -148,8 +153,13 @@ export function createPolicyReloader({ policy, policyFile, validate = validateCo
     missingReported = false;
     if (sig === loadedSig) return { kind: 'unchanged' };
     if (sig === attemptSig && lastFailureSig === sig) {
-      // 同一坏文件重复触发：不重试不重报（server 侧靠 deduped 跳过事件）。
-      return { kind: 'kept', reason: 'load-failed', error: status.lastError ?? 'previous load failed', deduped: true };
+      // 同一坏内容重复触发：不重试不重报（server 侧靠 deduped 跳过事件）；reason/coldChanged
+      // 必须保真（review-1 P2-2）——冷区拒绝被去重时 CLI 的 y/N 重启流程靠它分流。
+      return {
+        kind: 'kept', reason: lastReason ?? 'load-failed', error: status.lastError ?? 'previous load failed',
+        ...(lastReason === 'cold-zone-change' && status.lastColdChanged ? { coldChanged: status.lastColdChanged } : {}),
+        deduped: true,
+      };
     }
     attemptSig = sig;
     let bytes: Buffer;
@@ -157,11 +167,22 @@ export function createPolicyReloader({ policy, policyFile, validate = validateCo
       return kept('load-failed', `read failed: ${messageOf(error)}`, sig);
     }
     const hash = createHash('sha256').update(bytes).digest('hex');
+    if (hash === status.sha256) {
+      // 内容没变只是 mtime 变（touch/编辑器回存，review-1 P3-1）：不重载、不落事件、不备份，
+      // 只把签名推到最新，后续懒检查直接命中 unchanged。
+      loadedSig = sig;
+      lastFailureSig = null;
+      return { kind: 'unchanged' };
+    }
     let candidate: unknown;
     try {
       // 破缓存：同 URL 的 ESM 模块只执行一次，查询参数用内容哈希保证「同内容不重复实例化、
-      // 改了内容必是新记录」。
-      const mod = (await import(`${pathToFileURL(policyFile).href}?v=${hash}`)) as { default?: unknown };
+      // 改了内容必是新记录」。超时保险丝见 IMPORT_TIMEOUT_MS。
+      let timer: NodeJS.Timeout | undefined;
+      const mod = await Promise.race([
+        import(`${pathToFileURL(policyFile).href}?v=${hash}`) as Promise<{ default?: unknown }>,
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`policy import exceeded ${IMPORT_TIMEOUT_MS}ms (top-level await hang?)`)), IMPORT_TIMEOUT_MS); }),
+      ]).finally(() => clearTimeout(timer));
       if (typeof mod.default !== 'function') throw new Error('policy file must export a default class');
       candidate = new (mod.default as new () => unknown)();
     } catch (error) {
@@ -188,6 +209,8 @@ export function createPolicyReloader({ policy, policyFile, validate = validateCo
     current = candidate as RouterPolicy;
     loadedSig = sig;
     lastFailureSig = null;
+    // 成功即清失败现场（review-1 P3-2）：状态端点语义 =「当前健康度」，历史在事件账里。
+    status.lastError = null; status.lastErrorAt = null; status.lastColdChanged = null; lastReason = null;
     status.sha256 = hash;
     status.loadedAt = now();
     status.reloads += 1;

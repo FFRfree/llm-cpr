@@ -27,7 +27,7 @@ _Avoid_: session key, user
 _Avoid_: user/account（各另有所指）, workspace, 项目（不是按项目分）
 
 **热区 / 冷区（hot/cold zone）**:
-policy 声明字段按「daemon 启动时是否定型」分两层。热区（`decide`、`routing.*` 除 `snapshot_interval_ms`、`identity_header`）每请求现读，改文件即生效；冷区（`backends`/`models`/`tenants`/`capture`/`db_file`/`listen` 等）启动时已拆进鉴权表/快照轮询器/capture 构造，热换会造成「文件说了 A、进程跑着 B」的裂缝，热加载遇冷区变更整份拒绝并提示重启。清单正本在 `core/policy/reload.ts` 的 `COLD_POLICY_FIELDS`。
+policy 声明字段按「daemon 启动时是否定型」分两层。热区（`decide`、`routing.*` 除 `snapshot_interval_ms`、`identity_header`）每请求现读，改文件即生效；冷区（`backends`/`models`/`tenants`/`capture`/`db_file`/`listen` 等）启动时已拆进鉴权表/快照轮询器/capture 构造，热换会造成「文件说了 A、进程跑着 B」的裂缝，热加载遇冷区变更整份拒绝并提示重启。清单正本在 `core/policy/reload.ts` 的 `COLD_POLICY_FIELDS`。`identity_header` 属热区但慎改：换它就是换身份口径，存量全部身份在下一次请求按新口径重新判定（一次性重绑）。
 _Avoid_: 热配置/热配置项（不是「热」的字面义）, 动态配置
 
 ### 路由决策

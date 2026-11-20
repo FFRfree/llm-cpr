@@ -24,14 +24,14 @@ const chat = (url: string, session: string): Promise<Response> =>
   fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json', 'x-session-id': session }, body: JSON.stringify({ model: 'm' }) });
 
 // 用户 policy 真身：两个后端 + decide 内联表达式。各版本长度/内容必不同 → 文件签名必变。
-const policySource = (first: string, second: string, decide: string, extra = ''): string => `export default class {
+const policySource = (first: string, second: string, decide: string, extra = '', prelude = ''): string => `${prelude}export default class {
   master_key_env = 'CPR_MASTER';
-  ${extra}
   backends = [
     { name: 'first', family: 'ocg', base_url: '${first}', key_env: 'K0', priority: 0 },
     { name: 'second', family: 'ocg', base_url: '${second}', key_env: 'K1', priority: 1 },
   ];
   models = [{ id: 'm', backends: { ocg: 'native-m' } }];
+  ${extra}
   decide(ctx) { ${decide} }
 }`;
 const pick = (name: string): string => `return { backend: '${name}' };`;
@@ -57,7 +57,7 @@ async function setup(t: TestContext, decide: string): Promise<App> {
   fs.writeFileSync(file, policySource(urls[0], urls[1], decide));
   const mod = (await import(pathToFileURL(file).href)) as { default: new () => unknown };
   const policy = new mod.default() as Parameters<typeof createGatewayServers>[0];
-  const env = { CPR_MASTER: 'master', CPR_DB_FILE: path.join(dir, 'data.db'), K0: 'key0', K1: 'key1' };
+  const env = { CPR_MASTER: 'master', CPR_DB_FILE: path.join(dir, 'data.db'), CPR_DATA_DIR: dir, K0: 'key0', K1: 'key1' };
   const gateway = createGatewayServers(policy, { env, logger: { warn() {}, log() {} }, policyFile: file });
   gateway.forwardServer.listen(0, '127.0.0.1'); gateway.adminServer.listen(0, '127.0.0.1');
   await Promise.all([once(gateway.forwardServer, 'listening'), once(gateway.adminServer, 'listening')]);
@@ -75,7 +75,7 @@ async function setup(t: TestContext, decide: string): Promise<App> {
   };
 }
 
-const edit = (app: App, first: string, second: string, decide: string, extra = ''): void => { fs.writeFileSync(app.file, policySource(first, second, decide, extra)); };
+const edit = (app: App, first: string, second: string, decide: string, extra = '', prelude = ''): void => { fs.writeFileSync(app.file, policySource(first, second, decide, extra, prelude)); };
 const seen = async (app: App): Promise<string[]> => {
   const out: string[] = [];
   for (const event of app.events.listEvents()) {
@@ -169,7 +169,10 @@ test('cold-zone change refuses the whole swap and lists differing fields', async
   // 热区 routing 参数（不在冷区清单）正常热换
   edit(app, app.urls[0], app.urls[1], pick('first'), `routing = { rebind_cooldown_ms: 555 };`);
   assert.equal((await chat(app.url, 's4')).status, 200);
-  assert.equal((await app.policyGet()).reloads, 1);
+  const healthy = await app.policyGet();
+  assert.equal(healthy.reloads, 1);
+  assert.equal(healthy.lastColdChanged, null); // 成功即清失败现场（review-1 P3-2）
+  assert.equal(healthy.lastError, null);
 });
 
 test('deleted policy file keeps the old policy and reports the removal once', async (t) => {
@@ -229,4 +232,67 @@ test('builtin mode (no policyFile) stays zero-behavior', async (t) => {
   assert.equal(status.reloads, 0);
   await fetch(`${adminUrl}/api/policy/reload`, { method: 'POST' });
   assert.equal(gateway.events.listEvents().filter((event) => event.kind.startsWith('policy.reload')).length, 0); // 零行为：无事件
+});
+
+test('same-content mtime touch does not reload (no duplicate event, no extra backup)', async (t) => {
+  const app = await setup(t, pick('first'));
+  assert.equal((await chat(app.url, 's1')).status, 200);
+  const hashBefore = (await app.policyGet()).sha256;
+  const now = new Date();
+  // 纯 touch：mtime 变、内容不变（review-1 P3-1 场景）
+  fs.utimesSync(app.file, now, now);
+  assert.equal((await chat(app.url, 's2')).status, 200);
+  const status = await app.policyGet();
+  assert.equal(status.reloads, 0);
+  assert.equal(reloadEvents(app, 'policy.reload').length, 0);
+  assert.ok(!fs.existsSync(path.join(app.dir, 'backups', 'policy'))); // 无成功重载 = 无备份快照
+  assert.equal(status.sha256, hashBefore);
+});
+
+test('deduped cold-zone refusal keeps reason and coldChanged for the CLI restart flow', async (t) => {
+  const app = await setup(t, pick('first'));
+  assert.equal((await chat(app.url, 's1')).status, 200);
+  edit(app, app.urls[0], app.urls[1], pick('first'), "mutate = (() => { this.backends[0].name = 'renamed'; return true; })();"); // 冷区变更（decide 不变）
+  assert.equal((await chat(app.url, 's2')).status, 200); // 请求入口懒检查先触发一次拒绝
+  const manual = await app.policyReload(); // 同一坏内容的手动触发 → 去重返回，但 reason 保真（review-1 P2-2）
+  assert.equal(manual.outcome.kind, 'kept');
+  assert.equal((manual.outcome as { reason?: string }).reason, 'cold-zone-change');
+  assert.deepEqual((manual.outcome as { coldChanged?: string[] }).coldChanged, ['backends']);
+});
+
+test('concurrent reload merges into ONE audit event per content change', async (t) => {
+  // 慢 import（顶层 await 300ms）窗口内 3 并发请求 → 只落 1 条 policy.reload（review-1 P2-1 场景）
+  const app = await setup(t, pick('first'));
+  assert.equal((await chat(app.url, 's1')).status, 200);
+  edit(app, app.urls[0], app.urls[1], pick('second'), '', `await new Promise((r) => setTimeout(r, 300));\n`); // 顶层 await 拖慢 import
+  const [a, b, c] = await Promise.all([chat(app.url, 'c1'), chat(app.url, 'c2'), chat(app.url, 'c3')]);
+  assert.equal(a.status, 200); assert.equal(b.status, 200); assert.equal(c.status, 200);
+  const status = await app.policyGet();
+  assert.equal(status.lastError, null, `reload 失败现场：${String(status.lastError)}`);
+  assert.equal(reloadEvents(app, 'policy.reload').length, 1);
+  assert.equal(status.reloads, 1);
+  assert.deepEqual(await seen(app), ['first', 'second', 'second', 'second']); // s1 首绑 first；三条并发全走新策略（合流等待，不绕过）
+});
+
+test('unreadable declaration (file replaced by a directory) keeps old policy and dedupes', async (t) => {
+  const app = await setup(t, pick('first'));
+  assert.equal((await chat(app.url, 's1')).status, 200);
+  fs.rmSync(app.file);
+  fs.mkdirSync(app.file); // statSync 成功但 readFileSync EISDIR（review-1 probe1 D 场景的可测变体；root 下 chmod 000 不成立）
+  try {
+    assert.equal((await chat(app.url, 's2')).status, 200);
+    assert.deepEqual(await seen(app), ['first', 'first']); // 保旧
+    const status = await app.policyGet();
+    assert.match(String(status.lastError), /read failed/);
+    const after1 = reloadEvents(app, 'policy.reload.error').length;
+    assert.equal(after1, 1);
+    assert.equal((await chat(app.url, 's3')).status, 200);
+    assert.equal(reloadEvents(app, 'policy.reload.error').length, after1); // 同态去重
+  } finally {
+    fs.rmdirSync(app.file);
+  }
+  edit(app, app.urls[0], app.urls[1], pick('second'));
+  assert.equal((await chat(app.url, 's4')).status, 200);
+  assert.deepEqual(await seen(app), ['first', 'first', 'first', 'second']); // 恢复后照常热换
+  assert.equal((await app.policyGet()).lastError, null);
 });

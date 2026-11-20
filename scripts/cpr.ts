@@ -805,7 +805,11 @@ async function reloadPolicy(yes: boolean): Promise<number> {
   let body: { outcome: Outcome; status: { source?: string; sha256?: string | null } } | null = null;
   try {
     const res = await fetch(`http://127.0.0.1:${port}/api/policy/reload`, { method: 'POST', signal: AbortSignal.timeout(30_000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      // 非 200 ≠ 不可达（review-1 P3-6）：500/503 时 daemon 在跑，报错该指向 daemon 日志。
+      console.error(`cpr: 管理口返回 HTTP ${res.status}（127.0.0.1:${port}/api/policy/reload）——daemon 在跑但处理出错，查服务日志。`);
+      return 1;
+    }
     body = await res.json() as { outcome: Outcome; status: { source?: string; sha256?: string | null } };
   } catch {
     console.error(`cpr: 管理口 127.0.0.1:${port} 不可达——热更新必须由运行中的进程完成，CLI 不做本地兜底判定。`);
@@ -819,7 +823,7 @@ async function reloadPolicy(yes: boolean): Promise<number> {
     return 0;
   }
   if (outcome.kind === 'unchanged') {
-    console.log('cpr: 声明文件未变化，无需重载。');
+    console.log('cpr: 声明文件未变化（或未启用外置 policy.ts，跑的是内置模板），无需重载。');
     return 0;
   }
   // kept = 保旧（Hermes last-known-good 语义：改坏文件绝不让流量变道）
