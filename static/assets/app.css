@@ -208,4 +208,20 @@ tr.detail-row th{position:static}
   tr.detail-row td{padding:10px 12px;overflow-x:auto}
   tr.detail-row td::before{content:none}
   tr.detail-row table{min-width:600px}
+  /* 宽表在手机上不撑爆页面：自己横向滑动（页面视口恒定 390，整页不再被 Chrome 缩小） */
+  main table{display:block;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  main table tbody,main table tr,main table td,main table th{display:revert}
+  /* 卡片化过的两张表恢复原 cell 布局（上一条 block 只服务宽表横滑） */
+  #sessions-table,#requests-table{display:block}
+  #sessions-table tr,#requests-table tr{display:block}
+  #sessions-table td,#requests-table td{display:flex}
+  /* 触控目标：页签/按钮/输入框提到 ~40px 高，页签占满行宽 */
+  nav{gap:4px}
+  nav a{padding:10px 14px;font-size:14px}
+  button{padding:9px 16px}
+  select,input{padding:8px 10px;min-height:40px}
+  header .spacer{display:none}
+  /* 手机端头部是两行（标题+页签），桌面写的吸顶偏移 41px 不成立；
+     且横滑容器内的吸顶会随横滚错位，直接取消 */
+  th{position:static}
 }

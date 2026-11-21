@@ -98,7 +98,6 @@ async function loadEvents() {
 
 async function load() {
   await Promise.all([loadCapture(), loadTools(), loadPrivacy(), loadEvents()]);
-  $('#err').textContent = '';
 }
 $('#tools-days').addEventListener('change', loadTools);
 $('#events-kind').addEventListener('change', loadEvents);
