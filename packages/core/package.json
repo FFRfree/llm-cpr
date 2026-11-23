@@ -1,6 +1,6 @@
 {
   "name": "@ffrfree/llm-cpr-core",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "llm-cpr 引擎：多订阅路由 + 管理面 + 看板静态分发（core/ 源码 + static/ 由 dashboard 包构建产出）",

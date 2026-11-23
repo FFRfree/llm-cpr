@@ -1,6 +1,6 @@
 {
   "name": "llm-cpr-monorepo",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "LLM 订阅路由网关 monorepo：core=引擎（路由+管理面+看板分发）、dashboard=看板页面源码、cli=唯一 npm 发布包（发布时装配前两者）",
