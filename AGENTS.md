@@ -23,7 +23,7 @@ docs/agents/      agent 协作约定（issue tracker、domain docs）
 
 ## 约定（与 ocg-proxy 同源的规矩）
 
-- 运行时零第三方依赖（node:sqlite 与原生类型擦除），Node ≥ 22.18；TypeScript 为开发依赖。
+- 运行时零第三方依赖（node:sqlite 与原生类型擦除），Node ≥ 22.18；TypeScript 为开发依赖。默认不引依赖，但不一刀切：前端看板资产自包含（不挂 CDN），确有必要时可本地化内联成熟前端库（如 echarts.min.js 整份内联），不加运行时 npm 依赖、不引外部 JS。
 - 全仓 `.ts`（`core/`、`test/`、`scripts/`）：Node 原生类型擦除直接运行，没有构建步骤，`import` 必须写 `.ts` 后缀；`npm run typecheck` 覆盖这三处，`node --test` 会自动发现 `test/*.test.ts`。编译期负例放 `type-tests/`（`node --test` 不扫该目录）。
 - 配置即代码（v0.2.0 加载序）：用户声明在 `~/.llm-cpr/policy.ts`（存在则优先，坏文件原样抛拒启动），否则内置 `core/policy/mine.ts`；密钥在 `~/.llm-cpr/.env`（引擎自加载、只填缺失键，`CPR_ENV_FILE` 接缝优先）。仓库只放 `.env.example` 与 `policy.example.ts` 模板，用户真身不进仓、不进 release。
 - 生产运行副本在 `~/.local/lib/llm-cpr/versions/<v>/app`（`current` 软链切换，ADR-0009），配置/密钥/数据库在 `~/.llm-cpr/`；旧 `/root/.local/lib|share/coding-plan-router/` 路径已停用、纯为回滚材料；源码树不是生产运行目录，发布/回滚见 `docs/deployment.md`（通用版）；本机专属部署事实以技能 `llm-cpr` 的 `references/production-deployment.md` 为准。
