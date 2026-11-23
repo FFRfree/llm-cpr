@@ -197,6 +197,24 @@ details.fold .body{padding:0 12px 12px;font-size:13px;color:var(--muted);line-he
 .wf-row .st{flex-shrink:0;width:30px;text-align:right}
 .wf-row .st.bad{color:var(--red);font-weight:600}
 .wf-day{padding:3px 12px;background:#f7f9fc;color:var(--muted);font-size:10.5px;border-bottom:1px solid var(--line)}
+/* dsh trajectory 风格时间轴概览（交互参考 deepseek-ai/deepseek-harness，MIT） */
+.tl{padding:8px 12px 6px;border-bottom:1px solid var(--line)}
+.tl-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap}
+.tl-modes{display:flex;gap:4px}
+.tl-modes .chip{font-size:10.5px;padding:2px 8px}
+.tl-bar{position:relative;height:48px;background:#fafbfd;border:1px solid var(--line);border-radius:8px;overflow:hidden;cursor:crosshair;touch-action:none;user-select:none}
+.tl-lane{position:absolute;left:0;right:0;height:16px}
+.tl-lane .sp{position:absolute;top:2px;height:12px;border-radius:2px;min-width:2px}
+.tl-lane .sp.dec{opacity:.55}
+.tl-lane .sp.bad{outline:1.5px solid var(--red);outline-offset:0}
+.tl-lane .sp.cap::after{content:'';position:absolute;top:3px;left:1px;width:4px;height:4px;border-radius:50%;background:#1c2733}
+.tl-lane .gap{position:absolute;top:4px;height:8px;border-radius:2px;background:repeating-linear-gradient(45deg,#c9d2dd 0 3px,transparent 3px 6px);min-width:2px}
+.tl-hover{position:absolute;top:0;bottom:0;width:1px;background:var(--txt);opacity:.5;pointer-events:none}
+.tl-card{position:absolute;top:2px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:3px 8px;font-size:11px;line-height:1.5;pointer-events:none;box-shadow:0 2px 10px rgba(20,40,80,.12);white-space:nowrap;z-index:5}
+.tl-sel{position:absolute;top:0;bottom:0;background:rgba(26,111,232,.12);border-left:1px solid var(--blue);border-right:1px solid var(--blue);pointer-events:none}
+.tl-sel.dragging{background:rgba(26,111,232,.22)}
+.wf-row.dim{opacity:.3}
+.wf-row.focus{background:var(--blue-soft)}
 .msg{border-bottom:1px solid var(--line)}
 .msg:last-child{border-bottom:0}
 .msg-head{display:flex;gap:8px;align-items:center;padding:7px 12px 0;font-size:11px;flex-wrap:wrap}
@@ -246,7 +264,7 @@ details.fold .body{padding:0 12px 12px;font-size:13px;color:var(--muted);line-he
   .row .l2 span:nth-child(4){text-align:right}
   .traj{grid-template-columns:240px minmax(380px,1.1fr) minmax(360px,1fr);gap:0;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--line)}
   .traj .pane{border:0;border-radius:0}
-  .traj .pane-b{max-height:calc(100vh - 220px)}
+  .traj .pane-b{max-height:calc(100vh - 220px);overflow-x:hidden}
   .traj .pane-h .back{display:none}
   .obs-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
   .obs-grid>div{min-width:0}
@@ -541,7 +559,7 @@ function setRMode(m){ rMode=m; rPage=0; renderRequests(); }
 
 /* ================= 会话（列表 + 详情钻取，原轨迹页合并进来） ================= */
 const THREAD_COLORS=['#5b8def','#3fae7a','#d29a3a','#9a6fd0','#d05b6a','#3a9ad2'];
-const traj={identity:null,tenant:null,turns:[],chain:new Map(),turnId:null,reqs:[],view:'tree'};
+const traj={identity:null,tenant:null,turns:[],chain:new Map(),turnId:null,reqs:[],view:'tree',tl:{mode:'dur',view:null,sel:null}};
 function trajPane(p){ $('#traj').dataset.pane=p; }
 function renderTrajSessions(q=''){
   const all=DATA.sessions?.sessions||[];
@@ -642,36 +660,205 @@ function renderTree(){
   $('#traj-turns').innerHTML=`<div class="tree"><svg class="tgraph" width="${GW}" height="${chrono.length*H}">${edges}${nodes}</svg>${rows||'<div class="empty">该会话没有捕获轮次</div>'}</div>`;
 }
 function renderWaterfall(){
+  // 投影/交互复刻自 dsh trajectory（MIT，deepseek-ai/deepseek-harness packages/client/ui-trajectory）
   const reqs=[...traj.reqs].sort((a,b)=>a.ts-b.ts);
   const defs=(DATA.routeStatus||RS).subscriptions||[];
   const subColor=name=>{ const i=defs.findIndex(d=>d.name===name); return i>=0?USG_COLORS[i%USG_COLORS.length]:'#9aa7b5'; };
-  const t0=reqs[0]?.ts??0, t1=Math.max(...reqs.map(r=>r.ts+(r.ms||0)),t0+1000)+30000;
-  const pos=ts=>((ts-t0)/(t1-t0)*100);
-  const wOf=r=>Math.max(0.4,(r.ms||0)/(t1-t0)*100);
-  // 顶部时间刻度（5 档）；瀑布从上往下即时间流（最旧在上）
-  const ticks=[0,.25,.5,.75,1].map(f=>{
-    const ts=t0+(t1-t0)*f;
-    const tf=f===0?'translateX(0)':f===1?'translateX(-100%)':'translateX(-50%)';
-    return `<i style="left:${f*100}%;transform:${tf}">${hms(ts)}</i>`;
-  }).join('');
+  const m=tlProject(reqs);
+  if(traj.tl.view==null||traj.tl.view.s<m.start||traj.tl.view.e>m.end) traj.tl.view={s:m.start,e:m.end};
+  const modeName={seq:'等距',dur:'压缩空闲',time:'时钟',act:'时刻'};
+  const legend=[...new Set(reqs.map(r=>r.subscription).filter(Boolean))].map(n=>`<span><i style="background:${subColor(n)}"></i>${esc(defs.find(d=>d.name===n)?.alias??n)}</span>`).join('');
+  $('#traj-turns').innerHTML=`<div class="wf">
+    <div class="tl">
+      <div class="tl-head"><span class="muted" style="font-size:11px">时间轴概览</span>
+        <span class="tl-modes">${Object.entries(modeName).map(([k,n])=>`<button class="chip ${traj.tl.mode===k?'on':''}" data-m="${k}">${n}</button>`).join('')}</span>
+        <span class="muted" style="font-size:10px;margin-left:auto">拖拽=选区 · 滚轮=缩放 · 右键拖=平移 · Esc=清除</span></div>
+      <div class="tl-bar" id="tl-bar">
+        <div class="tl-lane" style="top:6px" id="tl-lane-gap"></div>
+        <div class="tl-lane" style="top:26px" id="tl-lane-req"></div>
+        <div id="tl-hoverline" class="tl-hover" style="display:none"></div>
+        <div id="tl-selbox" class="tl-sel" style="display:none"></div>
+        <div id="tl-draft" class="tl-sel dragging" style="display:none"></div>
+        <div id="tl-card" class="tl-card" style="display:none"></div>
+      </div>
+    </div>
+    <div class="usg-legend" style="padding:6px 12px 0">${legend||'<span class="muted">该会话暂无请求</span>'}</div>
+    <div class="wf-rule"><span class="tm"></span><span class="track" id="wf-rule-track"></span><span class="md"></span><span class="st"></span></div>
+    <div id="wf-rows"></div>
+    <div class="empty" style="border-bottom:0">共 ${reqs.length} 条请求 · <b>●</b> 黑点=已捕获正文（可点开跳血缘树） · 红圈=失败</div></div>`;
+  $('#wf-rows').innerHTML=wfLedger(reqs,subColor,m);
+  tlWire(m,reqs,subColor);
+  $('#traj-turns-title').textContent='时间轴 / 台账';
+}
+function tlProject(reqs){ // dsh timeline.ts 的四种投影：seq 等距 / dur 压缩空闲 / time 时钟 / act 时刻
+  const mode=traj.tl.mode;
+  const rows=reqs.map((r,i)=>({r,i,start:r.ts,end:r.ts+(r.ms||0)})).sort((a,b)=>a.start-b.start||a.end-b.end);
+  if(!rows.length) return {spans:[],gaps:[],start:0,end:1,unit:'seq'};
+  if(mode==='seq') return {spans:rows.map((s,k)=>({i:s.i,req:s.r,ds:k,de:k+1,rs:s.start,re:s.end})),gaps:[],start:0,end:rows.length,unit:'seq'};
+  let removed=0,covered=null;
+  const timed=rows.map(s=>{
+    if(mode==='dur'&&covered!==null&&s.start>covered) removed+=s.start-covered;
+    if(covered===null||s.end>covered) covered=Math.max(covered,s.end);
+    return {...s,ds:s.start-removed,de:(mode==='act'?s.start:s.end)-removed};
+  });
+  const gaps=[];
+  if(mode==='time'||mode==='act'){
+    let prev=null;
+    for(const s of timed){ if(prev&&s.start>prev.end+2000) gaps.push({ds:prev.end,de:s.start}); prev=s; }
+  }
+  return {spans:timed.map(s=>({i:s.i,req:s.r,ds:s.ds,de:s.de,rs:s.start,re:s.end})),gaps,
+    start:timed[0].ds,end:Math.max(...timed.map(s=>s.de),timed[0].ds+1),unit:'ms'};
+}
+function tlInverse(m,d){ // 投影域 → 真实时刻（悬停卡片用）
+  if(m.unit==='ms') return d;
+  for(const s of m.spans){ if(d>=s.ds&&d<s.de) return s.rs+(s.de>s.ds?(d-s.ds)/(s.de-s.ds)*(s.re-s.rs):0); }
+  let best=m.spans[0];
+  for(const s of m.spans){ if(Math.abs(d-s.de)<Math.abs(d-best.de)) best=s; }
+  return best.rs;
+}
+function spanAt(m,d){ return m.spans.find(s=>d>=s.ds&&d<s.de)||null; }
+function wfLedger(reqs,subColor,m){
+  const t0=m.start,t1=m.end,span=t1-t0;
+  const pos=ts=>((ts-t0)/span*100);
+  const wOf=r=>Math.max(0.4,(r.ms||0)/span*100);
   let html='',lastDay='';
-  for(const r of reqs){
+  reqs.forEach((r,i)=>{
     const day=bj(r.ts).slice(0,5);
     if(day!==lastDay){ html+=`<div class="wf-day num">${day}</div>`; lastDay=day; }
     const tip=`${bj(r.ts)} · ${r.model??'—'} · ${r.status} · ${r.ms??'?'}ms · ${fmtTok(r.total_tokens)} tok · ${esc(r.subscription??'')}`;
-    html+=`<div class="wf-row" title="${esc(tip)}"${r.capture_id?` onclick="wfPick('${esc(r.capture_id)}')"`:''}>
+    html+=`<div class="wf-row" data-i="${i}" title="${esc(tip)}"${r.capture_id?` onclick="wfPick('${esc(r.capture_id)}')"`:''}>
       <span class="tm num">${hms(r.ts)}</span>
       <span class="track"><i style="left:${pos(r.ts).toFixed(2)}%;width:${wOf(r).toFixed(2)}%;background:${subColor(r.subscription)}" class="${r.status>=400?'bad':''}${r.capture_id?' cap':''}"></i></span>
       <span class="md mono">${esc((r.model??'—').split('/').pop())}</span>
       <span class="st num ${r.status>=400?'bad':''}">${r.status}</span></div>`;
-  }
-  const legend=[...new Set(reqs.map(r=>r.subscription).filter(Boolean))].map((n,i)=>`<span><i style="background:${subColor(n)}"></i>${esc(defs.find(d=>d.name===n)?.alias??n)}</span>`).join('');
-  $('#traj-turns').innerHTML=`<div class="wf">
-    <div class="usg-legend" style="padding:6px 12px 0">${legend||'<span class="muted">该会话暂无请求</span>'}</div>
-    <div class="wf-rule"><span class="tm"></span><span class="track">${ticks}</span><span class="md"></span><span class="st"></span></div>
-    ${html||'<div class="empty">该会话暂无请求</div>'}
-    <div class="empty" style="border-bottom:0">共 ${reqs.length} 条请求 · <b>●</b> 黑点=已捕获正文（可点开跳血缘树） · 红圈=失败</div></div>`;
+  });
+  return html||'<div class="empty">该会话暂无请求</div>';
 }
+function tlWire(m,reqs,subColor){
+  const bar=$('#tl-bar'); if(!bar) return;
+  const view=traj.tl.view;
+  const V=()=>traj.tl.view;
+  const frac2dom=f=>V().s+f*(V().e-V().s);
+  const dom2frac=d=>(d-V().s)/(V().e-V().s);
+  const pct=d=>dom2frac(d)*100;
+  // 画 spans（请求泳道拆 TTFT/解码；间隙泳道画斜纹）
+  const laneGap=$('#tl-lane-gap'),laneReq=$('#tl-lane-req'),rule=$('#wf-rule-track');
+  const paint=()=>{
+    laneGap.innerHTML=m.gaps.map(g=>{
+      const l=Math.max(0,pct(g.ds)),r=Math.min(100,pct(g.de)); if(r-l<=0) return '';
+      return `<i class="gap" style="left:${l.toFixed(2)}%;width:${(r-l).toFixed(2)}%"></i>`; }).join('');
+    laneReq.innerHTML=m.spans.map(s=>{
+      const l=pct(s.ds),w=Math.max(0.35,pct(s.de)-l); if(w<=0) return '';
+      const dur=s.re-s.rs,tt=s.req.ttft_ms;
+      const ttW=(tt!=null&&tt>0&&tt<dur&&m.unit==='ms')?(tt/dur)*w:null;
+      const c=subColor(s.req.subscription);
+      const cls=`${s.isError?'bad ':''}${s.req.capture_id?'cap':''}`;
+      return ttW!=null
+        ?`<i class="sp ${cls}" style="left:${l.toFixed(2)}%;width:${(ttW).toFixed(2)}%;background:${c}"></i><i class="sp dec ${cls}" style="left:${(l+ttW).toFixed(2)}%;width:${(w-ttW).toFixed(2)}%;background:${c}"></i>`
+        :`<i class="sp ${cls}" style="left:${l.toFixed(2)}%;width:${w.toFixed(2)}%;background:${c}"></i>`;
+    }).join('');
+    // 刻度：视图两端 + 中点，标真实时刻
+    const vs=V();
+    rule.innerHTML=[0,.5,1].map(f=>{
+      const d=vs.s+f*(vs.e-vs.s);
+      const tf=f===0?'translateX(0)':f===1?'translateX(-100%)':'translateX(-50%)';
+      return `<i style="left:${(f*100).toFixed(1)}%;transform:${tf}">${hms(tlInverse(m,d))}</i>`;
+    }).join('');
+    applySel();
+  };
+  const applySel=()=>{
+    const sel=traj.tl.sel,box=$('#tl-selbox');
+    if(sel){ box.style.display='block'; box.style.left=pct(sel.s)+'%'; box.style.width=(pct(sel.e)-pct(sel.s))+'%';
+      const focus=new Set(m.spans.filter(s=>s.ds<=sel.e&&s.de>=sel.s).map(s=>s.i));
+      document.querySelectorAll('#wf-rows .wf-row').forEach(row=>{
+        const on=focus.has(Number(row.dataset.i));
+        row.classList.toggle('dim',!on); row.classList.toggle('focus',on); });
+    } else { box.style.display='none';
+      document.querySelectorAll('#wf-rows .wf-row').forEach(row=>row.classList.remove('dim','focus')); }
+  };
+  const clearSel=()=>{ traj.tl.sel=null; $('#tl-draft').style.display='none'; applySel(); };
+  const scrollRow=i=>{ const row=document.querySelector(`#wf-rows .wf-row[data-i="${i}"]`); row?.scrollIntoView({block:'center'}); };
+  const hoverMove=e=>{
+    const rect=bar.getBoundingClientRect();
+    const f=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width));
+    const d=frac2dom(f);
+    $('#tl-hoverline').style.display='block'; $('#tl-hoverline').style.left=(f*100)+'%';
+    const s=spanAt(m,d); const ts=tlInverse(m,d);
+    const card=$('#tl-card');
+    card.style.display='block';
+    card.style.left=(f*100>70?`calc(${f*100}% - 150px)`:`calc(${f*100}% + 8px)`);
+    card.innerHTML=s
+      ?`<b class="num">${bj(s.rs)}${s.re>s.rs?` · ${(s.re-s.rs)/1000}s`:''}</b><br><span class="muted">${esc((s.req.model??'').split('/').pop())} · ${s.req.status}${s.req.ttft_ms?` · TTFT ${(s.req.ttft_ms/1000).toFixed(1)}s`:''}</span>`
+       :`<b class="num">${bj(ts)}</b><br><span class="muted">空闲（工具执行 / 无请求）</span>`;
+  };
+  const hoverOut=()=>{ $('#tl-hoverline').style.display='none'; $('#tl-card').style.display='none'; };
+  let drag=null,pan=null;
+  bar.addEventListener('pointerdown',e=>{
+    const rect=bar.getBoundingClientRect();
+    const f=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width));
+    if(e.button===2){ pan={x0:e.clientX,s:V().s,e:V().e}; e.preventDefault(); return; }
+    if(e.button!==0) return;
+    bar.setPointerCapture(e.pointerId);
+    drag={d0:frac2dom(f),x0:e.clientX,moved:false};
+  });
+  bar.addEventListener('pointermove',e=>{
+    if(pan){ const dx=e.clientX-pan.x0, span=pan.e-pan.s;
+      const shift=dx/rect().width*span; // eslint-disable-line
+      const w=pan.e-pan.s; let s0=pan.s-shift; s0=Math.max(m.start,Math.min(m.end-w,s0));
+      traj.tl.view={s:s0,e:s0+w}; paint(); return; }
+    if(drag){
+      if(Math.abs(e.clientX-drag.x0)>3) drag.moved=true;
+      if(drag.moved){ const rect2=bar.getBoundingClientRect();
+        const f2=Math.max(0,Math.min(1,(e.clientX-rect2.left)/rect2.width));
+        const d2=frac2dom(f2);
+        const box=$('#tl-draft'); box.style.display='block';
+        const a=Math.min(drag.d0,d2),b=Math.max(drag.d0,d2);
+        box.style.left=pct(a)+'%'; box.style.width=(pct(b)-pct(a))+'%'; }
+    }
+    hoverMove(e);
+  });
+  const endDrag=e=>{
+    if(pan&&e.button===2){ pan=null; return; }
+    if(!drag) return;
+    const box=$('#tl-draft');
+    if(!drag.moved){
+      const rect3=bar.getBoundingClientRect();
+      const f=Math.max(0,Math.min(1,(e.clientX-rect3.left)/rect3.width));
+      const s=spanAt(m,frac2dom(f));
+      traj.tl.sel=s?{s:s.ds,e:s.de}:null;
+      if(s) scrollRow(s.i);
+    } else {
+      const l=parseFloat(box.style.left),w=parseFloat(box.style.width);
+      traj.tl.sel={s:V().s+l/100*(V().e-V().s),e:V().s+(l+w)/100*(V().e-V().s)};
+    }
+    box.style.display='none'; drag=null; applySel();
+  };
+  bar.addEventListener('pointerup',endDrag);
+  bar.addEventListener('pointercancel',()=>{ drag=null; pan=null; $('#tl-draft').style.display='none'; });
+  bar.addEventListener('pointerleave',e=>{ if(!drag&&!pan) hoverOut(); });
+  bar.addEventListener('contextmenu',e=>{ e.preventDefault(); if(!pan) clearSel(); });
+  bar.addEventListener('wheel',e=>{
+    e.preventDefault();
+    const rect4=bar.getBoundingClientRect();
+    const f=Math.max(0,Math.min(1,(e.clientX-rect4.left)/rect4.width));
+    const vs=V(),span=vs.e-vs.s;
+    const factor=Math.pow(1.25,(e.deltaY||100)>0?1:-1);
+    let ns=vs.s+f*span-(f*span)*factor, ne=vs.e-(1-f)*span+(1-f)*span*factor;
+    const minSpan=Math.max((m.end-m.start)/600,m.unit==='seq'?1:200);
+    if(ne-ns<minSpan){ const c=f*span+vs.s; ns=c-minSpan/2; ne=c+minSpan/2; }
+    ns=Math.max(m.start,ns); ne=Math.min(m.end,Math.max(ne,ns+minSpan));
+    traj.tl.view={s:ns,e:ne}; paint();
+  },{passive:false});
+  bar.querySelectorAll('.tl-modes .chip').forEach(b=>b.addEventListener('click',()=>{
+    traj.tl.mode=b.dataset.m; traj.tl.view=null; traj.tl.sel=null;
+    renderWaterfall();
+  }));
+  const rect=()=>bar.getBoundingClientRect();
+  paint();
+}
+document.addEventListener('keydown',e=>{ // Esc 清选区（dsh 行为）；单全局监听，只在时间轴视图生效
+  if(e.key==='Escape'&&traj.view==='wf'&&traj.tl.sel){ traj.tl.sel=null; if($('#tl-bar')) renderWaterfall(); }
+});
 function wfPick(cid){
   if(!cid) return;
   const t=traj.turns.find(x=>x.capture_id===cid);
