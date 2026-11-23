@@ -1,14 +1,14 @@
 import os from 'node:os';
 import type { AddressInfo } from 'node:net';
-import type { GatewayConfig } from '../core/contracts.ts';
+import type { GatewayConfig } from '../src/contracts.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { once } from 'node:events';
-import { createGatewayServers } from '../core/http/server.ts';
-import { monthlyDebtScore } from '../core/policy/selection.ts';
+import { createGatewayServers } from '../src/http/server.ts';
+import { monthlyDebtScore } from '../src/policy/selection.ts';
 
 test('numeric millisecond quota reset expires and monthly timestamps score correctly', async (t) => {
   let calls = 0;

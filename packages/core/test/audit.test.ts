@@ -7,13 +7,13 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createGatewayServers } from '../core/http/server.ts';
-import { UsageAudit } from '../core/store/audit.ts';
-import type { Gateway } from '../core/http/server.ts';
+import { createGatewayServers } from '../src/http/server.ts';
+import { UsageAudit } from '../src/store/audit.ts';
+import type { Gateway } from '../src/http/server.ts';
 import type { TestContext } from 'node:test';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { AuditRow, GatewayConfig, Logger } from '../core/contracts.ts';
+import type { AuditRow, GatewayConfig, Logger } from '../src/contracts.ts';
 
 interface RequestPayload extends Record<string, unknown> { stream?: boolean }
 interface FixtureOptions { body?: RequestPayload; logger?: Logger; dbPath?: string }

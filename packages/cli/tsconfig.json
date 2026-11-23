@@ -14,7 +14,7 @@
     ],
     "baseUrl": ".",
     "paths": {
-      "@ffrfree/llm-cpr": ["../core/core/policy/contract.ts"]
+      "@ffrfree/llm-cpr": ["../core/src/policy/contract.ts"]
     },
     "skipLibCheck": false
   },

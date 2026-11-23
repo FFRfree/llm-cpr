@@ -1,10 +1,10 @@
-import type { Backend, QuotaSnapshot } from '../core/contracts.ts';
+import type { Backend, QuotaSnapshot } from '../src/contracts.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { UsageSnapshots } from '../core/store/snapshots.ts';
+import { UsageSnapshots } from '../src/store/snapshots.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Boundary: fixture JSON is untyped.

@@ -529,7 +529,7 @@ export default class LocalPolicy {
 function makeMainCopy(t: TestContext, twinName: string): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-main-'));
   t.after(() => { fs.rmSync(root, { recursive: true, force: true }); });
-  fs.cpSync(path.join(REPO, 'core'), path.join(root, 'core'), { recursive: true });
+  fs.cpSync(path.join(REPO, 'src'), path.join(root, 'core'), { recursive: true });
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ type: 'module', name: '@ffrfree/llm-cpr', version: '0.1.0' }) + "\n");
   fs.writeFileSync(path.join(root, 'core', 'policy', 'mine.ts'), TWIN_MINE.replace('twin-stub', twinName));
   return root;

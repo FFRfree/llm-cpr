@@ -15,7 +15,7 @@
 ## 目录
 
 ```
-packages/core/     引擎：core/（路由+管理面+账本，零构建 .ts）+ static/（看板分发产物，dashboard build 落点）
+packages/core/     引擎：src/（路由+管理面+账本，零构建 .ts）+ static/（看板分发产物，dashboard build 落点）；发布物里叫 core/（assemble 映射，发布布局冻结）
 packages/dashboard/ 看板页面源码唯一正本：src/ → build → packages/core/static/（React/Vite 将来住这）
 packages/e2e/      e2e 套件：假上游+独立实例+pi harness（run-scenarios.ts）+ slow-lane/ 装机层
 packages/cli/      唯一 npm 发布包 @ffrfree/llm-cpr：bin 引导器 + vendor/（ADR-0010）+ prepack 装配 core/static

@@ -2,8 +2,8 @@
 // 交错线程独立 first-seen、内容缺失剔除。computeCacheEfficiency 无 I/O，直接喂合成数据。
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { computeCacheEfficiency, DEFAULT_RATES, threadKeyOf } from '../core/observability/cache-efficiency.ts';
-import type { EfficiencyTurn, EfficiencyUsage } from '../core/observability/cache-efficiency.ts';
+import { computeCacheEfficiency, DEFAULT_RATES, threadKeyOf } from '../src/observability/cache-efficiency.ts';
+import type { EfficiencyTurn, EfficiencyUsage } from '../src/observability/cache-efficiency.ts';
 
 // contentBytes 查表：hash → bytes；usage prompt 恒等于该轮 contentSum（scale=1，token=bytes 精确）。
 function fixture(turns: Array<{ hashes: Array<[string, number]>; usage: EfficiencyUsage }>) {

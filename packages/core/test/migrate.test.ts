@@ -6,8 +6,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { openDatabase } from '../core/store/db.ts';
-import { runMigrations, SCHEMA_VERSION } from '../core/store/migrate.ts';
+import { openDatabase } from '../src/store/db.ts';
+import { runMigrations, SCHEMA_VERSION } from '../src/store/migrate.ts';
 
 const freshDir = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-migrate-'));
 // server 启动路径的开库口径：不带基线——结构变更全部发生在迁移步骤里（备份之后）。

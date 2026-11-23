@@ -1,6 +1,6 @@
 import type { AddressInfo } from 'node:net';
 import type { TestContext } from 'node:test';
-import type { GatewayConfig } from '../core/contracts.ts';
+import type { GatewayConfig } from '../src/contracts.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import http from 'node:http';
@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { createGatewayServers } from '../core/http/server.ts';
+import { createGatewayServers } from '../src/http/server.ts';
 
 const close = (server: http.Server): Promise<void> => new Promise<void>((resolve) => server.close(() => resolve()));
 

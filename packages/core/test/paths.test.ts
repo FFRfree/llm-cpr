@@ -5,9 +5,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { configDir, dataDir, defaultDbPath, envFile } from '../core/paths.ts';
-import { loadDotEnv } from '../core/envfile.ts';
-import { createGatewayServers } from '../core/http/server.ts';
+import { configDir, dataDir, defaultDbPath, envFile } from '../src/paths.ts';
+import { loadDotEnv } from '../src/envfile.ts';
+import { createGatewayServers } from '../src/http/server.ts';
 
 test('paths：默认全部落 ~/.llm-cpr（os.homedir() 口径）', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-paths-home-'));

@@ -66,7 +66,7 @@ interface Engine { adminUrl: string; stop(): Promise<void> }
 
 async function bootEngine(t: TestContext, registryUrl: string, extra: Record<string, string> = {}): Promise<Engine> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-ver-'));
-  fs.cpSync(path.join(REPO, 'core'), path.join(root, 'core'), { recursive: true });
+  fs.cpSync(path.join(REPO, 'src'), path.join(root, 'core'), { recursive: true });
   // package.json 带 name/version：RUNTIME_VERSION 从这里读（server.ts 同源）
   fs.writeFileSync(path.join(root, 'package.json'), `${JSON.stringify({ type: 'module', name: '@ffrfree/llm-cpr', version: '0.1.0' }, null, 2)}\n`);
   fs.writeFileSync(path.join(root, 'core', 'policy', 'mine.ts'), TWIN_MINE);

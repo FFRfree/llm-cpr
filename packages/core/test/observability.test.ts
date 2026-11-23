@@ -8,13 +8,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
-import { createGatewayServers } from '../core/http/server.ts';
-import { scanForLeaks } from '../core/observability/leaks.ts';
+import { createGatewayServers } from '../src/http/server.ts';
+import { scanForLeaks } from '../src/observability/leaks.ts';
 import type { TestContext } from 'node:test';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { Backend, Tenant } from '../core/contracts.ts';
-import type { RouterPolicy } from '../core/policy/contract.ts';
+import type { Backend, Tenant } from '../src/contracts.ts';
+import type { RouterPolicy } from '../src/policy/contract.ts';
 
 const listen = async (server: Server): Promise<string> => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return `http://127.0.0.1:${(server.address() as AddressInfo).port}`; };
 const close = (server: Server): Promise<Error | undefined> => new Promise<Error | undefined>((resolve) => server.close(resolve));

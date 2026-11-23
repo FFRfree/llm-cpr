@@ -1,6 +1,6 @@
 import type { AddressInfo } from 'node:net';
-import type { Backend, GatewayConfig } from '../core/contracts.ts';
-import type { Logger } from '../core/contracts.ts';
+import type { Backend, GatewayConfig } from '../src/contracts.ts';
+import type { Logger } from '../src/contracts.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import http from 'node:http';
@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { createGatewayServers } from '../core/http/server.ts';
+import { createGatewayServers } from '../src/http/server.ts';
 
 // perf 打点（.scratch/perf-instrumentation/spec.md）：每个转发请求恰一行 [perf] JSON，
 // 段位/forward/meta 形状、attempts 口径、aborted 语义、身份明文不落行。

@@ -60,7 +60,7 @@ function die(message: string): never {
 // 包根 = 本文件所在 scripts/ 的上一级（monorepo clone 里 = packages/cli；npm 全局包目录同构），与 cwd 无关。
 // fixture（最小仓拷贝）同构成立：scripts/ + package.json + vendor/ 在同一根下。
 // 引擎根另算（engineRoot）：npm 发布物里 core/ 与本包同根（prepack 装配，scripts/assemble.ts）；
-// monorepo clone 里 core/ 住平级的 packages/core——两形态都归一到「含 core/main.ts 的那个根」。
+// monorepo clone 里引擎源码住平级 packages/core 的 src/——两形态都归一到「含 main.ts 的那个根」。
 function pkgRoot(): string {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   if (!fs.existsSync(path.join(root, 'package.json'))) {
@@ -71,8 +71,8 @@ function pkgRoot(): string {
 
 function engineRoot(root = pkgRoot()): string {
   if (fs.existsSync(path.join(root, 'core', 'main.ts'))) return root; // npm 发布物 / fixture：core 装配在包根
-  const sibling = path.join(root, '..', 'core'); // monorepo clone：packages/cli ↔ packages/core 平级
-  if (fs.existsSync(path.join(sibling, 'core', 'main.ts'))) return sibling;
+  const sibling = path.join(root, '..', 'src'); // monorepo clone：packages/cli ↔ packages/core/src（发布物里叫 core/）
+  if (fs.existsSync(path.join(sibling, 'main.ts'))) return sibling;
   die(`包根不完整（${root} 缺 core/main.ts）——安装损坏，重跑 npx -y ${PKG} install；clone 请在完整仓库里运行`);
 }
 

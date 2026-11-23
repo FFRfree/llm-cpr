@@ -7,10 +7,10 @@ import { once } from 'node:events';
 import type { TestContext } from 'node:test';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createGatewayServers } from '../core/http/server.ts';
-import { UsageAudit } from '../core/store/audit.ts';
-import { CaptureStore } from '../core/store/capture.ts';
-import type { GatewayConfig } from '../core/contracts.ts';
+import { createGatewayServers } from '../src/http/server.ts';
+import { UsageAudit } from '../src/store/audit.ts';
+import { CaptureStore } from '../src/store/capture.ts';
+import type { GatewayConfig } from '../src/contracts.ts';
 
 const close = (server: Server): Promise<Error | undefined> => new Promise<Error | undefined>((resolve) => server.close(resolve));
 

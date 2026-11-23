@@ -7,11 +7,11 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DatabaseSync } from 'node:sqlite';
-import { createGatewayServers } from '../core/http/server.ts';
+import { createGatewayServers } from '../src/http/server.ts';
 import type { TestContext } from 'node:test';
 import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { AuditRow, RoutingConfig, SessionSummary } from '../core/contracts.ts';
+import type { AuditRow, RoutingConfig, SessionSummary } from '../src/contracts.ts';
 
 type UpstreamHandler = (req: IncomingMessage, res: ServerResponse) => void | ServerResponse | Promise<void>;
 interface ChatResponse { status: number | undefined; text: string; headers: IncomingHttpHeaders }

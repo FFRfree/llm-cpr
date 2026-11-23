@@ -1,7 +1,7 @@
 // Compile-only public contracts; node --test never executes this file.
-import type { Backend, ProviderAdapter } from '../core/contracts.ts';
-import { providerFor } from '../core/providers/index.ts';
-import { chatCompletions } from '../core/protocols/chat-completions.ts';
+import type { Backend, ProviderAdapter } from '../src/contracts.ts';
+import { providerFor } from '../src/providers/index.ts';
+import { chatCompletions } from '../src/protocols/chat-completions.ts';
 
 const backend: Backend = { name: 'stable-id', family: 'ocg', base_url: 'http://localhost', key_env: 'TEST_KEY' };
 const provider: ProviderAdapter = providerFor(backend);

@@ -3,16 +3,16 @@ import test from 'node:test';
 import type { TestContext } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
-import type { Backend, ChatBody, Environment, GatewayConfig, Logger, QuotaSnapshot, QuotaWindow } from '../core/contracts.ts';
-import type { Gateway } from '../core/http/server.ts';
+import type { Backend, ChatBody, Environment, GatewayConfig, Logger, QuotaSnapshot, QuotaWindow } from '../src/contracts.ts';
+import type { Gateway } from '../src/http/server.ts';
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { createGatewayServers } from '../core/http/server.ts';
-import { selectBackend, rankBackends, monthlyDebtScore } from '../core/policy/selection.ts';
-import { UsageSnapshots } from '../core/store/snapshots.ts';
+import { createGatewayServers } from '../src/http/server.ts';
+import { selectBackend, rankBackends, monthlyDebtScore } from '../src/policy/selection.ts';
+import { UsageSnapshots } from '../src/store/snapshots.ts';
 
 interface ObservedSnapshot extends QuotaSnapshot { fiveHour: QuotaWindow; weekly: QuotaWindow }
 interface ForwardedChat { model: string }

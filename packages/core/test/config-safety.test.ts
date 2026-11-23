@@ -1,7 +1,7 @@
-import type { Backend } from '../core/contracts.ts';
+import type { Backend } from '../src/contracts.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { validateConfig } from '../core/policy/config.ts';
+import { validateConfig } from '../src/policy/config.ts';
 
 const backend = (name: string): Backend => ({ name, family: 'ocg', base_url: 'http://localhost:3000', key_env: 'KEY' });
 

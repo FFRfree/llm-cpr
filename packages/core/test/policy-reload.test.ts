@@ -10,9 +10,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
 import { pathToFileURL } from 'node:url';
-import { createGatewayServers } from '../core/http/server.ts';
-import { sha256File } from '../core/policy/reload.ts';
-import type { SystemEventRow } from '../core/store/events.ts';
+import { createGatewayServers } from '../src/http/server.ts';
+import { sha256File } from '../src/policy/reload.ts';
+import type { SystemEventRow } from '../src/store/events.ts';
 
 const listen = async (server: http.Server): Promise<string> => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return `http://127.0.0.1:${(server.address() as AddressInfo).port}`; };
 const close = (server: http.Server): Promise<void> => new Promise<void>((resolve) => {

@@ -1,5 +1,5 @@
 import type { AddressInfo } from 'node:net';
-import type { Backend, GatewayConfig } from '../core/contracts.ts';
+import type { Backend, GatewayConfig } from '../src/contracts.ts';
 import type { TestContext } from 'node:test';
 interface Handler { name: string; run: (req: http.IncomingMessage, res: http.ServerResponse) => void }
 import assert from 'node:assert/strict';
@@ -9,9 +9,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { createGatewayServers } from '../core/http/server.ts';
-import { openDatabase } from '../core/store/db.ts';
-import { createSystemEventStore } from '../core/store/events.ts';
+import { createGatewayServers } from '../src/http/server.ts';
+import { openDatabase } from '../src/store/db.ts';
+import { createSystemEventStore } from '../src/store/events.ts';
 
 const listen = async (server: http.Server): Promise<string> => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return `http://127.0.0.1:${(server.address() as AddressInfo).port}`; };
 const close = (server: http.Server): Promise<void> => new Promise<void>((resolve) => {
