@@ -205,8 +205,10 @@ test('shape guard: bodies without well-formed messages are forwarded but never c
   const fake = await fakeBackend('first', []);
   t.after(async () => await close(fake.server));
   const app = await startGateway(t, [{ name: 'main', key_env: 'K_MAIN', capture: true }], [fake.url]);
-  assert.equal((await chat(app.forwardUrl, 'main-key', JSON.stringify({ model: 'm' }))).status, 200); // 无 messages
-  assert.equal((await chat(app.forwardUrl, 'main-key', JSON.stringify({ model: 'm', messages: [{ content: 'no role' }] }))).status, 200); // 消息缺 role
+  // shape guard 改口径（no-identity-reject 票）：不可指纹化的 body 现在是本地 400（不转发不捕获），
+  // 「转发但不猜测捕获」语义由「上游收到 0 笔 + turns 0 行」等价保证。
+  assert.equal((await chat(app.forwardUrl, 'main-key', JSON.stringify({ model: 'm' }))).status, 400); // 无 messages
+  assert.equal((await chat(app.forwardUrl, 'main-key', JSON.stringify({ model: 'm', messages: [{ content: 'no role' }] }))).status, 400); // 消息缺 role/user
   assert.equal((await chat(app.forwardUrl, 'main-key', JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'ok' }] }))).status, 200);
   await settle();
   const capture = new DatabaseSync(app.captureDb, { readOnly: true });

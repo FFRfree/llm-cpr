@@ -90,8 +90,9 @@ test('HTTP gateway returns local models, proxies JSON and SSE, rejects bad keys,
   assert.equal(chatRequest.headers.authorization, 'Bearer test-upstream');
   assert.equal(JSON.parse(chatRequest.body).model, 'native-model');
   assert.equal(chatRequest.headers['x-opencode-session'], 'ocg-session');
-  const streamResponse = await fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer test-master', 'content-type': 'application/json' }, body: JSON.stringify({ model: 'unified-model', stream: true }) });
+  // SSE 透传：带会话头走 session 身份（无头且无 messages 现在是本地 400，属 no-identity-reject 票口径）
+  const streamResponse = await fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer test-master', 'content-type': 'application/json', 'x-session-id': 'stream-session' }, body: JSON.stringify({ model: 'unified-model', stream: true }) });
   assert.equal(await streamResponse.text(), 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\ndata: [DONE]\n\n');
-  const errorResponse = await fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer test-master', 'content-type': 'application/json' }, body: JSON.stringify({ model: 'error' }) });
+  const errorResponse = await fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer test-master', 'content-type': 'application/json', 'x-session-id': 'error-session' }, body: JSON.stringify({ model: 'error' }) });
   assert.equal(errorResponse.status, 503); assert.equal(await errorResponse.text(), '{"error":"unavailable"}');
 });

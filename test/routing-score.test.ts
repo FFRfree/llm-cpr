@@ -31,7 +31,8 @@ const launchGateway = async (config: GatewayConfig, env: Environment, logger: Lo
   await Promise.all([once(gateway.forwardServer, 'listening'), once(gateway.adminServer, 'listening')]);
   return gateway;
 };
-const chat = (gateway: Gateway, body: ChatBody = { model: 'm' }): Promise<Response> => fetch(`http://127.0.0.1:${(gateway.forwardServer.address() as AddressInfo).port}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json' }, body: JSON.stringify(body) });
+// address 兜底已砍：默认体带 user 消息走 fingerprint 身份（默认裸 {model} 现在会被本地 400）。
+const chat = (gateway: Gateway, body: ChatBody = { model: 'm', messages: [{ role: 'user', content: 'hello' }] }): Promise<Response> => fetch(`http://127.0.0.1:${(gateway.forwardServer.address() as AddressInfo).port}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
 // e2e 夹具的日期必须相对真实时间生成：网关按真实时钟运行，写死的 resetsAt/periodEnd 一旦过期，
 // 快照会被标为「过期/未知」、排序降级为 priority 兜底，测试就在到期当天集体爆掉

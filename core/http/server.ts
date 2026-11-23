@@ -24,7 +24,7 @@ import { forwardAttempt, passthroughError, retryAfterMs, sleep, type ForwardTimi
 import { createPerfSpan } from './perf.ts';
 import { healthyBackend, createHealthTracker } from './health.ts';
 import { createAdminServer, type AdminTenantView } from './admin.ts';
-import type { AuditEntry, Backend, ChatBody, ChatUsage, Environment, Logger, Model, SnapshotView } from '../contracts.ts';
+import type { AuditEntry, Backend, ChatBody, ChatUsage, Environment, Identity, Logger, Model, SnapshotView } from '../contracts.ts';
 import type { Decision, DecisionCtx, RouterPolicy } from '../policy/contract.ts';
 
 async function readBody(req: IncomingMessage): Promise<Buffer> {
@@ -135,7 +135,7 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
         allow: allowValues,
         onHit: (hit) => {
           try {
-            events.append({ kind: 'privacy.hit', tenant: hit.tenant, identity: { kind: hit.identityKind as 'session' | 'fingerprint' | 'address', key: hit.identity ?? 'unknown' }, detail: { rule: hit.rule, item_hash: hit.itemHash, capture_id: hit.captureId, message_index: hit.messageIndex, role: hit.role } });
+            events.append({ kind: 'privacy.hit', tenant: hit.tenant, identity: { kind: hit.identityKind as Identity['kind'], key: hit.identity ?? 'unknown' }, detail: { rule: hit.rule, item_hash: hit.itemHash, capture_id: hit.captureId, message_index: hit.messageIndex, role: hit.role } });
           } catch (error) {
             logger.warn?.(`[capture] privacy.hit append failed: ${messageOf(error)}`);
           }
@@ -225,7 +225,10 @@ export function createGatewayServers(policy: RouterPolicy, { env = process.env, 
       if (!requestedModel) { span.suppress(); return json(res, 400, { error: { message: `model not allowed: ${String(body.model ?? '')}`, type: 'invalid_request_error' } }); }
       if (tenant.models && !tenant.models.includes(requestedModel.id)) { span.suppress(); return json(res, 400, { error: { message: `model not allowed for tenant ${tenant.name}: ${requestedModel.id}`, type: 'invalid_request_error' } }); }
       span.meta({ bytes: bytes.length, model: requestedModel.id, tenant: tenant.name });
-      const identity = span.run('identity', () => resolveIdentity({ headers: req.headers, body, remoteAddress: req.socket.remoteAddress ?? 'unknown', identityHeader: identityHeaderOf(p) }));
+      // 无可解析身份（无会话头 + messages 不可指纹化）→ 本地 400 拒绝：不转发、不落账本、
+      // 不写 system_events、不走 capture（identity.ts 的 null 契约，2026-11-23 砍 address 兜底）。
+      const identity = span.run('identity', () => resolveIdentity({ headers: req.headers, body, identityHeader: identityHeaderOf(p) }));
+      if (!identity) { span.suppress(); return json(res, 400, { error: { message: 'unresolvable session identity: send a session header (x-session-id or x-opencode-session) or include messages with a user entry', type: 'invalid_request_error' } }); }
       const pinnedName = span.run('identity', () => events.affinity(tenant.name, identity.kind, identity.key));
       let backend: Backend | undefined = pinnedName ? tenantBackends.find((candidate) => candidate.name === pinnedName) : undefined;
       const stalePin = Boolean(pinnedName && !backend);

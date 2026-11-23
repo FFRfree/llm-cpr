@@ -36,7 +36,10 @@ export interface RequestConfig {
   identityHeader?: string;
 }
 export interface Identity {
-  kind: 'session' | 'fingerprint' | 'address';
+  // 2026-11-23 起仅两种：统一会话头（session）或对话指纹（fingerprint）。
+  // address（客户端 IP）兜底已砍——无可解析身份的请求网关本地 400 拒绝，不转发不记账
+  // （OCG 上游强制 x-opencode-session，无身份转发也是死；存量 DB 行仍可能带 address，查询照旧）。
+  kind: 'session' | 'fingerprint';
   key: string;
 }
 export type Headers = OutgoingHttpHeaders;
