@@ -16,10 +16,12 @@ for (const name of ['core', 'static'] as const) {
   }
   fs.rmSync(path.join(root, name), { recursive: true, force: true });
   fs.cpSync(src, path.join(root, name), { recursive: true });
-  console.log(`assemble: packages/core/${name} → packages/cli/${name}`);
+  // 诊断走 stderr：npm pack --json 的 stdout 是机器输出（e2e cpr-instance / xdg-deploy 要 JSON.parse），
+  // prepack 的 console.log 会混进去炸掉解析——这里一个字都不能往 stdout 打。
+  console.error(`assemble: packages/core/${name} → packages/cli/${name}`);
 }
 if (!fs.existsSync(path.join(root, 'core', 'main.ts')) || !fs.existsSync(path.join(root, 'static'))) {
   console.error('assemble: 装配后仍缺 core/main.ts 或 static/——中止，不要发布。');
   process.exit(1);
 }
-console.log('assemble: 发布物就绪（npm pack / npm publish 在本目录执行）。');
+console.error('assemble: 发布物就绪（npm pack / npm publish 在本目录执行）。');

@@ -15,7 +15,7 @@ set -uo pipefail
 # 路径锚点：脚本自带定位（进仓后仓内仓外都能跑）；REPO 可用 CPR_E2E_REPO 覆盖（默认=仓根）。
 LANE=$(cd "$(dirname "$0")" && pwd)
 E2E=$(dirname "$LANE")
-REPO=${CPR_E2E_REPO:-$(cd "$E2E/../.." && pwd)}
+if [ -n "${CPR_E2E_REPO:-}" ]; then REPO="$CPR_E2E_REPO"; elif [ -f "$E2E/../cli/package.json" ]; then REPO=$(cd "$E2E/../cli" && pwd); else REPO=$(cd "$E2E/../.." && pwd); fi
 STAGE=/home/e2e-cpr/llm-cpr-e2e-stage
 IMAGE=localhost/llm-cpr-e2e:24.04
 CNAME=llm-cpr-e2e-slow

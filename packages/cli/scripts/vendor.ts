@@ -44,7 +44,7 @@ for (const name of deps) {
     console.error(`vendor: ${name} 不在 node_modules —— 先 npm install（版本以 devDependencies 声明为准）。`);
     process.exit(1);
   }
-  fs.cpSync(src, path.join(root, 'vendor', name), { recursive: true });
+  fs.cpSync(src, path.join(root, 'vendor', name), { recursive: true, dereference: true });
   const version = JSON.parse(fs.readFileSync(path.join(root, 'vendor', name, 'package.json'), 'utf8')) as { version: string };
   console.log(`vendor: ${name}@${version.version} → vendor/${name}`);
 }

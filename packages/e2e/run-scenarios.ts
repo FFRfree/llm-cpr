@@ -47,8 +47,12 @@ import { runPi } from './pi-driver.ts';
 const execFileAsync = promisify(execFile);
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-// 套件住在 <仓根>/scripts/e2e/ 下：缺省打包对象 = 仓根自身（“每次改动收尾跑一行”不需要任何参数）。
-const defaultRepoDir = path.resolve(here, '..', '..');
+// 套件住 packages/e2e/（ADR-0011）：缺省打包对象 = 发布包目录 packages/cli（npm pack 的 files 白名单在那；
+// 无 packages/cli 的旧单包形态回落仓根自身）——“每次改动收尾跑一行”不需要任何参数。
+const repoRoot = path.resolve(here, '..', '..');
+const defaultRepoDir = fs.existsSync(path.resolve(repoRoot, 'packages', 'cli', 'package.json'))
+  ? path.resolve(repoRoot, 'packages', 'cli')
+  : repoRoot;
 let packDir = defaultRepoDir;
 const fakeUpstreamPath = path.join(here, 'fake-upstream.ts');
 const piCwdName = 'pi-cwd';

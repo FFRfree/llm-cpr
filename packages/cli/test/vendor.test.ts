@@ -27,6 +27,13 @@ test('vendor：vendoredDependencies 每项都在 devDependencies 声明版本、
       fs.readdirSync(vendored).some((f) => f.toUpperCase().startsWith('LICENSE')),
       `vendor/${name} 缺 LICENSE 文本（开源许可证合规）`,
     );
+    // pnpm 的 node_modules 里全是软链：cpSync 不加 dereference 会把链接拷进来，发布包带死链（de8f3d7 真踩）。
+    const walk = (dir: string): string[] =>
+      fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory() ? walk(path.join(dir, e.name)) : [path.join(dir, e.name)],
+      );
+    const links = walk(vendored).filter((f) => fs.lstatSync(f).isSymbolicLink());
+    assert.deepEqual(links, [], `vendor/${name} 里出现 symlink——vendor 必须是真字节，检查 cpSync dereference`);
   }
 });
 
