@@ -1,0 +1,33 @@
+// packages/cli/scripts/assemble.ts — 发布装配（prepack 自动跑）：把引擎与看板产物拷进本包，
+// 发布物 = 自包含 npm 包（npm 仍只是下载器，包内布局与 v0.2.0 以来一致：core/ + static/ + scripts/ + vendor/）。
+// 单一发布入口 = @ffrfree/llm-cpr：core 与 dashboard 是 private 内部包，不单独发 npm、不单独占版本号。
+// 装配产物不进仓（.gitignore packages/cli/core|static），pack/publish 时现拷。
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// 源映射：core 包的开发目录是 src/（发布物里叫 core/——发布布局自 v0.2.0 冻结，bootstrap/unit 零改动），
+// static 是 dashboard build 的产物目录、两边同名。将来 core 上编译，这里换成 dist → cli/core，口子在本文件。
+const pairs: [string, string][] = [
+  ['src', 'core'],
+  ['static', 'static'],
+];
+const core = path.join(root, '..', 'core'); // packages/core：源码包根
+for (const [srcName, destName] of pairs) {
+  const src = path.join(core, srcName);
+  if (!fs.existsSync(src)) {
+    console.error(`assemble: ${src} 不存在——monorepo 不完整，中止。`);
+    process.exit(1);
+  }
+  fs.rmSync(path.join(root, destName), { recursive: true, force: true });
+  fs.cpSync(src, path.join(root, destName), { recursive: true });
+  // 诊断走 stderr：npm pack --json 的 stdout 是机器输出（e2e cpr-instance / xdg-deploy 要 JSON.parse），
+  // prepack 的 console.log 会混进去炸掉解析——这里一个字都不能往 stdout 打。
+  console.error(`assemble: packages/core/${srcName} → packages/cli/${destName}`);
+}
+if (!fs.existsSync(path.join(root, 'core', 'main.ts')) || !fs.existsSync(path.join(root, 'static'))) {
+  console.error('assemble: 装配后仍缺 core/main.ts 或 static/——中止，不要发布。');
+  process.exit(1);
+}
+console.error('assemble: 发布物就绪（npm pack / npm publish 在本目录执行）。');

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>观测 · LLM CPR 后台</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<main>
+<h2>正文捕获状态</h2>
+<div id="capture-status" class="muted" style="font-size:12px"></div>
+<div id="capture-off" class="empty" style="display:none">正文捕获未开启（租户声明 capture: true 才落正文侧库）</div>
+
+<h2>工具 / skill 灌上下文分析</h2>
+<div class="toolbar">
+  <label>天数 <select id="tools-days"><option value="1">1</option><option value="7" selected>7</option><option value="30">30</option></select></label>
+  <span class="hint muted">灌入量按结果字符折算（≈3.5 字符/token）；「卡住候选」= 同工具同参数连续多轮</span>
+</div>
+<table id="capture-tools-table">
+  <thead><tr><th>工具</th><th class="num">调用</th><th class="num">结果</th><th class="num">报错</th><th class="num">灌入字符</th><th class="num">≈tokens</th></tr></thead>
+  <tbody id="capture-tools"></tbody>
+</table>
+<div id="capture-loops" class="muted" style="font-size:12px;margin-top:8px"></div>
+
+<h2>泄漏取证命中</h2>
+<table id="capture-privacy-table">
+  <thead><tr><th>时间</th><th>租户</th><th>规则</th><th>位置</th><th>首次出现</th></tr></thead>
+  <tbody id="capture-privacy"></tbody>
+</table>
+
+<h2>系统事件流</h2>
+<div class="toolbar">
+  <select id="events-kind">
+    <option value="">全部事件</option>
+    <option value="route.rebind">改绑（route.rebind）</option>
+    <option value="route.hold">撞墙保持（route.hold）</option>
+    <option value="route.bind">首绑（route.bind）</option>
+    <option value="policy.error">policy 异常</option>
+    <option value="privacy.hit">泄漏命中</option>
+  </select>
+</div>
+<ul class="timeline" id="events"></ul>
+</main>
+
+<script src="/assets/app.js"></script>
+<script>
+'use strict';
+async function loadCapture() {
+  let status;
+  try { status = await fetchJson('/api/capture/status'); } catch { $('#capture-off').style.display = ''; return; }
+  const on = status && status.enabled !== false && status.turns !== undefined;
+  $('#capture-off').style.display = on ? 'none' : '';
+  if (!on) return;
+  const degraded = status.degraded ? ' · <span class="badge err">侧库降级，缺行不完整</span>' : '';
+  $('#capture-status').innerHTML = `捕获 <b class="num">${status.turns}</b> 轮 · 唯一正文 <b class="num">${status.contents}</b> 条 · ${fmtBytes(status.bytes)}${status.dropped ? ` · 丢弃 ${status.dropped} 轮` : ''}${degraded}（TTL 保留期后自动清理；原文只进本机 capture.db）`;
+}
+
+async function loadTools() {
+  try {
+    const tools = await fetchJson(withTenant(`/api/capture/tools?days=${$('#tools-days').value}`));
+    const rows = (tools?.tools || []).map((t) =>
+      `<tr><td>${esc(t.tool)}</td><td class="num">${t.calls}</td><td class="num">${t.results}</td>` +
+      `<td class="num">${t.errors ? `<span class="lost">${t.errors}</span>` : '0'}</td><td class="num">${t.result_chars}</td><td class="num">≈${t.result_tokens_est}</td></tr>`).join('');
+    $('#capture-tools').innerHTML = rows || '<tr><td colspan="6" class="empty">窗口内没有工具调用</td></tr>';
+    $('#capture-loops').innerHTML = (tools?.loops || []).length
+      ? '⚠ 卡住候选：' + (tools.loops).slice(0, 5).map((l) => `${esc(l.identity)} · ${esc(l.tool)} ×${l.streak} 轮`).join('；') : '';
+  } catch (e) { $('#capture-tools').innerHTML = `<tr><td colspan="6" class="empty">加载失败：${esc(e.message)}</td></tr>`; }
+}
+
+async function loadPrivacy() {
+  try {
+    const privacy = await fetchJson(withTenant('/api/capture/privacy?limit=50'));
+    const hits = (privacy?.hits || []).map((h) => {
+      const first = h.first_seen_turn;
+      return `<tr><td class="num">${fmtClock(h.ts)}</td><td>${esc(h.tenant)}</td><td><span class="badge warn">${esc(h.rule ?? '?')}</span></td>` +
+        `<td>${esc(h.role || '?')} · 第 ${num(h.message_index) ? h.message_index + 1 : '?'} 条</td>` +
+        `<td class="num">${first ? `${esc(first.identity)} @ ${fmtClock(first.ts)}` : '<span class="muted">侧库已清理</span>'}</td></tr>`;
+    });
+    $('#capture-privacy').innerHTML = hits.join('') || '<tr><td colspan="5" class="empty">没有泄漏命中（从未保存过命中原文）</td></tr>';
+  } catch { $('#capture-privacy').innerHTML = '<tr><td colspan="5" class="empty">没有泄漏命中（从未保存过命中原文）</td></tr>'; }
+}
+
+async function loadEvents() {
+  try {
+    const kind = $('#events-kind').value;
+    const data = await fetchJson(withTenant(`/api/events?limit=100${kind ? `&kind=${encodeURIComponent(kind)}` : ''}`));
+    $('#events').innerHTML = (data.events || []).map((ev) => {
+      let detail = ev.detail;
+      try { detail = ev.detail ? JSON.stringify(JSON.parse(ev.detail)) : ''; } catch { detail = ev.detail || ''; }
+      return `<li><span class="t-kind ${esc(ev.kind.replace('.', '\\.'))}">${esc(ev.kind)}</span>
+        <span class="num">${fmtClock(ev.ts)}</span>
+        <span>${esc(ev.tenant ?? '')}</span>
+        <span class="t-detail">${esc(detail).slice(0, 160)}</span></li>`;
+    }).join('') || '<li class="empty">没有事件</li>';
+  } catch (e) { $('#events').innerHTML = `<li class="empty">加载失败：${esc(e.message)}</li>`; }
+}
+
+async function load() {
+  await Promise.all([loadCapture(), loadTools(), loadPrivacy(), loadEvents()]);
+}
+$('#tools-days').addEventListener('change', loadTools);
+$('#events-kind').addEventListener('change', loadEvents);
+initChrome('observability.html').then(load);
+</script>
+</body>
+</html>

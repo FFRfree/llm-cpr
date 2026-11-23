@@ -1,0 +1,10 @@
+{
+  "name": "@ffrfree/llm-cpr-e2e",
+  "version": "0.6.1",
+  "private": true,
+  "type": "module",
+  "description": "llm-cpr e2e 套件：假上游 + 独立实例 + pi harness 真跑（快车道 run-scenarios.ts；慢车道 slow-lane/ rootless podman 装机层）",
+  "scripts": {
+    "test": "node run-scenarios.ts"
+  }
+}

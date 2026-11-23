@@ -1,4 +1,8 @@
 node_modules/
+packages/cli/core/
+packages/cli/static/
+packages/e2e/pi-vendor/
+packages/e2e/runs/
 .env
 config.json
 *.db

@@ -1,0 +1,220 @@
+// v0.2.0 迁移三件套（工单 04 + 独立 review 六项修正的回归面）：
+// user_version 只升不降、基线只在迁移步骤里跑（备份先于任何结构变更）、存量先备份且备份可独立校验。
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { openDatabase } from '../src/store/db.ts';
+import { runMigrations, SCHEMA_VERSION } from '../src/store/migrate.ts';
+
+const freshDir = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-migrate-'));
+// server 启动路径的开库口径：不带基线——结构变更全部发生在迁移步骤里（备份之后）。
+const openForServer = (file: string): DatabaseSync => openDatabase(file, { baseline: false });
+const userVersion = (db: DatabaseSync): number => Number((db.prepare('PRAGMA user_version').get() as { user_version?: number }).user_version ?? 0);
+const requestsColumns = (db: DatabaseSync): Set<string> =>
+  new Set((db.prepare('PRAGMA table_info(requests)').all() as Array<{ name: string }>).map((entry) => entry.name));
+
+// 手工搭一个「版本机出现之前」的旧库：requests/system_events 存在但缺 tenant/ttft/stream 列（ALTER 管），
+// 其余列齐全（非 ALTER 管——baseline 的看板索引要引用），无 user_version。
+function buildPreVersioningDb(file: string): void {
+  const db = new DatabaseSync(file);
+  db.exec(`CREATE TABLE requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+    identity TEXT, identity_kind TEXT NOT NULL, subscription TEXT, account TEXT,
+    model TEXT, translated_model TEXT, path TEXT, status INTEGER, ms INTEGER,
+    prompt_tokens INTEGER, completion_tokens INTEGER,
+    cache_hit_tokens INTEGER, cache_miss_tokens INTEGER, cache_write_tokens INTEGER,
+    total_tokens INTEGER, cache_observed INTEGER NOT NULL DEFAULT 0, cache_outcome TEXT, usage_json TEXT
+  )`);
+  db.exec(`CREATE TABLE system_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+    kind TEXT NOT NULL, identity_kind TEXT, identity_hash TEXT, backend_name TEXT, request_id INTEGER, detail TEXT
+  )`);
+  db.exec("INSERT INTO requests (ts, identity, identity_kind, subscription, status, ms) VALUES (1, 'sess-a', 'session', 'sub-old', 200, 5)");
+  db.close();
+}
+
+// requests 全空但 system_events 有决策账行：也是存量库（review P2 修正点：决策账本身是持久数据），必须备份。
+function buildEventsOnlyDb(file: string): void {
+  const db = new DatabaseSync(file);
+  db.exec(`CREATE TABLE requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+    identity TEXT, identity_kind TEXT NOT NULL, subscription TEXT, account TEXT,
+    model TEXT, translated_model TEXT, path TEXT, status INTEGER, ms INTEGER,
+    prompt_tokens INTEGER, completion_tokens INTEGER,
+    cache_hit_tokens INTEGER, cache_miss_tokens INTEGER, cache_write_tokens INTEGER,
+    total_tokens INTEGER, cache_observed INTEGER NOT NULL DEFAULT 0, cache_outcome TEXT, usage_json TEXT
+  )`);
+  db.exec(`CREATE TABLE system_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+    kind TEXT NOT NULL, identity_kind TEXT, identity_hash TEXT, backend_name TEXT, request_id INTEGER, detail TEXT
+  )`);
+  db.exec("INSERT INTO system_events (ts, kind, identity_kind, identity_hash, backend_name) VALUES (1, 'route.bind', 'session', 'k', 'sub-a')");
+  db.close();
+}
+
+test('migrate：新库 → 基线在步骤里建表并标 v1，无备份目录', () => {
+  const dir = freshDir();
+  const file = path.join(dir, 'data.db');
+  const db = openForServer(file); // 不带基线：此刻库里没有任何表
+  const result = runMigrations(db, { dbFile: file });
+  assert.equal(result.status, 'fresh');
+  assert.equal(result.to, SCHEMA_VERSION);
+  assert.equal(userVersion(db), SCHEMA_VERSION);
+  assert.ok(requestsColumns(db).size > 0, '基线应已在步骤 1 里建表');
+  assert.ok(!fs.existsSync(path.join(dir, 'backups'))); // 新库无物可失，不备份
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('migrate：版本机之前的存量库 → 先备份（原貌未补列）再补列，行保留 tenant=default', () => {
+  const dir = freshDir();
+  const file = path.join(dir, 'data.db');
+  buildPreVersioningDb(file);
+  const db = openForServer(file);
+  const result = runMigrations(db, { dbFile: file });
+  assert.equal(result.status, 'upgraded');
+  assert.equal(userVersion(db), 1);
+  // 备份存在，且是「迁移前原貌」：补列发生在备份之后（review P2 修正点）
+  assert.ok(result.backupDir && fs.existsSync(result.backupDir));
+  const copyPath = path.join(result.backupDir!, 'data.db');
+  assert.ok(fs.existsSync(copyPath));
+  const copy = new DatabaseSync(copyPath, { readOnly: true });
+  assert.ok(!requestsColumns(copy).has('tenant'), '备份应是补列前的原貌');
+  copy.close();
+  // 活库：旧行保留，tenant 落默认值
+  const row = db.prepare('SELECT tenant, subscription FROM requests').get() as { tenant: string; subscription: string };
+  assert.equal(row.tenant, 'default');
+  assert.equal(row.subscription, 'sub-old');
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('migrate：已是当前版本 → current 零动作、不再备份', () => {
+  const dir = freshDir();
+  const file = path.join(dir, 'data.db');
+  let db = openForServer(file);
+  runMigrations(db, { dbFile: file });
+  db.close();
+  db = openForServer(file);
+  const again = runMigrations(db, { dbFile: file });
+  assert.equal(again.status, 'current');
+  assert.equal(again.applied.length, 0);
+  assert.equal(again.backupDir, undefined);
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// 生产火情回归（2026-11-19）：v1 存量库（user_version=1）缺后加的加法列（capture_id），
+// 「current 短路返回」让基线补列永远不跑 → audit INSERT 23 列 prepare 时炸、服务重启循环。
+// 修复：current 路径也跑一次幂等 applyBaseline。夹具按生产形状手搭（列齐 v1 但无 capture_id、
+// 有数据行、user_version=1），断言开库即补列、行无损、无备份动作。
+test('migrate：v1 存量库缺后加列 → current 路径幂等补齐（capture_id），行无损', () => {
+  const dir = freshDir();
+  const file = path.join(dir, 'data.db');
+  {
+    const db = new DatabaseSync(file);
+    // v1 形状 = BASELINE_SCHEMA 去掉 capture_id（当年生产库的真实形状）
+    db.exec(`CREATE TABLE requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+      tenant TEXT NOT NULL DEFAULT 'default', identity TEXT, identity_kind TEXT NOT NULL,
+      subscription TEXT, account TEXT, model TEXT, translated_model TEXT, path TEXT,
+      status INTEGER, ms INTEGER, prompt_tokens INTEGER, completion_tokens INTEGER,
+      cache_hit_tokens INTEGER, cache_miss_tokens INTEGER, cache_write_tokens INTEGER,
+      total_tokens INTEGER, cache_observed INTEGER NOT NULL DEFAULT 0, cache_outcome TEXT,
+      ttft_ms INTEGER, stream_ms INTEGER, usage_json TEXT
+    )`);
+    db.exec(`CREATE TABLE system_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+      tenant TEXT NOT NULL DEFAULT 'default', kind TEXT NOT NULL,
+      identity_kind TEXT, identity_hash TEXT, backend_name TEXT, request_id INTEGER, detail TEXT
+    )`);
+    db.exec("INSERT INTO requests (ts, identity, identity_kind, subscription, status, ms) VALUES (1, 'sess', 'session', 'sub', 200, 5)");
+    db.exec('PRAGMA user_version = 1');
+    db.close();
+  }
+  const db = openForServer(file);
+  const result = runMigrations(db, { dbFile: file });
+  assert.equal(result.status, 'current');
+  assert.equal(result.backupDir, undefined);
+  assert.ok(requestsColumns(db).has('capture_id')); // 补齐（INSERT 23 列才能 prepare）
+  db.prepare("INSERT INTO requests (ts, identity, identity_kind, subscription, status, ms, capture_id) VALUES (2, 'sess', 'session', 'sub', 200, 5, 'c-1')").run();
+  assert.equal(Number(db.prepare('SELECT COUNT(*) AS n FROM requests').get()!.n), 2); // 旧行无损
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('migrate：库版本高于代码 → 拒启动，且拒之前不碰结构（基线未跑）', () => {
+  const dir = freshDir();
+  const file = path.join(dir, 'data.db');
+  buildPreVersioningDb(file);
+  const db = openForServer(file);
+  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 41}`);
+  assert.throws(() => runMigrations(db, { dbFile: file }), /高于代码支持/);
+  assert.ok(!requestsColumns(db).has('tenant'), '拒启动必须发生在任何结构变更之前（review P2 修正点）');
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('migrate：requests 空但 system_events 有行 → 不是 fresh，先备份', () => {
+  const dir = freshDir();
+  const file = path.join(dir, 'data.db');
+  buildEventsOnlyDb(file);
+  const db = openForServer(file);
+  const result = runMigrations(db, { dbFile: file });
+  assert.equal(result.status, 'upgraded');
+  assert.ok(result.backupDir && fs.existsSync(path.join(result.backupDir!, 'data.db')), '决策账也是存量数据，必须有备份');
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('migrate：步骤执行落版本号（targetVersion 接缝，steps 下标=版本-1）', () => {
+  const dir = freshDir();
+  const file = path.join(dir, 'data.db');
+  const db = openForServer(file);
+  runMigrations(db, { dbFile: file });
+  const demoStep = {
+    name: '测试步骤：加 requests.demo 列',
+    up: (target: DatabaseSync) => { target.exec('ALTER TABLE requests ADD COLUMN demo TEXT'); },
+  };
+  const result = runMigrations(db, { dbFile: file, steps: [{ name: 'baseline 占位', up: () => {} }, demoStep], targetVersion: 2 });
+  assert.equal(result.status, 'upgraded');
+  assert.deepEqual(result.applied, [demoStep.name]);
+  assert.equal(userVersion(db), 2);
+  assert.ok(requestsColumns(db).has('demo'));
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('migrate：步骤失败 → 事务回滚、版本号停在完成步、数据完好', () => {
+  const dir = freshDir();
+  const file = path.join(dir, 'data.db');
+  buildPreVersioningDb(file);
+  const db = openForServer(file);
+  runMigrations(db, { dbFile: file }); // 到 v1（留有升级备份）
+  const failing = [{
+    name: '故意失败步骤',
+    up: () => { throw new Error('注入失败'); },
+  }];
+  assert.throws(() => runMigrations(db, { dbFile: file, steps: [{ name: 'baseline 占位', up: () => {} }, ...failing], targetVersion: 2 }), /注入失败.*已回滚/);
+  assert.equal(userVersion(db), 1); // 版本号停在已完成步
+  const row = db.prepare('SELECT COUNT(*) AS n FROM requests').get() as { n: number | bigint };
+  assert.equal(Number(row.n), 1); // 数据完好
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('migrate：备份写不进去（backups 被占位文件挡住）→ 拒迁移，库原样未动', () => {
+  const dir = freshDir();
+  const file = path.join(dir, 'data.db');
+  buildPreVersioningDb(file);
+  fs.writeFileSync(path.join(dir, 'backups'), '占位文件'); // 挡住备份目录
+  const db = openForServer(file);
+  assert.throws(() => runMigrations(db, { dbFile: file }), /ENOTDIR/);
+  assert.ok(!requestsColumns(db).has('tenant'), '备份失败必须发生在任何结构变更之前（review P2 修正点）');
+  assert.equal(userVersion(db), 0);
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});

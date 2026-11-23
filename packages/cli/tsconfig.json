@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "types": [
+      "node"
+    ],
+    "baseUrl": ".",
+    "paths": {
+      "@ffrfree/llm-cpr": ["../core/src/policy/contract.ts"]
+    },
+    "skipLibCheck": false
+  },
+  "include": [
+    "scripts/**/*.ts",
+    "policy.example.ts"
+  ]
+}

@@ -48,12 +48,12 @@ npm 下载新版 → 独立版本目录（current/服务全不动）
 
 1. 版本纪律：加法迁移打 minor；搬数/换表打 major。`package.json` 版本号与 `core/store/migrate.ts` 的 `SCHEMA_VERSION` 对齐推进。
 2. 打 tag `v<x.y.z>` → `npm pack` 出 `.tgz`。
-3. **对产物跑假上游冒烟**（验的即发布的字节）：`node scripts/xdg-deploy/smoke-release.ts ffrfree-llm-cpr-<版本>.tgz`——启动、鉴权、换 key 转发、SSE 直通、记账、看板、单库落位全绿才算数。
+3. **对产物跑假上游冒烟**（验的即发布的字节）：`node packages/cli/scripts/smoke-release.ts ffrfree-llm-cpr-<版本>.tgz`——启动、鉴权、换 key 转发、SSE 直通、记账、看板、单库落位全绿才算数。
 4. `npm publish --access public`——**scoped 包默认按私有处理（私有要付费账号），公开发布必须显式 `--access public`**，这条忘了会直接报错。介意第三方 registry 的自持路线：把自托管 Forgejo 挂成 npm registry，`--registry` 指过去即可，机制不变。
 
 ## 本机生产切换（阶段 3，逐次授权）
 
-生产当前仍跑 v0.1.0 形态：系统级 unit `coding-plan-router.service`、`/root/.local/lib/coding-plan-router/current` release 软链、DB 在 `/root/.local/share/coding-plan-router/`。切到 v0.2.0 产品同款时：固定位置装包、数据经 `scripts/xdg-deploy/migrate-dbs.ts` 合并进 `~/.llm-cpr/data.db`、换用户级 `llm-cpr` unit（root 跑 user unit 的 linger 姿势届时单独拍板）、旧 unit 与旧目录退役。切换步骤届时时单独立票、逐次授权执行。
+生产当前仍跑 v0.1.0 形态：系统级 unit `coding-plan-router.service`、`/root/.local/lib/coding-plan-router/current` release 软链、DB 在 `/root/.local/share/coding-plan-router/`。切到 v0.2.0 产品同款时：固定位置装包、数据经 `packages/cli/scripts/migrate-dbs.ts` 合并进 `~/.llm-cpr/data.db`、换用户级 `llm-cpr` unit（root 跑 user unit 的 linger 姿势届时单独拍板）、旧 unit 与旧目录退役。切换步骤届时时单独立票、逐次授权执行。
 
 ---
 
@@ -101,7 +101,7 @@ mkdir -p "$REL"
 git archive HEAD core static package.json | tar -x -C "$REL"
 printf 'commit=%s\nnode=%s\npublished_at=%s\n' "$(git rev-parse HEAD)" "$(node -v)" "$(date -u +%FT%TZ)" > "$REL/RELEASE.txt"
 # 冒烟：本机假上游，临时目录，不碰真实订阅额度
-node scripts/xdg-deploy/smoke-release.ts "$REL"
+node packages/cli/scripts/smoke-release.ts "$REL"
 ln -sfn "$REL" $HOME/.local/lib/coding-plan-router/current   # 切换生效版本（重启后才真正生效）
 ```
 
@@ -109,14 +109,14 @@ ln -sfn "$REL" $HOME/.local/lib/coding-plan-router/current   # 切换生效版�
 
 ## 数据备份与迁移（双库 → data.db 合库）
 
-`scripts/xdg-deploy/migrate-dbs.ts`（2026-11-18 起为合库迁移器）：把旧的双库（`sessions.db` + `usage.db`）合并成单个 `data.db`（`requests` + `system_events` 双表，见 `.scratch/affinity-events/spec.md`）。它做四件事：源库 WAL checkpoint、复制备份副本、按新 schema 建目标库并搬数据（requests 原样保留 id、session_routes → route.bind 事件、identity_migrations → route.rebind 事件且 reason 从配对账本行回溯）、逐项计数验收（requests 行数/`max(id)` 一致、bind/rebind 事件数与旧表行数一致）。它在源库仍有其他连接持锁时（`busy != 0`）会直接报错退出；目标文件已存在时拒绝覆盖。
+`packages/cli/scripts/migrate-dbs.ts`（2026-11-18 起为合库迁移器）：把旧的双库（`sessions.db` + `usage.db`）合并成单个 `data.db`（`requests` + `system_events` 双表，见 `.scratch/affinity-events/spec.md`）。它做四件事：源库 WAL checkpoint、复制备份副本、按新 schema 建目标库并搬数据（requests 原样保留 id、session_routes → route.bind 事件、identity_migrations → route.rebind 事件且 reason 从配对账本行回溯）、逐项计数验收（requests 行数/`max(id)` 一致、bind/rebind 事件数与旧表行数一致）。它在源库仍有其他连接持锁时（`busy != 0`）会直接报错退出；目标文件已存在时拒绝覆盖。
 
 必须停服后执行，因为两个旧库各自拍快照不保证业务时点一致；在线只复制主库会漏掉 `-wal` 里已提交的数据。
 
 ```bash
 systemctl stop coding-plan-router
 TS=$(date -u +%Y%m%dT%H%M%SZ)
-node scripts/xdg-deploy/migrate-dbs.ts \
+node packages/cli/scripts/migrate-dbs.ts \
   --sessions-db $HOME/.local/share/coding-plan-router/sessions.db \
   --usage-db    $HOME/.local/share/coding-plan-router/usage.db \
   --dest-db     $HOME/.local/share/coding-plan-router/data.db \
