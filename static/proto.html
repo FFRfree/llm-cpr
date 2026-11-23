@@ -140,11 +140,42 @@ details.fold .body{padding:0 12px 12px;font-size:13px;color:var(--muted);line-he
 
 /* ===== 轨迹 ===== */
 .traj-note{font-size:12px;color:var(--muted);padding:10px 12px;border-bottom:1px dashed var(--line)}
-.traj{display:grid;grid-template-columns:1fr;gap:10px}
-.traj .pane{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;display:flex;flex-direction:column}
-.traj .pane-h{display:flex;align-items:center;gap:8px;padding:10px 12px;font-size:13px;font-weight:600;border-bottom:1px solid var(--line);flex-shrink:0}
-.traj .pane-h .back{display:inline;color:var(--blue);font-weight:400;font-size:12px;cursor:pointer;margin-right:2px}
-.traj .pane-b{overflow-y:auto;flex:1;max-height:62vh;padding-bottom:10px}
+/* omp trace 风格布局：侧栏 + workspace 单列 + 抽屉正文 */
+.sesswrap{display:flex;min-height:0}
+.sess-side{width:250px;flex-shrink:0;display:flex;flex-direction:column;border-right:1px solid var(--line);min-height:0}
+.sess-main{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}
+.sess-main-h{padding:0 12px;min-height:0}
+.sess-body{overflow:auto;min-height:0;overflow-x:hidden}
+.viewbar{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.drawer{position:fixed;inset:0;z-index:60;background:var(--canvas,#fff);display:flex;flex-direction:column}
+.drawer-inner{transform:translateX(24px);opacity:0;transition:transform .18s ease,opacity .18s ease}
+.drawer.open .drawer-inner{transform:none;opacity:1}
+.statcards{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--line);background:#fafbfd}
+.statcards .cell{padding:8px 6px;text-align:center}
+.statcards .cell+.cell{border-left:1px solid var(--line)}
+.statcards b{display:block;font-size:15px;font-variant-numeric:tabular-nums}
+.statcards span{font-size:10px;color:var(--muted)}
+@media(min-width:900px){.statcards{grid-template-columns:repeat(6,1fr)}}
+.drawer-h{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);font-weight:600;flex-shrink:0}
+.drawer-h .back{color:var(--blue);font-size:12px;cursor:pointer;font-weight:400}
+.drawer-b{flex:1;overflow:auto;min-height:0}
+@media(min-width:900px){
+  .sesswrap{height:calc(100vh - 130px);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--card)}
+  .sess-side{width:260px}
+  .sess-side .pane-b{flex:1;overflow:auto}
+  .sess-main-h .back{display:none}
+  #traj-sess-head{padding:10px 12px 0}
+  .drawer{position:fixed;inset:48px 0 0 0;background:rgba(20,30,45,.32)}
+  .drawer-inner{margin-left:auto;width:min(620px,52vw);height:100%;background:#fff;border-left:1px solid var(--line);display:flex;flex-direction:column;box-shadow:-8px 0 28px rgba(20,40,80,.14)}
+  #traj-view-title{flex:1}
+}
+@media(max-width:899px){
+  .sesswrap[data-pane="list"] .sess-main{display:none}
+  .sesswrap[data-pane="main"] .sess-side{display:none}
+  .sesswrap{height:calc(100vh - 150px)}
+  .sess-side .pane-b,.sess-body{height:calc(100% - 42px);overflow:auto}
+  .drawer-inner{height:100%;display:flex;flex-direction:column;background:#fff}
+}
 .tsearch{flex:1;font-size:12px;padding:4px 8px;border:1px solid var(--line);border-radius:8px;min-width:0}
 .sess{padding:9px 12px;border-bottom:1px solid var(--line);cursor:pointer}
 .sess:hover{background:#f7f9fc}
@@ -205,6 +236,10 @@ details.fold .body{padding:0 12px 12px;font-size:13px;color:var(--muted);line-he
 .tl-bar{position:relative;height:48px;background:#fafbfd;border:1px solid var(--line);border-radius:8px;overflow:hidden;cursor:crosshair;touch-action:none;user-select:none}
 .tl-lane{position:absolute;left:0;right:0;height:16px}
 .tl-lane .sp{position:absolute;top:2px;height:12px;border-radius:2px;min-width:2px}
+.tl-lane .sp.dim{opacity:.15}
+.wf-row.dim{opacity:.3}
+.wf-row.focus{background:var(--blue-soft)}
+.wf-row{transition:opacity .12s}
 .tl-lane .sp.dec{opacity:.55}
 .tl-lane .sp.bad{outline:1.5px solid var(--red);outline-offset:0}
 .tl-lane .sp.cap::after{content:'';position:absolute;top:3px;left:1px;width:4px;height:4px;border-radius:50%;background:#1c2733}
@@ -262,18 +297,11 @@ details.fold .body{padding:0 12px 12px;font-size:13px;color:var(--muted);line-he
   .row.open .detail{display:block}
   .row .l2{padding:0}
   .row .l2 span:nth-child(4){text-align:right}
-  .traj{grid-template-columns:240px minmax(380px,1.1fr) minmax(360px,1fr);gap:0;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--line)}
-  .traj .pane{border:0;border-radius:0}
-  .traj .pane-b{max-height:calc(100vh - 220px);overflow-x:hidden}
-  .traj .pane-h .back{display:none}
   .obs-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
   .obs-grid>div{min-width:0}
   .obs-grid .card{margin-bottom:0}
 }
 /* 移动轨迹单窗格切换（桌面覆盖为三栏常显） */
-.traj[data-pane="list"] .pane-turns,.traj[data-pane="list"] .pane-view{display:none}
-.traj[data-pane="turns"] .pane-view{display:none}
-@media(min-width:900px){.traj[data-pane] .pane{display:flex!important}}
 </style>
 </head>
 <body>
@@ -289,22 +317,23 @@ details.fold .body{padding:0 12px 12px;font-size:13px;color:var(--muted);line-he
 <section class="page on" id="p-overview"></section>
 <section class="page" id="p-requests"></section>
 <section class="page" id="p-sessions">
-  <div class="traj" id="traj" data-pane="list">
-    <div class="pane pane-list">
-      <div class="pane-h">会话 <input class="tsearch" id="traj-search" placeholder="会话 ID 过滤…"></div>
+  <div class="sesswrap" id="sesswrap" data-pane="list">
+    <aside class="sess-side">
+      <div class="pane-h">亲和会话 <input class="tsearch" id="traj-search" placeholder="会话 ID 过滤…"></div>
       <div class="pane-b" id="traj-sessions"></div>
-    </div>
-    <div class="pane pane-turns">
-      <div class="pane-h"><span class="back" onclick="trajPane('list')">‹ 会话</span><span id="traj-turns-title">会话详情</span>
-        <span class="vchips"><button class="chip on" data-v="tree" onclick="setTrajView('tree')">血缘树</button><button class="chip" data-v="wf" onclick="setTrajView('wf')">时间轴</button></span></div>
-      <div id="traj-sess-head"></div>
+    </aside>
+    <div class="sess-main">
+      <div class="sess-main-h"><span class="back" onclick="sessPane('list')">‹ 会话</span><span id="traj-sess-head"></span></div>
       <div id="traj-fam"></div>
-      <div class="pane-b" id="traj-turns"></div>
+      <div class="viewbar"><span class="vchips"><button class="chip on" data-v="tree" onclick="setTrajView('tree')">血缘树</button><button class="chip" data-v="wf" onclick="setTrajView('wf')">时间轴</button></span>
+        <input class="tsearch" id="spans-search" placeholder="搜索 span（模型/订阅/详情）…" style="flex:1;max-width:260px" hidden>
+        <span class="muted num" id="spans-match" hidden></span></div>
+      <div class="sess-body" id="traj-turns"></div>
     </div>
-    <div class="pane pane-view">
-      <div class="pane-h"><span class="back" onclick="trajPane('turns')">‹ 轮次</span><span id="traj-view-title">正文</span></div>
-      <div class="pane-b" id="traj-view"><div class="empty">选一轮看正文</div></div>
-    </div>
+  </div>
+  <div class="drawer" id="traj-drawer" hidden>
+    <div class="drawer-h"><span class="back" onclick="closeDrawer()">‹ 返回</span><span id="traj-view-title">正文</span></div>
+    <div class="drawer-b" id="traj-view"><div class="empty">选一轮看正文</div></div>
   </div>
 </section>
 <section class="page" id="p-obs"></section>
@@ -560,7 +589,20 @@ function setRMode(m){ rMode=m; rPage=0; renderRequests(); }
 /* ================= 会话（列表 + 详情钻取，原轨迹页合并进来） ================= */
 const THREAD_COLORS=['#5b8def','#3fae7a','#d29a3a','#9a6fd0','#d05b6a','#3a9ad2'];
 const traj={identity:null,tenant:null,turns:[],chain:new Map(),turnId:null,reqs:[],view:'tree',tl:{mode:'dur',view:null,sel:null}};
-function trajPane(p){ $('#traj').dataset.pane=p; }
+function trajPane(p){ // 兼容旧调用：view→开抽屉，其余→移动端主区切换
+  if(p==='view') openDrawer(); else sessPane('main');
+}
+function sessPane(p){ $('#sesswrap').dataset.pane=p; }
+function openDrawer(){ // 已有内容则保留（wfPick 先填正文再开抽屉）
+  const d=$('#traj-drawer');
+  const old=$('#traj-view'), oldTitle=$('#traj-view-title');
+  const content=old?old.innerHTML:'<div class="empty">正在拉取…</div>';
+  const title=oldTitle?oldTitle.textContent:'正文';
+  d.hidden=false;
+  d.innerHTML=`<div class="drawer-inner"><div class="drawer-h"><span class="back" onclick="closeDrawer()">‹ 返回</span><span id="traj-view-title">${esc(title)}</span></div><div class="drawer-b" id="traj-view">${content}</div></div>`;
+  requestAnimationFrame(()=>d.classList.add('open'));
+}
+function closeDrawer(){ const d=$('#traj-drawer'); d.classList.remove('open'); setTimeout(()=>{ d.hidden=true; },180); }
 function renderTrajSessions(q=''){
   const all=DATA.sessions?.sessions||[];
   const aff=all.filter(s=>s.identity_kind==='session'); // 只展示主动传 affinity session id 的会话
@@ -599,13 +641,35 @@ async function pickSession(identity,tenant){
   traj.threads=forensics?.threads||[];
   traj.eff=eff||null;
   traj.reqs=reqs?.requests||[];
+  // omp 风格统计卡（span 汇总：真实耗时 / 模型耗时 / 工具间隙 / 请求数 / tokens）
+  const rs=[...traj.reqs].sort((a,b)=>a.ts-b.ts);
+  const wall=rs.length?(rs[rs.length-1].ts+(rs[rs.length-1].ms||0))-rs[0].ts:0;
+  const modelMs=rs.reduce((a,r)=>a+(r.ms||0),0);
+  let toolMs=0,prev=null;
+  for(const r of rs){ if(prev&&r.ts>prev+(prev.ms||0)+2000) toolMs+=r.ts-(prev+(prev.ms||0)); prev=r.ts; }
+  const tok=rs.reduce((a,r)=>a+(r.total_tokens||0),0);
+  traj.stats={wall,modelMs,toolMs,reqs:rs.length,tok};
+  renderFam();
   if(!traj.turns.length) $('#traj-sess-head').innerHTML+='<div class="fam-line" style="color:var(--amber)">该会话没有 capture 轮次（租户未开 capture，或轮次已过 TTL 清理）——上面统计仍可看。</div>';
   renderTurnPane();
   $('#traj-view').innerHTML='<div class="empty">选一轮看正文</div>';
 }
+function renderFam(){
+  const s=traj.stats; if(!s) return;
+  $('#traj-fam').innerHTML=`<div class="statcards">
+    <div class="cell"><b class="num">${(s.wall/1000).toFixed(0)}s</b><span>真实耗时</span></div>
+    <div class="cell"><b class="num">${(s.modelMs/1000).toFixed(0)}s</b><span>模型耗时</span></div>
+    <div class="cell"><b class="num">${(s.toolMs/1000).toFixed(0)}s</b><span>工具/空闲</span></div>
+    <div class="cell"><b class="num">${s.reqs}</b><span>请求数</span></div>
+    <div class="cell"><b class="num">${fmtTok(s.tok)}</b><span>tokens</span></div>
+    <div class="cell"><b class="num">${s.wall?Math.round(s.modelMs/s.wall*100):0}%</b><span>模型占比</span></div>
+  </div>`;
+}
 function setTrajView(v){
   traj.view=v;
   document.querySelectorAll('.vchips .chip').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
+  const sb=$('#spans-search'),sm=$('#spans-match');
+  if(sb){ const wf=v==='wf'; sb.hidden=!wf; if(sm) sm.hidden=!wf; if(!wf&&sb.value){ sb.value=''; } }
   renderTurnPane();
 }
 function renderTurnPane(){ if(traj.view==='wf') renderWaterfall(); else renderTree(); }
@@ -636,9 +700,8 @@ function renderTree(){
   const eff=traj.eff?.totals||null;
   const pct=v=>v==null?'—':(v*100).toFixed(1)+'%';
   const multi=laneKeys.filter(k=>k!=='(窗口外)').length>1;
-  $('#traj-fam').innerHTML=`<div class="fam-line"><b>${multi?'deleg 家族':'单线程'}</b> · <span class="nw">${laneKeys.filter(k=>k!=='(窗口外)').length} 线程</span> · <span class="nw">${traj.turns.length} 轮</span>`+
+  const fam=`<div class="fam-line" style="padding:8px 12px 4px"><b>${multi?'deleg 家族':'单线程'}</b> · <span class="nw">${laneKeys.filter(k=>k!=='(窗口外)').length} 线程</span> · <span class="nw">${traj.turns.length} 轮</span>`+
     (eff?`<br>${[nw(`缓存效率 <b>${pct(eff.efficiency)}</b>`),nw(`浪费 ${pct(eff.waste_share)}`),nw(`重读 ×${(eff.read_multiplier??0).toFixed(1)}`),nw(`语料 ~${fmtTok(eff.corpus_tokens_est)} tok`)].join(' · ')}`:'')+`</div>`;
-  $('#traj-turns-title').textContent='血缘树 / 时间轴';
   const flagChips=(t,c)=>{
     const out=[];
     if(c?.boundary==='thread-switch') out.push('<span class="flag switch">↩ 切线</span>');
@@ -657,7 +720,7 @@ function renderTree(){
       <div class="l1"><span class="seq">#${i+1}</span><span class="lbl" style="background:${lc}">${esc(lbl)}</span><b>${esc(t.model??'—')}</b><span class="m">${t.message_count} 条 · ${fmtBytes(t.bytes)}</span><span class="num" style="flex-shrink:0;margin-left:auto;color:var(--muted)">${hms(t.ts)}</span></div>
       <div class="flags">${flagChips(t,c)}</div></div>`;
   }).join('');
-  $('#traj-turns').innerHTML=`<div class="tree"><svg class="tgraph" width="${GW}" height="${chrono.length*H}">${edges}${nodes}</svg>${rows||'<div class="empty">该会话没有捕获轮次</div>'}</div>`;
+  $('#traj-turns').innerHTML=fam+`<div class="tree"><svg class="tgraph" width="${GW}" height="${chrono.length*H}">${edges}${nodes}</svg>${rows||'<div class="empty">该会话没有捕获轮次</div>'}</div>`;
 }
 function renderWaterfall(){
   // 投影/交互复刻自 dsh trajectory（MIT，deepseek-ai/deepseek-harness packages/client/ui-trajectory）
@@ -688,7 +751,18 @@ function renderWaterfall(){
     <div class="empty" style="border-bottom:0">共 ${reqs.length} 条请求 · <b>●</b> 黑点=已捕获正文（可点开跳血缘树） · 红圈=失败</div></div>`;
   $('#wf-rows').innerHTML=wfLedger(reqs,subColor,m);
   tlWire(m,reqs,subColor);
-  $('#traj-turns-title').textContent='时间轴 / 台账';
+  // span 搜索：台账行 + 概览条 span 双向 dim（omp 行为）
+  const sb=$('#spans-search'),sm=$('#spans-match');
+  const applyMatch=q=>{
+    q=q.trim().toLowerCase();
+    const hit=i=>{ const r=reqs[i]; return !q||`${r.model??''} ${r.subscription??''} ${r.status??''} ${r.capture_id??''}`.toLowerCase().includes(q); };
+    document.querySelectorAll('#wf-rows .wf-row').forEach(row=>row.classList.toggle('dim',!hit(Number(row.dataset.i))));
+    document.querySelectorAll('#tl-lane-req .sp').forEach(sp=>{
+      const i=Number(sp.dataset.i); sp.classList.toggle('dim',i>=0&&!hit(i)); });
+    if(sm) sm.textContent=q?`${reqs.filter((r,i)=>hit(i)).length} 命中`:'';
+  };
+  if(sb) sb.addEventListener('input',()=>applyMatch(sb.value));
+  applyMatch(sb?.value??'');
 }
 function tlProject(reqs){ // dsh timeline.ts 的四种投影：seq 等距 / dur 压缩空闲 / time 时钟 / act 时刻
   const mode=traj.tl.mode;
@@ -754,8 +828,8 @@ function tlWire(m,reqs,subColor){
       const c=subColor(s.req.subscription);
       const cls=`${s.isError?'bad ':''}${s.req.capture_id?'cap':''}`;
       return ttW!=null
-        ?`<i class="sp ${cls}" style="left:${l.toFixed(2)}%;width:${(ttW).toFixed(2)}%;background:${c}"></i><i class="sp dec ${cls}" style="left:${(l+ttW).toFixed(2)}%;width:${(w-ttW).toFixed(2)}%;background:${c}"></i>`
-        :`<i class="sp ${cls}" style="left:${l.toFixed(2)}%;width:${w.toFixed(2)}%;background:${c}"></i>`;
+        ?`<i class="sp ${cls}" data-i="${s.i}" style="left:${l.toFixed(2)}%;width:${(ttW).toFixed(2)}%;background:${c}"></i><i class="sp dec ${cls}" data-i="${s.i}" style="left:${(l+ttW).toFixed(2)}%;width:${(w-ttW).toFixed(2)}%;background:${c}"></i>`
+        :`<i class="sp ${cls}" data-i="${s.i}" style="left:${l.toFixed(2)}%;width:${w.toFixed(2)}%;background:${c}"></i>`;
     }).join('');
     // 刻度：视图两端 + 中点，标真实时刻
     const vs=V();
@@ -983,7 +1057,7 @@ async function bootLive(){
   return !!(usage||route);
 }
 
-renderOverview(); renderRequests(); renderObs(); renderTrajSessions(); trajPane('list');
+renderOverview(); renderRequests(); renderObs(); renderTrajSessions();
 bootLive().then(ok=>{ if(ok){ renderOverview(); renderRequests(); renderObs(); renderTrajSessions(); } });
 </script>
 </body>
