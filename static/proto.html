@@ -138,6 +138,7 @@ details.fold .body{padding:0 12px 12px;font-size:13px;color:var(--muted);line-he
 .pager button:disabled{opacity:.4}
 .pager .pg{font-size:12px;color:var(--muted)}
 
+[hidden]{display:none!important}
 /* ===== 轨迹 ===== */
 .traj-note{font-size:12px;color:var(--muted);padding:10px 12px;border-bottom:1px dashed var(--line)}
 /* omp trace 风格布局：侧栏 + workspace 单列 + 抽屉正文 */
@@ -332,8 +333,10 @@ details.fold .body{padding:0 12px 12px;font-size:13px;color:var(--muted);line-he
     </div>
   </div>
   <div class="drawer" id="traj-drawer" hidden>
-    <div class="drawer-h"><span class="back" onclick="closeDrawer()">‹ 返回</span><span id="traj-view-title">正文</span></div>
-    <div class="drawer-b" id="traj-view"><div class="empty">选一轮看正文</div></div>
+    <div class="drawer-inner">
+      <div class="drawer-h"><span class="back" onclick="closeDrawer()">‹ 返回</span><span id="traj-view-title">正文</span></div>
+      <div class="drawer-b" id="traj-view"><div class="empty">选一轮看正文</div></div>
+    </div>
   </div>
 </section>
 <section class="page" id="p-obs"></section>
@@ -374,7 +377,7 @@ function showTab(p){ document.querySelector(`.tabbar button[data-p="${p}"]`).cli
 function gotoSession(identity,tenant){
   showTab('p-sessions');
   pickSession(identity,tenant);
-  trajPane('turns');
+  sessPane('main');
 }
 document.querySelectorAll('.tabbar button').forEach(b => b.addEventListener('click', () => {
   document.querySelectorAll('.tabbar button').forEach(x=>x.classList.remove('on'));
@@ -589,17 +592,16 @@ function setRMode(m){ rMode=m; rPage=0; renderRequests(); }
 /* ================= 会话（列表 + 详情钻取，原轨迹页合并进来） ================= */
 const THREAD_COLORS=['#5b8def','#3fae7a','#d29a3a','#9a6fd0','#d05b6a','#3a9ad2'];
 const traj={identity:null,tenant:null,turns:[],chain:new Map(),turnId:null,reqs:[],view:'tree',tl:{mode:'dur',view:null,sel:null}};
-function trajPane(p){ // 兼容旧调用：view→开抽屉，其余→移动端主区切换
-  if(p==='view') openDrawer(); else sessPane('main');
-}
 function sessPane(p){ $('#sesswrap').dataset.pane=p; }
-function openDrawer(){ // 已有内容则保留（wfPick 先填正文再开抽屉）
+function openDrawer(title){ // 唯一入口：无 title 且已有内容则保留（wfPick 先填正文再开抽屉）
   const d=$('#traj-drawer');
   const old=$('#traj-view'), oldTitle=$('#traj-view-title');
-  const content=old?old.innerHTML:'<div class="empty">正在拉取…</div>';
-  const title=oldTitle?oldTitle.textContent:'正文';
+  const keep=title==null&&old;
+  const content=keep?old.innerHTML:'<div class="empty">正在拉取…</div>';
+  const t=title??(keep&&oldTitle?oldTitle.textContent:'正文');
+  d.classList.remove('open');
   d.hidden=false;
-  d.innerHTML=`<div class="drawer-inner"><div class="drawer-h"><span class="back" onclick="closeDrawer()">‹ 返回</span><span id="traj-view-title">${esc(title)}</span></div><div class="drawer-b" id="traj-view">${content}</div></div>`;
+  d.innerHTML=`<div class="drawer-inner"><div class="drawer-h"><span class="back" onclick="closeDrawer()">‹ 返回</span><span id="traj-view-title">${esc(t)}</span></div><div class="drawer-b" id="traj-view">${content}</div></div>`;
   requestAnimationFrame(()=>d.classList.add('open'));
 }
 function closeDrawer(){ const d=$('#traj-drawer'); d.classList.remove('open'); setTimeout(()=>{ d.hidden=true; },180); }
@@ -627,7 +629,7 @@ async function pickSession(identity,tenant){
   renderTurnPane();
   $('#traj-view').innerHTML='<div class="empty">正在拉取轮次…</div>';
   $('#traj-view-title').textContent='正文';
-  trajPane('turns');
+  sessPane('main');
   const id=encodeURIComponent(identity);
   const [turns,forensics,eff,reqs]=await Promise.all([
     fetch(`/api/capture/turns?identity=${id}&limit=80`).then(r=>r.ok?r.json():null).catch(()=>null),
@@ -937,14 +939,14 @@ function wfPick(cid){
   if(!cid) return;
   const t=traj.turns.find(x=>x.capture_id===cid);
   if(t) pickTurn(t.id);
-  else { $('#traj-view').innerHTML='<div class="empty">该请求不在已拉取的轮次窗口内（正文 TTL 或超出最近 80 轮）。</div>'; trajPane('view'); }
+  else { openDrawer('正文'); $('#traj-view').innerHTML='<div class="empty">该请求不在已拉取的轮次窗口内（正文 TTL 或超出最近 80 轮）。</div>'; }
 }
 async function pickTurn(id){
   traj.turnId=id;
   document.querySelectorAll('#traj-turns .turn').forEach(x=>x.classList.toggle('on',Number(x.dataset.id)===id));
   const idx=traj.turns.findIndex(t=>t.id===id);
-  $('#traj-view-title').textContent=`正文 · 轮次 #${idx+1}`;
-  $('#traj-view').innerHTML='<div class="empty">正在拉取正文…</div>'; trajPane('view');
+  openDrawer(`正文 · 轮次 #${idx+1}`);
+  $('#traj-view').innerHTML='<div class="empty">正在拉取正文…</div>';
   const chain=traj.chain.get(id);
   const prevId=chain?.prev_in_thread_id;
   const [data,prev]=await Promise.all([
@@ -982,7 +984,6 @@ async function pickTurn(id){
     return parts.join('');
   }).join('')||'<div class="empty">该轮正文缺失</div>';
   $('#traj-view').innerHTML=`<div class="traj-note">model <b>${esc(data.body?.model??'—')}</b> · ${msgs.length} 条消息 · ${fmtBytes(data.turn?.bytes)} · capture 于 ${bj(data.turn?.ts)}</div>`+html;
-  trajPane('view');
 }
 function toggleMsg(btn){
   const b = btn.previousElementSibling;
