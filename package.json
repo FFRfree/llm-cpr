@@ -22,7 +22,8 @@
     "start": "node core/main.ts",
     "test": "node --test",
     "typecheck": "tsc --noEmit",
-    "build:dashboard": "cd dashboard && vite build"
+    "build:dashboard": "cd dashboard && vite build",
+    "build:chart": "cd dashboard && vite build --config chart.vite.config.ts"
   },
   "devDependencies": {
     "@radix-ui/react-collapsible": "^1.2.1",
