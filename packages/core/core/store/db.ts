@@ -10,17 +10,17 @@ export function openDatabase(dbFile: string, { baseline = true }: { baseline?: b
   const db = new DatabaseSync(dbFile);
   // 旧双库防线：指向旧 sessions.db（有 session_routes/identity_migrations 但无 requests）
   // 或旧 usage.db（requests 带 routing_note 列）时拒绝启动——否则会在旧库里静默建空表、
-  // 亲和与长会话历史全部归零。必须先跑 scripts/xdg-deploy/migrate-dbs.ts 合库。
+  // 亲和与长会话历史全部归零。必须先跑 packages/cli/scripts/migrate-dbs.ts 合库。
   const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((entry) => entry.name));
   if (!tables.has('requests') && (tables.has('session_routes') || tables.has('identity_migrations'))) {
     db.close();
-    throw new Error(`${dbFile} 是旧版会话库（含 session_routes/identity_migrations，无 requests 表）——请先运行 scripts/xdg-deploy/migrate-dbs.ts 合库为 data.db，不要把 CPR_DB_FILE 指向旧库`);
+    throw new Error(`${dbFile} 是旧版会话库（含 session_routes/identity_migrations，无 requests 表）——请先运行 packages/cli/scripts/migrate-dbs.ts 合库为 data.db，不要把 CPR_DB_FILE 指向旧库`);
   }
   if (tables.has('requests')) {
     const columns = new Set((db.prepare('PRAGMA table_info(requests)').all() as Array<{ name: string }>).map((entry) => entry.name));
     if (columns.has('routing_note')) {
       db.close();
-      throw new Error(`${dbFile} 是旧版用量库（requests 含 routing_note 列）——请先运行 scripts/xdg-deploy/migrate-dbs.ts 合库为 data.db，不要把 CPR_DB_FILE 指向旧 usage.db`);
+      throw new Error(`${dbFile} 是旧版用量库（requests 含 routing_note 列）——请先运行 packages/cli/scripts/migrate-dbs.ts 合库为 data.db，不要把 CPR_DB_FILE 指向旧 usage.db`);
     }
   }
   db.exec('PRAGMA journal_mode=WAL');

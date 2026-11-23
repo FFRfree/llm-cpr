@@ -11,7 +11,7 @@
   "scripts": {
     "start": "node packages/core/core/main.ts",
     "test": "pnpm -r --if-present test",
-    "typecheck": "pnpm -r --if-present typecheck && tsc --noEmit",
+    "typecheck": "pnpm -r --if-present typecheck",
     "build": "pnpm -r --if-present build",
     "vendor": "pnpm --filter @ffrfree/llm-cpr vendor"
   },

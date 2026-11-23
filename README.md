@@ -90,7 +90,7 @@ node scripts/cpr.ts install    # 同款用户级服务，但代码直接跑 clon
 node scripts/cpr.ts doctor
 ```
 
-clone 的升级不走 `cpr upgrade`（那是 npm 安装形态的通道）：`git pull` 后自行验证 `npm run typecheck` + `node --test` + `node scripts/xdg-deploy/smoke-release.ts`，再 `systemctl --user restart llm-cpr`。clone 里改引擎代码、npm 用户改 policy/补丁——两条轨道互补不互斥。
+clone 的升级不走 `cpr upgrade`（那是 npm 安装形态的通道）：`git pull` 后自行验证 `npm run typecheck` + `node --test` + `node packages/cli/scripts/smoke-release.ts`，再 `systemctl --user restart llm-cpr`。clone 里改引擎代码、npm 用户改 policy/补丁——两条轨道互补不互斥。
 
 ## 路由行为
 

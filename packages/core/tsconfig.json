@@ -17,6 +17,7 @@
   "include": [
     "core/**/*.ts",
     "test/**/*.ts",
-    "type-tests/**/*.ts"
+    "type-tests/**/*.ts",
+    "scripts/**/*.ts"
   ]
 }

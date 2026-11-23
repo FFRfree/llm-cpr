@@ -182,5 +182,5 @@ decide(ctx) {
 
 - 外置 `~/.llm-cpr/policy.ts` 是你自己的文件，改动随意。热区字段（decide/routing 参数）下一条请求自动生效；冷区字段改了会拒热换并提示重启。`cpr reload` 给一句话结论（生效了 / 保旧了 + 原因 / 冷区要重启），也可以什么都不跑等懒检查自然拾取。验证用 `cpr doctor` 与看板。
 - **热更新的审计三件套**：`system_events` 的 `policy.reload`（成功，带新旧 sha256 与 trigger）与 `policy.reload.error`（保旧现场，带原因与错误摘要）；每次成功加载往 `~/.llm-cpr/backups/policy/<时间>-<哈希>.ts` 拷一份声明快照（「当时跑的是哪份文件」的字节级证据）；启动行与 `GET /api/policy`（管理口）随时报当前生效声明的 sha256 与最近一次失败。同一份坏文件反复触发不刷事件（内容签名去重），改好即恢复。
-- 包内 `mine.ts` 是引擎开发者的事：改前看 `git status` 别覆盖并行改动，改完在仓库根跑 `node --test` 与 `npm run typecheck`，发布冒烟用 `scripts/xdg-deploy/smoke-release.ts` 的假上游（不烧真额度）。
+- 包内 `mine.ts` 是引擎开发者的事：改前看 `git status` 别覆盖并行改动，改完在仓库根跑 `node --test` 与 `npm run typecheck`，发布冒烟用 `packages/cli/scripts/smoke-release.ts` 的假上游（不烧真额度）。
 - 亲和 + 撞墙不改绑 = 真·不回退（TCP 挂 → 503、撞墙 → 429 原样透传），这是诚实行为，引擎不会偷偷软化成「尽量固定」。
