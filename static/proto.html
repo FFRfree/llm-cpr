@@ -27,6 +27,8 @@ b{font-weight:600}
 .topbar .t{font-weight:700;font-size:15px}
 .topbar .ver{font-size:11px;color:var(--muted)}
 .topbar select{margin-left:auto;font-size:13px;padding:4px 6px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--txt)}
+.topbar .tbtn{font-size:12px;padding:4px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--muted);cursor:pointer}
+.topbar .tbtn:hover{color:var(--txt)}
 .proto-flag{position:fixed;top:48px;left:0;right:0;z-index:29;background:#fff8e6;border-bottom:1px solid #f0e2b6;color:#8a6d1a;font-size:12px;padding:4px var(--shell-pad)}
 
 /* ===== 导航：移动=底部栏，桌面=顶栏下固定行 ===== */
@@ -232,8 +234,9 @@ details.fold .body{padding:0 12px 12px;font-size:13px;color:var(--muted);line-he
 <header class="topbar">
   <span class="t">LLM CPR</span><span class="ver">v0.6.1 · UI 原型 v2</span>
   <select id="tenant"><option value="">全部租户</option><option>main</option><option>hermes</option><option>hindsight</option></select>
+  <button class="tbtn" onclick="location.reload()">⟳ 刷新</button>
 </header>
-<div class="proto-flag">原型演示 · 2026-11-21 快照 · 实际消耗模块直连真库</div>
+<div class="proto-flag" id="proto-flag">原型 · 正在拉取管理口实时数据…</div>
 
 <main>
 <section class="page on" id="p-overview"></section>
@@ -307,7 +310,7 @@ function renderOverview(){
   const today = DATA.usage.days[0];
   const t = {req:0,err:0,tok:0};
   for(const s of DATA.usage.subscriptions){ const d=s.by_day[today]; if(d){t.req+=d.requests;t.err+=d.errors;t.tok+=d.total_tokens;} }
-  const subs = subCards(RS);
+  const subs = subCards(DATA.routeStatus||RS);
   $('#p-overview').innerHTML = `
     <div class="today">
       <div class="cell"><b class="num">${fmtTok(t.tok)}</b><span>今天 tokens</span></div>
@@ -315,7 +318,7 @@ function renderOverview(){
       <div class="cell"><b class="num" style="color:${t.err?'var(--red)':'inherit'}">${t.err}</b><span>今天错误</span></div>
       <div class="cell"><b class="num">${DATA.summary.requests}</b><span>累计请求</span></div>
       <div class="cell"><b class="num">${DATA.summary.sessions}</b><span>累计会话</span></div>
-      <div class="cell"><b class="num">${(RS.subscriptions||[]).length}</b><span>在役订阅</span></div>
+      <div class="cell"><b class="num">${((DATA.routeStatus||RS).subscriptions||[]).length}</b><span>在役订阅</span></div>
     </div>
     <h3 class="sec">订阅额度</h3>
     <div class="subgrid" id="subgrid">${subs}</div>
@@ -520,35 +523,44 @@ function renderTrajSessions(q=''){
     ||'<div class="empty">没有匹配的会话</div>';
   $('#traj-sessions').innerHTML=rows+`<div class="empty" style="border-bottom:0">共 ${DATA.sessions.total} 个会话，原型只灌了最近 ${DATA.sessions.sessions.length} 条。</div>`;
 }
-function pickSession(identity,tenant){
-  traj.identity=identity; traj.tenant=tenant;
-  const hasCapture = identity==='gwk_aad042334318e6144d75b44f'; // 原型只给这个会话灌了轮次/正文
-  traj.turns=hasCapture?(DATA.trajTurns||[]).slice().reverse():[];
-  traj.chain=hasCapture?new Map((DATA.trajForensics?.chain||[]).map(c=>[c.id,c])):new Map();
-  traj.turnId=null;
-  const srow=DATA.sessions.sessions.find(s=>s.identity===identity);
+async function pickSession(identity,tenant){
+  traj.identity=identity; traj.tenant=tenant; traj.turnId=null;
+  traj.turns=[]; traj.chain=new Map(); traj.threads=[]; traj.eff=null;
+  const srow=DATA.sessions?.sessions?.find(s=>s.identity===identity);
   $('#traj-sess-head').innerHTML = srow
     ? `<div class="fam-line" style="padding-bottom:0"><b class="mono" style="font-size:11.5px">${esc(identity)}</b><br>
        <span class="num">${[nw(esc(srow.tenant||'default')),nw(`${srow.requests} 请求`),nw(`最后活跃 ${bj(srow.last_ts)}`),nw(`全miss ${(100*(srow.full_miss_rate||0)).toFixed(0)}%`),...(srow.loss_events||[]).length?[nw(`${srow.loss_events.length} 次缓存丢失`)]:[]].join(' · ')}</span></div>`
     : `<div class="fam-line"><b class="mono" style="font-size:11.5px">${esc(identity)}</b></div>`;
-  if(!hasCapture) $('#traj-sess-head').innerHTML += '<div class="fam-line" style="color:var(--amber)">正文未捕获（该会话无 capture 轮次：租户未开 capture、或轮次已过 TTL 清理）——上面统计仍可看。</div>';
   renderTrajSessions($('#traj-search').value.trim().toLowerCase());
   renderTurnTree();
-  $('#traj-view').innerHTML='<div class="empty">选一轮看正文</div>';
+  $('#traj-view').innerHTML='<div class="empty">正在拉取轮次…</div>';
   $('#traj-view-title').textContent='正文';
   trajPane('turns');
+  const id=encodeURIComponent(identity);
+  const [turns,forensics,eff]=await Promise.all([
+    fetch(`/api/capture/turns?identity=${id}&limit=80`).then(r=>r.ok?r.json():null).catch(()=>null),
+    fetch(`/api/capture/cache-forensics?identity=${id}&limit=60`).then(r=>r.ok?r.json():null).catch(()=>null),
+    fetch(`/api/capture/cache-efficiency?identity=${id}`).then(r=>r.ok?r.json():null).catch(()=>null),
+  ]);
+  if(traj.identity!==identity) return; // 用户已切换到别的会话
+  traj.turns=(turns?.turns||[]).slice().reverse(); // 最新在前，展示时树里按时间倒排
+  traj.chain=new Map((forensics?.chain||[]).map(c=>[c.id,c]));
+  traj.threads=forensics?.threads||[];
+  traj.eff=eff||null;
+  if(!traj.turns.length) $('#traj-sess-head').innerHTML+='<div class="fam-line" style="color:var(--amber)">该会话没有 capture 轮次（租户未开 capture，或轮次已过 TTL 清理）——上面统计仍可看。</div>';
+  renderTurnTree();
+  $('#traj-view').innerHTML='<div class="empty">选一轮看正文</div>';
 }
 function renderTurnTree(){
-  const hasCapture = traj.identity==='gwk_aad042334318e6144d75b44f';
   const byThread=new Map();
   for(const t of traj.turns){ const c=traj.chain.get(t.id); const key=c?c.thread_key:'(窗口外)';
     if(!byThread.has(key)) byThread.set(key,[]); byThread.get(key).push(t); }
-  const threads=DATA.trajForensics?.threads||[];
+  const threads=traj.threads||[];
   const labelOf=k=>threads.find(th=>th.key===k)?.label??k;
-  let order=(DATA.trajForensics?.threads||[]).map(th=>th.key).filter(k=>byThread.has(k));
+  let order=threads.map(th=>th.key).filter(k=>byThread.has(k));
   for(const k of byThread.keys()) if(!order.includes(k)) order.push(k);
   const multi=order.length>1;
-  const eff=hasCapture?DATA.trajEfficiency?.totals:null;
+  const eff=traj.eff?.totals||null;
   const pct=v=>v==null?'—':(v*100).toFixed(1)+'%';
   const fam=`<div class="fam-line"><b>${multi?'deleg 家族':'单线程'}</b> · <span class="nw">${order.length} 线程</span> · <span class="nw">${traj.turns.length} 轮</span>`+
     (eff?`<br>${[nw(`缓存效率 <b>${pct(eff.efficiency)}</b>`),nw(`浪费 ${pct(eff.waste_share)}`),nw(`重读 ×${(eff.read_multiplier??0).toFixed(1)}`),nw(`语料 ~${fmtTok(eff.corpus_tokens_est)} tok`)].join(' · ')}`:'')+
@@ -584,15 +596,20 @@ function renderTurnTree(){
   }
   $('#traj-turns').innerHTML=html;
 }
-function pickTurn(id){
+async function pickTurn(id){
   traj.turnId=id;
   document.querySelectorAll('#traj-turns .turn').forEach(x=>x.classList.toggle('on',Number(x.dataset.id)===id));
   const idx=traj.turns.findIndex(t=>t.id===id);
-  const data=DATA.trajBodies[String(id)];
   $('#traj-view-title').textContent=`正文 · 轮次 #${idx+1}`;
-  if(!data){ $('#traj-view').innerHTML='<div class="empty">原型只灌了 3 轮正文（每线程最新一轮）；线上每轮都能看。</div>'; trajPane('view'); return; }
+  $('#traj-view').innerHTML='<div class="empty">正在拉取正文…</div>'; trajPane('view');
   const chain=traj.chain.get(id);
-  const prev=chain?.prev_in_thread_id!=null?DATA.trajBodies[String(chain.prev_in_thread_id)]:null;
+  const prevId=chain?.prev_in_thread_id;
+  const [data,prev]=await Promise.all([
+    fetch('/api/capture/turns/'+id).then(r=>r.ok?r.json():null).catch(()=>null),
+    prevId!=null?fetch('/api/capture/turns/'+prevId).then(r=>r.ok?r.json():null).catch(()=>null):Promise.resolve(null),
+  ]);
+  if(traj.turnId!==id) return; // 用户已点别的轮次
+  if(!data){ $('#traj-view').innerHTML='<div class="empty">该轮正文未捕获或已过 TTL 清理（缓存命中段会被裁掉，只有含新增内容的轮次留得住）。</div>'; return; }
   const prevRefs=prev?prev.refs||[]:null;
   const msgs=data.body?.messages||[];
   const html=msgs.map((m,i)=>{
@@ -673,7 +690,32 @@ function renderObs(){
     </div>`;
 }
 
-renderOverview(); renderRequests(); renderObs(); renderTrajSessions(); pickSession('gwk_aad042334318e6144d75b44f','hermes'); trajPane('list');
+/* ================= 启动：先按快照渲染（离线可开），随即拉管理口活数覆盖 ================= */
+async function bootLive(){
+  const j=async(url)=>{ try{ const r=await fetch(url); if(!r.ok) throw new Error(url.split('?')[0]+' '+r.status); return r.json(); }catch{ return null; } };
+  const [usage,route,summary,requests,sessions,events,cs,ct,cp]=await Promise.all([
+    j('/api/audit/usage?days=1'), j('/api/route/status'), j('/api/audit/summary'),
+    j('/api/audit/requests?limit=600'), j('/api/audit/sessions?limit=150'),
+    j('/api/events?limit=200'), j('/api/capture/status'), j('/api/capture/tools'), j('/api/capture/privacy'),
+  ]);
+  if(usage) DATA.usage=usage;
+  if(route) DATA.routeStatus=route;
+  if(summary) DATA.summary=summary.summary;
+  if(requests) DATA.requests=requests.requests;
+  if(sessions) DATA.sessions=sessions;
+  if(events) DATA.events=events.events;
+  if(cs) DATA.captureStatus=cs;
+  if(ct) DATA.captureTools=ct;
+  if(cp) DATA.capturePrivacy=cp;
+  const flag=$('#proto-flag');
+  if(flag) flag.textContent = usage||route
+    ? `原型 · 实时数据 · 管理口直连 · 拉取于 ${bj(Date.now())}`
+    : '原型 · 快照 2026-11-21 · 拿不到管理口接口（需经开发实例 127.0.0.1:8750 打开本页）';
+  return !!(usage||route);
+}
+
+renderOverview(); renderRequests(); renderObs(); renderTrajSessions(); trajPane('list');
+bootLive().then(ok=>{ if(ok){ renderOverview(); renderRequests(); renderObs(); renderTrajSessions(); } });
 </script>
 </body>
 </html>
