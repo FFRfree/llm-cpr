@@ -12,6 +12,20 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// node_modules 自 root 起逐级向上找：monorepo 里依赖被 npm hoist 到仓库根，独立包里就在脚下。
+function nodeModulesDir(): string {
+  let dir = root;
+  for (;;) {
+    const nm = path.join(dir, 'node_modules');
+    if (fs.existsSync(nm)) return nm;
+    const up = path.dirname(dir);
+    if (up === dir) {
+      console.error('vendor: 找不到 node_modules——先 npm install（版本以 devDependencies 声明为准）。');
+      process.exit(1);
+    }
+    dir = up;
+  }
+}
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as {
   vendoredDependencies?: string[];
 };
@@ -23,8 +37,9 @@ if (deps.length === 0) {
 }
 
 fs.rmSync(path.join(root, 'vendor'), { recursive: true, force: true });
+const nm = nodeModulesDir();
 for (const name of deps) {
-  const src = path.join(root, 'node_modules', name);
+  const src = path.join(nm, name);
   if (!fs.existsSync(path.join(src, 'package.json'))) {
     console.error(`vendor: ${name} 不在 node_modules —— 先 npm install（版本以 devDependencies 声明为准）。`);
     process.exit(1);

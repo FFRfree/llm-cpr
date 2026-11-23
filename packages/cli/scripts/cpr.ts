@@ -57,14 +57,34 @@ function die(message: string): never {
   process.exit(1);
 }
 
-// 包根 = 本文件所在 scripts/ 的上一级（clone 根或 npm 全局包目录），与 cwd 无关。
-// fixture（最小仓拷贝）同构成立：scripts/ + package.json + core/main.ts 在同一根下。
+// 包根 = 本文件所在 scripts/ 的上一级（monorepo clone 里 = packages/cli；npm 全局包目录同构），与 cwd 无关。
+// fixture（最小仓拷贝）同构成立：scripts/ + package.json + vendor/ 在同一根下。
+// 引擎根另算（engineRoot）：npm 发布物里 core/ 与本包同根（prepack 装配，scripts/assemble.ts）；
+// monorepo clone 里 core/ 住平级的 packages/core——两形态都归一到「含 core/main.ts 的那个根」。
 function pkgRoot(): string {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-  if (!fs.existsSync(path.join(root, 'package.json')) || !fs.existsSync(path.join(root, 'core', 'main.ts'))) {
-    die(`包根不完整（${root} 缺 package.json / core/main.ts）——安装损坏，重跑 npx -y ${PKG} install；clone 请在完整仓库里运行`);
+  if (!fs.existsSync(path.join(root, 'package.json'))) {
+    die(`包根不完整（${root} 缺 package.json）——安装损坏，重跑 npx -y ${PKG} install；clone 请在完整仓库里运行`);
   }
   return root;
+}
+
+function engineRoot(root = pkgRoot()): string {
+  if (fs.existsSync(path.join(root, 'core', 'main.ts'))) return root; // npm 发布物 / fixture：core 装配在包根
+  const sibling = path.join(root, '..', 'core'); // monorepo clone：packages/cli ↔ packages/core 平级
+  if (fs.existsSync(path.join(sibling, 'core', 'main.ts'))) return sibling;
+  die(`包根不完整（${root} 缺 core/main.ts）——安装损坏，重跑 npx -y ${PKG} install；clone 请在完整仓库里运行`);
+}
+
+// clone 判定向上走：monorepo 后 .git 在仓库根，不在 packages/cli 脚下。
+function gitRoot(from: string): string | null {
+  let dir = from;
+  for (;;) {
+    if (fs.existsSync(path.join(dir, '.git'))) return dir;
+    const up = path.dirname(dir);
+    if (up === dir) return null;
+    dir = up;
+  }
 }
 
 function versionOf(root: string): string {
@@ -399,7 +419,7 @@ async function doctor(): Promise<number> {
   const node = nodeRequirement(root);
   console.log(`NODE=${node.have}${node.ok ? pc.green(' OK') : pc.red(` 不满足（要求 ${node.want}）`)}`);
   console.log(`PKGROOT=${root}`);
-  const isClone = fs.existsSync(path.join(root, '.git'));
+  const isClone = gitRoot(root) !== null;
   const installed = installedVersion();
   console.log(`MODE=${isClone
     ? 'clone（引擎开发者路线，升级走 git pull）'
@@ -518,7 +538,7 @@ async function install(yes: boolean): Promise<number> {
   const tsconfigPath = path.join(policyDir, 'tsconfig.json');
   if (fs.existsSync(tsconfigPath)) console.log(`cpr: ${tsconfigPath} 已存在，保留现状`);
   else {
-    const contract = path.join(root, 'core', 'policy', 'contract.ts');
+    const contract = path.join(engineRoot(root), 'core', 'policy', 'contract.ts');
     fs.writeFileSync(tsconfigPath, `${JSON.stringify({
       compilerOptions: {
         target: 'ES2023', module: 'NodeNext', moduleResolution: 'NodeNext', strict: true, noEmit: true,
@@ -635,7 +655,7 @@ async function install(yes: boolean): Promise<number> {
 
 async function upgrade(yes: boolean, toVersion: string | undefined): Promise<number> {
   const root = pkgRoot();
-  if (fs.existsSync(path.join(root, '.git'))) {
+  if (gitRoot(root) !== null) {
     console.error('cpr: 这是 clone（引擎开发者路线）——cpr upgrade 只服务 npm 安装。clone 升级：git pull 后自行验证（node --test + 冒烟）。');
     return 1;
   }

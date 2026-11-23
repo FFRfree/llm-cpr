@@ -1,40 +1,24 @@
 {
-  "name": "@ffrfree/llm-cpr",
+  "name": "llm-cpr-monorepo",
   "version": "0.6.1",
+  "private": true,
   "type": "module",
-  "description": "LLM 订阅路由网关：多 coding-plan 订阅统一入口，按会话亲和与月欠账调度，订阅声明即代码",
+  "description": "LLM 订阅路由网关 monorepo：core=引擎（路由+管理面+看板分发）、dashboard=看板页面源码、cli=唯一 npm 发布包（发布时装配前两者）",
   "engines": {
     "node": ">=22.18.0"
   },
-  "bin": {
-    "cpr": "scripts/cpr.js"
-  },
-  "imports": {
-    "#pc": "./vendor/picocolors/picocolors.js"
-  },
-  "vendoredDependencies": [
-    "picocolors"
-  ],
-  "files": [
-    "core",
-    "static",
-    "vendor",
-    "scripts/cpr.js",
-    "scripts/cpr.ts",
-    "scripts/vendor.ts",
-    "policy.example.ts",
-    ".env.example",
-    "package.json"
+  "workspaces": [
+    "packages/*"
   ],
   "scripts": {
-    "start": "node core/main.ts",
-    "test": "node --test",
-    "typecheck": "tsc --noEmit",
-    "vendor": "node scripts/vendor.ts"
+    "start": "node packages/core/core/main.ts",
+    "test": "npm test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc --noEmit",
+    "build": "npm run build --workspaces --if-present",
+    "vendor": "npm run vendor -w @ffrfree/llm-cpr"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
-    "picocolors": "^1.1.1",
     "typescript": "5.9.3"
   }
 }

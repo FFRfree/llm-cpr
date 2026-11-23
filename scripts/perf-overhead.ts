@@ -9,8 +9,8 @@ import type { AddressInfo } from 'node:net';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createGatewayServers } from '../core/http/server.ts';
-import type { GatewayConfig, Logger } from '../core/contracts.ts';
+import { createGatewayServers } from '../packages/core/core/http/server.ts';
+import type { GatewayConfig, Logger } from '../packages/core/core/contracts.ts';
 
 const args = process.argv.slice(2);
 const arg = (name: string, fallback: string): string => {

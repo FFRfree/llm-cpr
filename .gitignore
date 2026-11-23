@@ -1,4 +1,6 @@
 node_modules/
+packages/cli/core/
+packages/cli/static/
 .env
 config.json
 *.db

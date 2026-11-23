@@ -1,0 +1,10 @@
+{
+  "name": "@ffrfree/llm-cpr-dashboard",
+  "version": "0.6.1",
+  "private": true,
+  "type": "module",
+  "description": "llm-cpr 看板页面源码：src/ 是唯一正本，build 产物落 packages/core/static/（随源码 commit）；React/Vite 源码将来住这，产物形态不变",
+  "scripts": {
+    "build": "node build.ts"
+  }
+}

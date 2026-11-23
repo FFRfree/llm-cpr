@@ -13,7 +13,9 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+// 本测试随引擎住 packages/core/test；CLI 装配件（cpr.ts/cpr.js/package.json/vendor/模板）在平级的 packages/cli。
 const REPO = path.resolve(HERE, '..');
+const REPO_CLI = path.resolve(HERE, '..', '..', 'cli');
 const UNIT = 'llm-cpr.service';
 
 type Env = Record<string, string>;
@@ -32,12 +34,12 @@ function makeFixture(t: TestContext): Fixture {
   // 只拷 CLI 真正用到的两个文件：整棵 scripts 会把 e2e 的本地搭车目录（pi-vendor 等，
   // .gitignore 排除）拖进每个用例的临时副本——2026-11-20 单日堆出 90G+ 的磁盘火情根源。
   fs.mkdirSync(path.join(work, 'scripts'), { recursive: true });
-  fs.cpSync(path.join(REPO, 'scripts', 'cpr.ts'), path.join(work, 'scripts', 'cpr.ts'));
-  fs.cpSync(path.join(REPO, 'scripts', 'cpr.js'), path.join(work, 'scripts', 'cpr.js'));
+  fs.cpSync(path.join(REPO_CLI, 'scripts', 'cpr.ts'), path.join(work, 'scripts', 'cpr.ts'));
+  fs.cpSync(path.join(REPO_CLI, 'scripts', 'cpr.js'), path.join(work, 'scripts', 'cpr.js'));
   // cpr.ts 顶部 import '#pc'（vendor 接缝，ADR-0010）：fixture 是最小包根，vendor/ 必须随 package.json 一起到位。
-  fs.cpSync(path.join(REPO, 'vendor'), path.join(work, 'vendor'), { recursive: true });
-  fs.cpSync(path.join(REPO, 'package.json'), path.join(work, 'package.json'));
-  fs.cpSync(path.join(REPO, '.env.example'), path.join(work, '.env.example'));
+  fs.cpSync(path.join(REPO_CLI, 'vendor'), path.join(work, 'vendor'), { recursive: true });
+  fs.cpSync(path.join(REPO_CLI, 'package.json'), path.join(work, 'package.json'));
+  fs.cpSync(path.join(REPO_CLI, '.env.example'), path.join(work, '.env.example'));
   fs.mkdirSync(path.join(work, 'core', 'policy'), { recursive: true });
   fs.writeFileSync(path.join(work, 'core', 'main.ts'), '// fixture stub\n');
   fs.writeFileSync(path.join(work, 'policy.example.ts'), '// fixture 模板\n');
@@ -439,7 +441,7 @@ test('bootstrap：从 node_modules 路径跑 .ts 被 Node 拒 → cpr.js 引导�
   // 模拟 npx/npm 全局的落盘形态：包整个住在 node_modules 树里
   const pkgDir = path.join(f.base, 'npx-cache', 'node_modules', '@ffrfree', 'llm-cpr');
   fs.mkdirSync(path.join(pkgDir, 'scripts'), { recursive: true });
-  fs.cpSync(path.join(REPO, 'scripts', 'cpr.js'), path.join(pkgDir, 'scripts', 'cpr.js'));
+  fs.cpSync(path.join(REPO_CLI, 'scripts', 'cpr.js'), path.join(pkgDir, 'scripts', 'cpr.js'));
   fs.cpSync(path.join(f.work, 'scripts', 'cpr.ts'), path.join(pkgDir, 'scripts', 'cpr.ts'));
   fs.cpSync(path.join(f.work, 'package.json'), path.join(pkgDir, 'package.json'));
   // 对照组：node_modules 路径下直接跑 .ts —— Node 拒绝类型擦除（2026-11-19 本机 v22.22.3 实测的火）

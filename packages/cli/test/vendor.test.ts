@@ -1,5 +1,6 @@
 // vendor 机制回归（ADR-0010）：vendoredDependencies 声明 ↔ vendor/ 落盘一致、#别名接缝可达、
 // dependencies 红线恒空（cpr.js bootstrap 会清掉 npm 落的依赖目录，运行时依赖只准走 vendor）。
+// 本测试住 packages/cli/test——#pc 接缝（imports 字段）与 vendor/ 都是 cli 包的所有物。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
