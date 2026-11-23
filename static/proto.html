@@ -168,6 +168,35 @@ details.fold .body{padding:0 12px 12px;font-size:13px;color:var(--muted);line-he
 .th-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .th-kids{margin-left:14px;border-left:2px solid var(--line)}
 .th-kids.hidden{display:none}
+/* 血缘树（git-graph 风格泳道）与时间轴瀑布 */
+.vchips{margin-left:auto;display:flex;gap:4px}
+.vchips .chip{font-size:11px;padding:3px 9px}
+.tree{position:relative}
+.tree .tgraph{position:absolute;top:0;left:0;pointer-events:none}
+.tree .trow{position:relative;z-index:1;display:flex;flex-direction:column;justify-content:center;gap:2px;height:54px;padding:0 12px 0 0;border-bottom:1px solid var(--line);box-sizing:border-box}
+.tree .trow:hover{background:#f7f9fc}
+.tree .trow.on{background:var(--blue-soft)}
+.tree .trow .l1{font-size:12.5px;display:flex;gap:6px;align-items:baseline;min-width:0}
+.tree .trow .l1 .lbl{flex-shrink:0;font-size:10px;color:#fff;border-radius:8px;padding:1px 7px;white-space:nowrap;max-width:110px;overflow:hidden;text-overflow:ellipsis}
+.tree .trow .l1 .m{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+.tree .trow .l1 b{flex-shrink:0}
+.tree .trow .flags{display:flex;gap:4px;flex-wrap:nowrap;overflow:hidden;font-size:10px;color:var(--muted)}
+.tree .trow .flag{margin:0;white-space:nowrap}
+.wf{font-size:11.5px}
+.wf-rule{display:flex;padding:6px 12px;border-bottom:1px solid var(--line);color:var(--muted)}
+.wf-rule .track{position:relative;flex:1;height:14px}
+.wf-rule .track i{position:absolute;top:0;font-style:normal;font-size:10px;transform:translateX(-50%);white-space:nowrap}
+.wf-row{display:flex;align-items:center;gap:6px;padding:3px 12px;border-bottom:1px solid var(--line);cursor:default}
+.wf-row:hover{background:#f7f9fc}
+.wf-row .tm{flex-shrink:0;width:60px;color:var(--muted)}
+.wf-row .track{position:relative;flex:1;height:10px;background:linear-gradient(to right,var(--line) 1px,transparent 1px) repeat-x;background-size:12.5% 100%}
+.wf-row .track i{position:absolute;top:1px;height:8px;border-radius:2px;min-width:3px}
+.wf-row .track i.bad{outline:1.5px solid var(--red);outline-offset:0}
+.wf-row .track i.cap::after{content:'';position:absolute;top:-3px;left:-2px;width:4px;height:4px;border-radius:50%;background:var(--txt)}
+.wf-row .md{flex-shrink:0;width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+.wf-row .st{flex-shrink:0;width:30px;text-align:right}
+.wf-row .st.bad{color:var(--red);font-weight:600}
+.wf-day{padding:3px 12px;background:#f7f9fc;color:var(--muted);font-size:10.5px;border-bottom:1px solid var(--line)}
 .msg{border-bottom:1px solid var(--line)}
 .msg:last-child{border-bottom:0}
 .msg-head{display:flex;gap:8px;align-items:center;padding:7px 12px 0;font-size:11px;flex-wrap:wrap}
@@ -215,7 +244,7 @@ details.fold .body{padding:0 12px 12px;font-size:13px;color:var(--muted);line-he
   .row.open .detail{display:block}
   .row .l2{padding:0}
   .row .l2 span:nth-child(4){text-align:right}
-  .traj{grid-template-columns:250px 340px 1fr;gap:0;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--line)}
+  .traj{grid-template-columns:240px minmax(380px,1.1fr) minmax(360px,1fr);gap:0;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--line)}
   .traj .pane{border:0;border-radius:0}
   .traj .pane-b{max-height:calc(100vh - 220px)}
   .traj .pane-h .back{display:none}
@@ -248,7 +277,8 @@ details.fold .body{padding:0 12px 12px;font-size:13px;color:var(--muted);line-he
       <div class="pane-b" id="traj-sessions"></div>
     </div>
     <div class="pane pane-turns">
-      <div class="pane-h"><span class="back" onclick="trajPane('list')">‹ 会话</span><span id="traj-turns-title">会话详情</span></div>
+      <div class="pane-h"><span class="back" onclick="trajPane('list')">‹ 会话</span><span id="traj-turns-title">会话详情</span>
+        <span class="vchips"><button class="chip on" data-v="tree" onclick="setTrajView('tree')">血缘树</button><button class="chip" data-v="wf" onclick="setTrajView('wf')">时间轴</button></span></div>
       <div id="traj-sess-head"></div>
       <div id="traj-fam"></div>
       <div class="pane-b" id="traj-turns"></div>
@@ -511,17 +541,19 @@ function setRMode(m){ rMode=m; rPage=0; renderRequests(); }
 
 /* ================= 会话（列表 + 详情钻取，原轨迹页合并进来） ================= */
 const THREAD_COLORS=['#5b8def','#3fae7a','#d29a3a','#9a6fd0','#d05b6a','#3a9ad2'];
-const traj={identity:null,tenant:null,turns:[],chain:new Map(),turnId:null};
+const traj={identity:null,tenant:null,turns:[],chain:new Map(),turnId:null,reqs:[],view:'tree'};
 function trajPane(p){ $('#traj').dataset.pane=p; }
 function renderTrajSessions(q=''){
-  const rows=DATA.sessions.sessions.filter(s=>!q||s.identity.toLowerCase().includes(q)).map(s=>{
+  const all=DATA.sessions?.sessions||[];
+  const aff=all.filter(s=>s.identity_kind==='session'); // 只展示主动传 affinity session id 的会话
+  const rows=aff.filter(s=>!q||s.identity.toLowerCase().includes(q)).map(s=>{
     const bad=(s.full_miss_rate||0)>=.5;
     return `<div class="sess ${s.identity===traj.identity?'on':''}" onclick="pickSession('${esc(s.identity)}','${esc(s.tenant||'default')}')">
       <div class="who mono"><span class="dot ${bad?'bad':'ok'}" style="display:inline-block;margin-right:6px"></span>${esc(s.identity)}</div>
       <div class="meta muted num">${esc(s.tenant||'default')} · ${s.requests} 请求 · ${bj(s.last_ts)} · 全miss ${(100*(s.full_miss_rate||0)).toFixed(0)}%</div></div>`;
   }).join('')
     ||'<div class="empty">没有匹配的会话</div>';
-  $('#traj-sessions').innerHTML=rows+`<div class="empty" style="border-bottom:0">共 ${DATA.sessions.total} 个会话，原型只灌了最近 ${DATA.sessions.sessions.length} 条。</div>`;
+  $('#traj-sessions').innerHTML=rows+`<div class="empty" style="border-bottom:0">主动传 affinity session id 的会话 ${aff.length} 个（另有 ${all.length-aff.length} 个为指纹推断，不展示）；列表为最近 ${all.length} 条内。</div>`;
 }
 async function pickSession(identity,tenant){
   traj.identity=identity; traj.tenant=tenant; traj.turnId=null;
@@ -532,69 +564,119 @@ async function pickSession(identity,tenant){
        <span class="num">${[nw(esc(srow.tenant||'default')),nw(`${srow.requests} 请求`),nw(`最后活跃 ${bj(srow.last_ts)}`),nw(`全miss ${(100*(srow.full_miss_rate||0)).toFixed(0)}%`),...(srow.loss_events||[]).length?[nw(`${srow.loss_events.length} 次缓存丢失`)]:[]].join(' · ')}</span></div>`
     : `<div class="fam-line"><b class="mono" style="font-size:11.5px">${esc(identity)}</b></div>`;
   renderTrajSessions($('#traj-search').value.trim().toLowerCase());
-  renderTurnTree();
+  renderTurnPane();
   $('#traj-view').innerHTML='<div class="empty">正在拉取轮次…</div>';
   $('#traj-view-title').textContent='正文';
   trajPane('turns');
   const id=encodeURIComponent(identity);
-  const [turns,forensics,eff]=await Promise.all([
+  const [turns,forensics,eff,reqs]=await Promise.all([
     fetch(`/api/capture/turns?identity=${id}&limit=80`).then(r=>r.ok?r.json():null).catch(()=>null),
     fetch(`/api/capture/cache-forensics?identity=${id}&limit=60`).then(r=>r.ok?r.json():null).catch(()=>null),
     fetch(`/api/capture/cache-efficiency?identity=${id}`).then(r=>r.ok?r.json():null).catch(()=>null),
+    fetch(`/api/audit/requests?identity=${id}&limit=400`).then(r=>r.ok?r.json():null).catch(()=>null),
   ]);
   if(traj.identity!==identity) return; // 用户已切换到别的会话
   traj.turns=(turns?.turns||[]).slice().reverse(); // 最新在前，展示时树里按时间倒排
   traj.chain=new Map((forensics?.chain||[]).map(c=>[c.id,c]));
   traj.threads=forensics?.threads||[];
   traj.eff=eff||null;
+  traj.reqs=reqs?.requests||[];
   if(!traj.turns.length) $('#traj-sess-head').innerHTML+='<div class="fam-line" style="color:var(--amber)">该会话没有 capture 轮次（租户未开 capture，或轮次已过 TTL 清理）——上面统计仍可看。</div>';
-  renderTurnTree();
+  renderTurnPane();
   $('#traj-view').innerHTML='<div class="empty">选一轮看正文</div>';
 }
-function renderTurnTree(){
-  const byThread=new Map();
-  for(const t of traj.turns){ const c=traj.chain.get(t.id); const key=c?c.thread_key:'(窗口外)';
-    if(!byThread.has(key)) byThread.set(key,[]); byThread.get(key).push(t); }
+function setTrajView(v){
+  traj.view=v;
+  document.querySelectorAll('.vchips .chip').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
+  renderTurnPane();
+}
+function renderTurnPane(){ if(traj.view==='wf') renderWaterfall(); else renderTree(); }
+function renderTree(){
+  const chrono=[...traj.turns].reverse(); // 最旧在上，血缘从上往下长
   const threads=traj.threads||[];
   const labelOf=k=>threads.find(th=>th.key===k)?.label??k;
-  let order=threads.map(th=>th.key).filter(k=>byThread.has(k));
-  for(const k of byThread.keys()) if(!order.includes(k)) order.push(k);
-  const multi=order.length>1;
+  const laneKeys=threads.map(th=>th.key).filter(k=>chrono.some(t=>traj.chain.get(t.id)?.thread_key===k));
+  const hasOut=chrono.some(t=>!traj.chain.get(t.id));
+  if(hasOut||!laneKeys.length) laneKeys.push('(窗口外)');
+  const laneOf=k=>laneKeys.indexOf(k);
+  const H=54, GW=Math.max(1,laneKeys.length)*20+14;
+  const col=i=>10+i*20;
+  const idRow=new Map(chrono.map((t,i)=>[t.id,i]));
+  const rowLane=chrono.map(t=>{const c=traj.chain.get(t.id);return laneOf(c?c.thread_key:'(窗口外)');});
+  // 连线：后节点指向前节点（贝塞尔竖柄，git-graph 风格）
+  let edges='';
+  chrono.forEach((t,i)=>{
+    const c=traj.chain.get(t.id); if(!c||c.prev_in_thread_id==null) return;
+    const prow=idRow.get(c.prev_in_thread_id); if(prow==null) return;
+    const l=rowLane[i],pl=rowLane[prow];
+    const colr=THREAD_COLORS[l%THREAD_COLORS.length];
+    const out=laneKeys[l]==='(窗口外)';
+    const y1=prow*H+H/2,y2=i*H+H/2;
+    edges+=`<path d="${pl===l?`M${col(l)},${y1} V${y2}`:`M${col(pl)},${y1} C${col(pl)},${y1+14} ${col(l)},${y2-14} ${col(l)},${y2}`}" fill="none" stroke="${colr}" stroke-width="1.5"${out?' stroke-dasharray="3 3"':''} opacity=".8"/>`;
+  });
+  const nodes=chrono.map((t,i)=>`<circle cx="${col(rowLane[i])}" cy="${i*H+H/2}" r="4.5" fill="${THREAD_COLORS[rowLane[i]%THREAD_COLORS.length]}" stroke="#fff" stroke-width="1.5"/>`).join('');
   const eff=traj.eff?.totals||null;
   const pct=v=>v==null?'—':(v*100).toFixed(1)+'%';
-  const fam=`<div class="fam-line"><b>${multi?'deleg 家族':'单线程'}</b> · <span class="nw">${order.length} 线程</span> · <span class="nw">${traj.turns.length} 轮</span>`+
-    (eff?`<br>${[nw(`缓存效率 <b>${pct(eff.efficiency)}</b>`),nw(`浪费 ${pct(eff.waste_share)}`),nw(`重读 ×${(eff.read_multiplier??0).toFixed(1)}`),nw(`语料 ~${fmtTok(eff.corpus_tokens_est)} tok`)].join(' · ')}`:'')+
-    `</div>`;
-  $('#traj-fam').innerHTML=fam;
-  $('#traj-turns-title').textContent=`线程 / 轮次`;
-  const flagOf=(t,c)=>{
-    if(!c) return '';
-    const sw=c.boundary==='thread-switch'?'<div class="flag switch">↩ 切线（时间序上一轮属其他孩子）</div>':'';
-    if(c.prev_in_thread_id==null) return sw+'<div class="flag ok">线程起点（窗口内基线）</div>';
-    if(c.first_diff_in_thread_index!=null){
-      if(c.common_prefix_in_thread===0&&t.message_count>0) return sw+'<div class="flag break">⚠ 线程内前缀断裂：0 条与上轮相同</div>';
-      return sw+`<div class="flag">新增：第 ${c.first_diff_in_thread_index+1} 条起（${esc(c.first_diff_in_thread_role||'?')}）</div>`;
-    }
-    return sw+'<div class="flag ok">全部与上轮相同</div>';
+  const multi=laneKeys.filter(k=>k!=='(窗口外)').length>1;
+  $('#traj-fam').innerHTML=`<div class="fam-line"><b>${multi?'deleg 家族':'单线程'}</b> · <span class="nw">${laneKeys.filter(k=>k!=='(窗口外)').length} 线程</span> · <span class="nw">${traj.turns.length} 轮</span>`+
+    (eff?`<br>${[nw(`缓存效率 <b>${pct(eff.efficiency)}</b>`),nw(`浪费 ${pct(eff.waste_share)}`),nw(`重读 ×${(eff.read_multiplier??0).toFixed(1)}`),nw(`语料 ~${fmtTok(eff.corpus_tokens_est)} tok`)].join(' · ')}`:'')+`</div>`;
+  $('#traj-turns-title').textContent='血缘树 / 时间轴';
+  const flagChips=(t,c)=>{
+    const out=[];
+    if(c?.boundary==='thread-switch') out.push('<span class="flag switch">↩ 切线</span>');
+    if(!c) out.push('<span class="flag">窗口外</span>');
+    else if(c.prev_in_thread_id==null) out.push('<span class="flag ok">线程起点</span>');
+    else if(c.first_diff_in_thread_index!=null){
+      if(c.common_prefix_in_thread===0&&t.message_count>0) out.push('<span class="flag break">⚠ 前缀断裂 0 条</span>');
+      else out.push(`<span class="flag">新增自第 ${c.first_diff_in_thread_index+1} 条（${esc(c.first_diff_in_thread_role||'?')}）</span>`);
+    } else out.push('<span class="flag ok">同上轮</span>');
+    return out.join('');
   };
-  const turnHtml=(t,seq,lbl)=>`<div class="turn" data-id="${t.id}" title="${esc(lbl)}" onclick="pickTurn(${t.id})">
-    <div class="l1"><span class="seq">#${seq}</span> · <b>${esc(t.model??'—')}</b> · ${t.message_count} 条 · ${fmtBytes(t.bytes)}</div>
-    <div class="flag muted">${hms(t.ts)}</div>${flagOf(t,traj.chain.get(t.id))}</div>`;
-  let html='';
-  if(!multi){
-    html=traj.turns.map((t,i)=>turnHtml(t,i+1,labelOf(order[0]??''))).join('')||'<div class="empty">该会话没有捕获轮次</div>';
-  }else{
-    html=order.map((key,i)=>{
-      const list=byThread.get(key)||[]; const color=THREAD_COLORS[i%THREAD_COLORS.length];
-      const span=list.length?`${hms(list[0].ts)} → ${hms(list[list.length-1].ts)}`:'';
-      const lbl=labelOf(key); const base=traj.turns.indexOf(list[0])+1;
-      return `<div class="th-head" onclick="const k=this.nextElementSibling;k.classList.toggle('hidden');this.querySelector('.chev').textContent=k.classList.contains('hidden')?'▸':'▾'">
-        <span class="th-dot" style="background:${color}"></span><span class="th-label">${esc(lbl)}</span>
-        <span class="th-meta num">${list.length}轮 · ${span}</span><span class="chev muted">▾</span></div>
-        <div class="th-kids">${list.map((t,j)=>turnHtml(t,base+j,lbl)).join('')}</div>`;
-    }).join('');
+  const rows=chrono.map((t,i)=>{
+    const c=traj.chain.get(t.id); const key=c?c.thread_key:'(窗口外)';
+    const lbl=labelOf(key); const lc=THREAD_COLORS[rowLane[i]%THREAD_COLORS.length];
+    return `<div class="trow turn" data-id="${t.id}" style="padding-left:${GW}px" onclick="pickTurn(${t.id})">
+      <div class="l1"><span class="seq">#${i+1}</span><span class="lbl" style="background:${lc}">${esc(lbl)}</span><b>${esc(t.model??'—')}</b><span class="m">${t.message_count} 条 · ${fmtBytes(t.bytes)}</span><span class="num" style="flex-shrink:0;margin-left:auto;color:var(--muted)">${hms(t.ts)}</span></div>
+      <div class="flags">${flagChips(t,c)}</div></div>`;
+  }).join('');
+  $('#traj-turns').innerHTML=`<div class="tree"><svg class="tgraph" width="${GW}" height="${chrono.length*H}">${edges}${nodes}</svg>${rows||'<div class="empty">该会话没有捕获轮次</div>'}</div>`;
+}
+function renderWaterfall(){
+  const reqs=[...traj.reqs].sort((a,b)=>a.ts-b.ts);
+  const defs=(DATA.routeStatus||RS).subscriptions||[];
+  const subColor=name=>{ const i=defs.findIndex(d=>d.name===name); return i>=0?USG_COLORS[i%USG_COLORS.length]:'#9aa7b5'; };
+  const t0=reqs[0]?.ts??0, t1=Math.max(...reqs.map(r=>r.ts+(r.ms||0)),t0+1000)+30000;
+  const pos=ts=>((ts-t0)/(t1-t0)*100);
+  const wOf=r=>Math.max(0.4,(r.ms||0)/(t1-t0)*100);
+  // 顶部时间刻度（5 档）；瀑布从上往下即时间流（最旧在上）
+  const ticks=[0,.25,.5,.75,1].map(f=>{
+    const ts=t0+(t1-t0)*f;
+    const tf=f===0?'translateX(0)':f===1?'translateX(-100%)':'translateX(-50%)';
+    return `<i style="left:${f*100}%;transform:${tf}">${hms(ts)}</i>`;
+  }).join('');
+  let html='',lastDay='';
+  for(const r of reqs){
+    const day=bj(r.ts).slice(0,5);
+    if(day!==lastDay){ html+=`<div class="wf-day num">${day}</div>`; lastDay=day; }
+    const tip=`${bj(r.ts)} · ${r.model??'—'} · ${r.status} · ${r.ms??'?'}ms · ${fmtTok(r.total_tokens)} tok · ${esc(r.subscription??'')}`;
+    html+=`<div class="wf-row" title="${esc(tip)}"${r.capture_id?` onclick="wfPick('${esc(r.capture_id)}')"`:''}>
+      <span class="tm num">${hms(r.ts)}</span>
+      <span class="track"><i style="left:${pos(r.ts).toFixed(2)}%;width:${wOf(r).toFixed(2)}%;background:${subColor(r.subscription)}" class="${r.status>=400?'bad':''}${r.capture_id?' cap':''}"></i></span>
+      <span class="md mono">${esc((r.model??'—').split('/').pop())}</span>
+      <span class="st num ${r.status>=400?'bad':''}">${r.status}</span></div>`;
   }
-  $('#traj-turns').innerHTML=html;
+  const legend=[...new Set(reqs.map(r=>r.subscription).filter(Boolean))].map((n,i)=>`<span><i style="background:${subColor(n)}"></i>${esc(defs.find(d=>d.name===n)?.alias??n)}</span>`).join('');
+  $('#traj-turns').innerHTML=`<div class="wf">
+    <div class="usg-legend" style="padding:6px 12px 0">${legend||'<span class="muted">该会话暂无请求</span>'}</div>
+    <div class="wf-rule"><span class="tm"></span><span class="track">${ticks}</span><span class="md"></span><span class="st"></span></div>
+    ${html||'<div class="empty">该会话暂无请求</div>'}
+    <div class="empty" style="border-bottom:0">共 ${reqs.length} 条请求 · <b>●</b> 黑点=已捕获正文（可点开跳血缘树） · 红圈=失败</div></div>`;
+}
+function wfPick(cid){
+  if(!cid) return;
+  const t=traj.turns.find(x=>x.capture_id===cid);
+  if(t) pickTurn(t.id);
+  else { $('#traj-view').innerHTML='<div class="empty">该请求不在已拉取的轮次窗口内（正文 TTL 或超出最近 80 轮）。</div>'; trajPane('view'); }
 }
 async function pickTurn(id){
   traj.turnId=id;
