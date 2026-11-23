@@ -43,7 +43,8 @@ export const openCode: ProviderAdapter = {
     const primary = headers[sessionKey], legacy = headers['x-opencode-session'];
     delete headers[sessionKey];
     // Resolve the same identity as routing: valid primary, valid legacy, then
-    // fingerprint/address. Preserve supplied session bytes (including whitespace).
+    // fingerprint (server.ts 400s before forwarding when identity is null).
+    // Preserve supplied session bytes (including whitespace).
     const session = typeof primary === 'string' && primary.trim() ? primary
       : typeof legacy === 'string' && legacy.trim() ? legacy : context.identity?.key;
     if (session !== undefined) headers['x-opencode-session'] = session;

@@ -31,7 +31,7 @@ test('numeric millisecond quota reset expires and monthly timestamps score corre
     fs.rmSync(dir, { recursive: true, force: true });
   });
   await gateway.snapshots.refresh();
-  const response = await fetch(`http://127.0.0.1:${(gateway.forwardServer.address() as AddressInfo).port}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json' }, body: JSON.stringify({ model: 'm' }) });
+  const response = await fetch(`http://127.0.0.1:${(gateway.forwardServer.address() as AddressInfo).port}/v1/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer master', 'content-type': 'application/json', 'x-session-id': 'time-session' }, body: JSON.stringify({ model: 'm' }) });
   assert.equal(response.status, 200);
   assert.equal(calls, 1);
   assert.equal(monthlyDebtScore({ known: true, periodStart: now - 86400000, periodEnd: now + 86400000, monthlyPercent: 20 }, now), 30);

@@ -134,7 +134,6 @@ test('OCG header priority and blank-header fallback agree with routing identity 
     [{ 'x-client-session': 'primary', 'x-opencode-session': 'legacy' }, 'primary'],
     [{ 'x-opencode-session': 'legacy-only' }, 'legacy-only'],
     [{ 'x-client-session': '', 'x-opencode-session': 'legacy-fallback' }, 'legacy-fallback'],
-    [{}, '127.0.0.1'],
   ] satisfies [Record<string, string>, string][]) {
     assert.equal((await app.chat({}, headers)).status, 200);
     const entry = app.inference.at(-1) as InferenceRequest;
@@ -142,8 +141,20 @@ test('OCG header priority and blank-header fallback agree with routing identity 
     assert.equal(entry.headers['x-client-session'], undefined);
     const { requests } = await app.get<RequestsPayload>(`/api/audit/requests?identity=${encodeURIComponent(expected)}`);
     assert.equal(requests.length, 1);
-    assert.equal(requests[0].identity_kind, expected === '127.0.0.1' ? 'address' : 'session');
+    assert.equal(requests[0].identity_kind, 'session');
   }
+});
+
+test('unresolvable identity (no session header, body without messages array) is rejected locally: 400, no forward, zero ledger rows', async (t: TestContext): Promise<void> => {
+  const app = await fixture(t, {});
+  const beforeRequests = await app.get<RequestsPayload>('/api/audit/requests');
+  const beforeEvents = await app.get<{ events: unknown[] }>('/api/events');
+  assert.equal((await app.chat({}, {})).status, 400);
+  assert.equal(app.inference.length, 0); // 未转发到上游
+  const afterRequests = await app.get<RequestsPayload>('/api/audit/requests');
+  const afterEvents = await app.get<{ events: unknown[] }>('/api/events');
+  assert.equal(afterRequests.requests.length, beforeRequests.requests.length); // 账本零新增
+  assert.equal(afterEvents.events.length, beforeEvents.events.length); // system_events 零新增
 });
 
 test('real provider families keep quota/account identity, auth, Chat paths and opaque payloads consistent', async (t: TestContext): Promise<void> => {
@@ -200,7 +211,8 @@ test('Chat SSE remains byte-transparent on both families; unimplemented protocol
     } });
     for (const route of ['/v1/responses', '/v1/messages']) assert.equal((await app.chat({}, {}, route)).status, 404);
     assert.equal(app.inference.length, 0);
-    const response = await app.chat({ stream: true, stream_options: { include_usage: true } });
+    // SSE 透传：带会话头走 session 身份（无头且无 messages = 无可解析身份 → 本地 400）
+    const response = await app.chat({ stream: true, stream_options: { include_usage: true } }, { 'x-session-id': 'sse-session' });
     assert.equal(response.status, 200);
     assert.equal(response.text, bytes);
     assert.equal(app.inference[0].body.stream_options.include_usage, true);
