@@ -10,8 +10,16 @@ export interface ChartOpts {
   hour: boolean;
   height?: number;
   kind?: 'line' | 'bar'; // bar = 堆叠柱（默认 line）
+  unit?: 'tok' | 'req'; // Y 轴与 tooltip 的量纲（默认 tok）
   series: SeriesDef[];
 }
+
+const fmtNum = (n: number | null | undefined): string => {
+  if (n == null) return '—';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+  return String(Math.round(n));
+};
+const fmtVal = (n: number | null | undefined, unit: 'tok' | 'req'): string => unit === 'req' ? fmtNum(n) : fmtTok(n);
 
 const fmtTok = (n: number | null | undefined): string => {
   if (n == null) return '—';
@@ -42,6 +50,7 @@ export function render(el: HTMLElement, opts: ChartOpts): void {
   });
   const aliasOf = Object.fromEntries(opts.series.map((s) => [s.name, s.alias]));
   const bar = opts.kind === 'bar';
+  const unit = opts.unit ?? 'tok';
 
   const Tip = (props: { active?: boolean; label?: string; payload?: { name?: string; value?: number; color?: string }[] }) => {
     const { active, label, payload } = props;
@@ -53,7 +62,7 @@ export function render(el: HTMLElement, opts: ChartOpts): void {
           <div key={i} className="cpr-tip-row">
             <span className="cpr-tip-dot" style={{ background: p.color }} />
             <span>{aliasOf[String(p.name)] ?? String(p.name)}</span>
-            <b>{fmtTok(p.value)} tok</b>
+            <b>{fmtVal(p.value, unit)} {unit === 'req' ? '次' : 'tok'}</b>
           </div>
         ))}
       </div>
@@ -65,7 +74,7 @@ export function render(el: HTMLElement, opts: ChartOpts): void {
       <CartesianGrid stroke="#e4e8ee" vertical={false} />
       <XAxis dataKey="label" ticks={ticks} interval={0} tickFormatter={hour ? hourTick : dayTick}
         tick={{ fontSize: 11, fill: '#69788a' }} tickLine={false} axisLine={false} />
-      <YAxis tickFormatter={(v: number) => fmtTok(v)} width={52}
+      <YAxis tickFormatter={(v: number) => fmtVal(v, unit)} width={52}
         tick={{ fontSize: 11, fill: '#69788a' }} tickLine={false} axisLine={false} />
       <Tooltip content={<Tip />} cursor={bar ? { fill: 'rgba(105,120,138,.08)' } : { stroke: '#69788a', strokeDasharray: '3 3' }} />
     </>

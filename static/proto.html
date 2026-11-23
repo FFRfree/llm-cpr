@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>LLM CPR · 看板原型（usage-series）</title>
+<style>
+:root{
+  --bg:#f3f5f8; --card:#fff; --line:#e4e8ee; --txt:#1c2733; --muted:#69788a;
+  --blue:#1a6fe8; --blue-soft:#e8f0fe; --green:#1a9e55; --red:#d93a3a; --amber:#c77c11;
+  --radius:12px;
+  --shell:1280px;
+  --shell-pad:max(20px, calc((100% - var(--shell))/2 + 20px));
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--txt);font:15px/1.45 -apple-system,'PingFang SC','Noto Sans SC',sans-serif;
+  padding:100px 0 calc(64px + env(safe-area-inset-bottom));}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.num{font-variant-numeric:tabular-nums}
+.muted{color:var(--muted)}
+b{font-weight:600}
+
+/* ===== 顶栏 ===== */
+.topbar{position:fixed;top:0;left:0;right:0;z-index:30;background:#fff;border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:8px;height:48px;padding:0 var(--shell-pad)}
+.topbar .t{font-weight:700;font-size:15px}
+.topbar .ver{font-size:11px;color:var(--muted)}
+.topbar select{margin-left:auto;font-size:13px;padding:4px 6px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--txt)}
+.proto-flag{position:fixed;top:48px;left:0;right:0;z-index:29;background:#fff8e6;border-bottom:1px solid #f0e2b6;color:#8a6d1a;font-size:12px;padding:4px var(--shell-pad)}
+
+/* ===== 导航：移动=底部栏，桌面=顶栏下固定行 ===== */
+.tabbar{position:fixed;bottom:0;left:0;right:0;z-index:30;background:#fff;border-top:1px solid var(--line);
+  display:flex;padding-bottom:env(safe-area-inset-bottom)}
+.tabbar button{flex:1;background:none;border:0;padding:8px 0 6px;font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:2px;align-items:center}
+.tabbar button .ic{font-size:17px;line-height:1}
+.tabbar button.on{color:var(--blue);font-weight:600}
+.tabbar button:active{background:var(--blue-soft)}
+
+/* ===== 通用 ===== */
+main{max-width:1100px;margin:0 auto;padding:0 12px}
+section.page{display:none}
+section.page.on{display:block}
+h3.sec{font-size:13px;color:var(--muted);font-weight:600;margin:16px 2px 8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);margin-bottom:10px;overflow:hidden}
+.badge{font-size:10px;padding:2px 6px;border-radius:6px;background:#eef1f5;color:var(--muted);white-space:nowrap;flex-shrink:0}
+.badge.ccgb{background:#e8f4ee;color:var(--green)}
+.badge.warn{background:#fdf3e0;color:var(--amber)}
+.dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.dot.ok{background:var(--green)} .dot.bad{background:var(--red)} .dot.mid{background:var(--amber)}
+.empty{padding:14px;text-align:center;color:var(--muted);font-size:13px}
+.lk{color:var(--blue);font-weight:600}
+details.fold{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);margin-bottom:10px}
+details.fold>summary{padding:11px 12px;font-size:14px;font-weight:600;cursor:pointer;list-style:none}
+details.fold>summary::-webkit-details-marker{display:none}
+details.fold>summary .cnt{color:var(--muted);font-weight:400;font-size:12px;margin-left:6px}
+details.fold .body{padding:0 12px 12px;font-size:13px;color:var(--muted);line-height:1.9}
+
+/* ===== 概览 ===== */
+.today{display:grid;grid-template-columns:repeat(3,1fr);background:var(--card);border:1px solid var(--line);border-radius:var(--radius);margin-bottom:4px}
+.today .cell{padding:10px 6px;text-align:center}
+.today .cell+.cell{border-left:1px solid var(--line)}
+.today b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
+.today span{font-size:11px;color:var(--muted)}
+.lifetime{font-size:12px;color:var(--muted);margin:0 2px 10px}
+.subgrid{display:block}
+.subrow .head{display:flex;align-items:center;gap:8px;padding:11px 12px;cursor:pointer}
+.subrow .nm{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.subrow .pct{margin-left:auto;font-size:13px;font-weight:600;white-space:nowrap}
+.dual{position:relative;height:8px;border-radius:4px;background:#e9edf2;margin:0 12px 11px;overflow:visible}
+.dual .u{display:block;height:100%;border-radius:4px}
+.dual .t{position:absolute;top:-2px;bottom:-2px;width:2px;border-radius:1px;background:var(--txt);opacity:.45;transform:translateX(-1px)}
+.chev{color:var(--muted);font-size:11px;transition:transform .15s}
+.subrow.open .chev{transform:rotate(90deg)}
+.subrow .pct .wk{font-size:11px;color:var(--muted);font-weight:400;margin-right:2px}
+.subrow .detail{border-top:1px dashed var(--line);padding:10px 12px 12px;display:none}
+.subrow.open .detail{display:block}
+.win{margin-bottom:10px}
+.win .lab{display:flex;font-size:12px;margin-bottom:3px;gap:6px}
+.win .lab .l{color:var(--txt);font-weight:600}
+.win .lab .wk2{font-style:normal;color:var(--muted);font-weight:400;font-size:11px}
+.win .lab .r{margin-left:auto;color:var(--muted);white-space:nowrap}
+.tag{font-size:9px;padding:1px 5px;border-radius:5px;margin-left:4px}
+.tag.ok{color:var(--green);background:#e8f4ee}
+.tag.ahead{color:var(--red);background:#fdeaea}
+.meta{font-size:12px;color:var(--muted);margin-top:6px;display:flex;gap:10px;flex-wrap:wrap}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.chips span{font-size:11px;background:#eef1f5;border-radius:6px;padding:2px 7px;color:var(--muted)}
+.spark{display:flex;gap:2px;align-items:flex-end;height:26px;flex:1}
+.spark i{flex:1;background:#8ab6f2;border-radius:2px 2px 0 0;min-height:2px}
+
+/* 实际消耗折线图 */
+.usg-legend{display:flex;flex-wrap:wrap;gap:6px 14px;padding:10px 12px 2px;font-size:12px}
+.usg-legend span{display:flex;align-items:center;gap:5px;color:var(--muted)}
+.usg-legend i{width:12px;height:3px;border-radius:2px;flex-shrink:0}
+.usg-legend b{color:var(--txt)}
+.usg-legend .err{color:var(--red)}
+.usg-wrap{position:relative;padding:0 2px 8px}
+#usg-tip{display:none;position:absolute;top:10px;background:#fff;border:1px solid var(--line);border-radius:8px;
+  padding:6px 10px;font-size:11px;box-shadow:0 2px 10px rgba(20,40,80,.10);pointer-events:none;white-space:nowrap;z-index:5}
+#usg-tip b{display:block;margin-bottom:2px}
+#usg-tip span{display:flex;align-items:center;gap:5px;color:var(--muted);line-height:1.8}
+#usg-tip i{width:8px;height:8px;border-radius:2px;flex-shrink:0}
+
+/* ===== 列表行（请求/会话/工具共用骨架） ===== */
+.filters{display:flex;gap:8px;margin:0 2px 10px;flex-wrap:wrap}
+.filters .chip{font-size:12px;padding:5px 12px;border-radius:16px;border:1px solid var(--line);background:#fff;color:var(--muted)}
+.filters .chip.on{background:var(--blue-soft);border-color:var(--blue);color:var(--blue);font-weight:600}
+.filters .sep{width:1px;background:var(--line);align-self:stretch;margin:2px 2px}
+.ghead{display:flex;align-items:center;gap:8px;padding:11px 12px;cursor:pointer}
+.ghead .gid{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ghead .gsub{margin-left:auto;font-size:11.5px;color:var(--muted);white-space:nowrap;flex-shrink:1;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.ghead .gsub b{color:var(--txt);font-weight:600}
+.gbody{display:none;border-top:1px dashed var(--line)}
+.gcard.open .gbody{display:block}
+.gcard.open .chev{transform:rotate(90deg)}
+.gbody .row{background:transparent}
+.gbody .row .detail{background:#fbfcfe}
+.row{border-bottom:1px solid var(--line);cursor:pointer}
+.row:last-child{border-bottom:0}
+.row .head{padding:10px 12px;display:flex;align-items:center;gap:8px}
+.row .tm{font-size:12px;color:var(--muted);flex-shrink:0;font-variant-numeric:tabular-nums}
+.row .md{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .sub{margin-left:auto;font-size:10px;color:var(--muted);background:#eef1f5;border-radius:5px;padding:2px 6px;white-space:nowrap;flex-shrink:0}
+.row .l2{padding:0 12px 9px 28px;font-size:11.5px;color:var(--muted);display:flex;gap:10px}
+.row .l2 b{color:var(--txt);font-weight:600}
+.row .detail{display:none;border-top:1px dashed var(--line);padding:9px 12px 11px;font-size:12.5px}
+.row.open .detail{display:block}
+.row.open .chev{transform:rotate(90deg)}
+.kv{display:flex;gap:8px;padding:2.5px 0}
+.kv .k{color:var(--muted);flex-shrink:0;width:86px}
+.kv .v{word-break:break-all;font-variant-numeric:tabular-nums}
+.kv .nw{white-space:nowrap}
+.pager{display:flex;align-items:center;gap:12px;justify-content:center;padding:12px 0 4px}
+.pager button{font-size:13px;padding:7px 16px;border-radius:10px;border:1px solid var(--line);background:#fff;color:var(--txt);white-space:nowrap}
+.pager button:disabled{opacity:.4}
+.pager .pg{font-size:12px;color:var(--muted)}
+
+/* ===== 轨迹 ===== */
+.traj-note{font-size:12px;color:var(--muted);padding:10px 12px;border-bottom:1px dashed var(--line)}
+.traj{display:grid;grid-template-columns:1fr;gap:10px}
+.traj .pane{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;display:flex;flex-direction:column}
+.traj .pane-h{display:flex;align-items:center;gap:8px;padding:10px 12px;font-size:13px;font-weight:600;border-bottom:1px solid var(--line);flex-shrink:0}
+.traj .pane-h .back{display:inline;color:var(--blue);font-weight:400;font-size:12px;cursor:pointer;margin-right:2px}
+.traj .pane-b{overflow-y:auto;flex:1;max-height:62vh;padding-bottom:10px}
+.tsearch{flex:1;font-size:12px;padding:4px 8px;border:1px solid var(--line);border-radius:8px;min-width:0}
+.sess{padding:9px 12px;border-bottom:1px solid var(--line);cursor:pointer}
+.sess:hover{background:#f7f9fc}
+.sess.on{background:var(--blue-soft)}
+.sess .who{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sess .meta{font-size:11px;margin-top:2px}
+.fam-line{font-size:12px;color:var(--muted);padding:8px 12px 0;line-height:1.7}
+.fam-line .nw{white-space:nowrap}
+.fam-line b{color:var(--txt)}
+.turn{padding:8px 12px;border-bottom:1px solid var(--line);cursor:pointer}
+.turn:hover{background:#f7f9fc}
+.turn.on{background:var(--blue-soft)}
+.turn .l1{font-size:12.5px}
+.turn .l1 .seq{color:var(--muted)}
+.turn .flag{font-size:10.5px;margin-top:2px;color:var(--muted)}
+.turn .flag.ok{color:var(--green)} .turn .flag.break{color:var(--red)}
+.turn .flag.switch{color:var(--amber)}
+.th-head{display:flex;gap:6px;align-items:center;padding:8px 12px;background:#f7f9fc;border-bottom:1px solid var(--line);cursor:pointer;font-size:12px}
+.th-head .th-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.th-head .th-meta{color:var(--muted);font-size:10.5px;flex-shrink:0}
+.th-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.th-kids{margin-left:14px;border-left:2px solid var(--line)}
+.th-kids.hidden{display:none}
+.msg{border-bottom:1px solid var(--line)}
+.msg:last-child{border-bottom:0}
+.msg-head{display:flex;gap:8px;align-items:center;padding:7px 12px 0;font-size:11px;flex-wrap:wrap}
+.role{font-size:10px;padding:2px 7px;border-radius:5px;font-weight:600}
+.role.user{background:#e8f0fe;color:var(--blue)} .role.assistant{background:#e8f4ee;color:var(--green)}
+.role.system{background:#eef1f5;color:var(--muted)} .role.tool{background:#fdf3e0;color:var(--amber)}
+.dup{color:var(--green)} .new{color:var(--muted)}
+.msg-body{padding:4px 12px 10px;font-size:12.5px;white-space:pre-wrap;word-break:break-word;color:#2a3644}
+.msg-body.clamped{max-height:140px;overflow:hidden;position:relative}
+.msg-body.clamped::after{content:'';position:absolute;bottom:0;left:0;right:0;height:36px;background:linear-gradient(transparent,#fff)}
+.toggle{display:block;margin:0 12px 8px;background:none;border:0;color:var(--blue);font-size:12px;cursor:pointer}
+
+/* ===== 观测 ===== */
+.capt-line{padding:10px 12px;font-size:13px}
+.capt-line b{font-variant-numeric:tabular-nums}
+.loops{padding:8px 12px 10px;font-size:12px;color:var(--amber)}
+.ev{display:flex;gap:8px;align-items:baseline;padding:7px 12px;border-bottom:1px solid var(--line);font-size:12px}
+.ev:last-child{border-bottom:0}
+.ev .kind{flex-shrink:0;font-size:10px;padding:2px 6px;border-radius:5px;background:#eef1f5;color:var(--muted)}
+.ev .kind.rebind{background:#fdf3e0;color:var(--amber)}
+.ev .kind.hold{background:#fdeaea;color:var(--red)}
+.ev .tm{flex-shrink:0;color:var(--muted);font-variant-numeric:tabular-nums}
+.ev .det{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+
+/* ===== 桌面（≥900px）：一套代码换布局 ===== */
+@media(min-width:900px){
+  body{padding:126px 0 20px;font-size:14px}
+  .tabbar{top:77px;bottom:auto;border-top:0;border-bottom:1px solid var(--line);padding:0 calc(var(--shell-pad) - 16px)}
+  .tabbar button{flex:0 0 auto;flex-direction:row;gap:6px;padding:12px 16px 10px;font-size:13px;border-bottom:2px solid transparent;border-radius:0}
+  .tabbar button.on{border-bottom-color:var(--blue);font-weight:600}
+  .tabbar button .ic{font-size:14px}
+  main{max-width:var(--shell);padding:0 20px}
+  h3.sec{margin:20px 2px 10px;font-size:13px}
+  .mobhint{display:none}
+  .today{grid-template-columns:repeat(6,1fr)}
+  .subgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .subrow{margin-bottom:0}
+  .subrow .detail{display:block}
+  .subrow .chev{display:none}
+  .row{display:grid;grid-template-columns:14px 88px minmax(140px,1.4fr) 110px 44px 90px 80px 80px;align-items:center;gap:8px;padding:0 12px}
+  .row .head,.row .l2{display:contents}
+  .row .head{padding:0}
+  .row .sub{margin-left:0}
+  .row .detail{grid-column:1/-1;display:none}
+  .row.open .detail{display:block}
+  .row .l2{padding:0}
+  .row .l2 span:nth-child(4){text-align:right}
+  .traj{grid-template-columns:250px 340px 1fr;gap:0;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--line)}
+  .traj .pane{border:0;border-radius:0}
+  .traj .pane-b{max-height:calc(100vh - 220px)}
+  .traj .pane-h .back{display:none}
+  .obs-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
+  .obs-grid>div{min-width:0}
+  .obs-grid .card{margin-bottom:0}
+}
+/* 移动轨迹单窗格切换（桌面覆盖为三栏常显） */
+.traj[data-pane="list"] .pane-turns,.traj[data-pane="list"] .pane-view{display:none}
+.traj[data-pane="turns"] .pane-view{display:none}
+@media(min-width:900px){.traj[data-pane] .pane{display:flex!important}}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <span class="t">LLM CPR</span><span class="ver">v0.6.1 · UI 原型 v2</span>
+  <select id="tenant"><option value="">全部租户</option><option>main</option><option>hermes</option><option>hindsight</option></select>
+</header>
+<div class="proto-flag">原型演示 · 2026-11-21 快照 · 实际消耗模块直连真库</div>
+
+<main>
+<section class="page on" id="p-overview"></section>
+<section class="page" id="p-requests"></section>
+<section class="page" id="p-sessions">
+  <div class="traj" id="traj" data-pane="list">
+    <div class="pane pane-list">
+      <div class="pane-h">会话 <input class="tsearch" id="traj-search" placeholder="会话 ID 过滤…"></div>
+      <div class="pane-b" id="traj-sessions"></div>
+    </div>
+    <div class="pane pane-turns">
+      <div class="pane-h"><span class="back" onclick="trajPane('list')">‹ 会话</span><span id="traj-turns-title">会话详情</span></div>
+      <div id="traj-sess-head"></div>
+      <div id="traj-fam"></div>
+      <div class="pane-b" id="traj-turns"></div>
+    </div>
+    <div class="pane pane-view">
+      <div class="pane-h"><span class="back" onclick="trajPane('turns')">‹ 轮次</span><span id="traj-view-title">正文</span></div>
+      <div class="pane-b" id="traj-view"><div class="empty">选一轮看正文</div></div>
+    </div>
+  </div>
+</section>
+<section class="page" id="p-obs"></section>
+</main>
+
+<nav class="tabbar" id="tabbar">
+  <button class="on" data-p="p-overview"><span class="ic">◧</span>概览</button>
+  <button data-p="p-requests"><span class="ic">≡</span>请求</button>
+  <button data-p="p-sessions"><span class="ic">◈</span>会话</button>
+  <button data-p="p-obs"><span class="ic">◉</span>观测</button>
+</nav>
+
+<link rel="stylesheet" href="assets/cpr-chart.css">
+<script src="proto-data.js"></script>
+<script src="assets/cpr-chart.js"></script>
+<script>
+'use strict';
+const RS = DATA.routeStatus;
+const $ = (s, r=document) => r.querySelector(s);
+const esc = (x) => String(x ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const nw = x => `<span class="nw">${x}</span>`;
+const NAME = Object.fromEntries((RS.subscriptions||[]).map(s => [s.name, `${s.alias}（${s.family==='ccg'?'CommandCode':'OpenCode'}）`]));
+
+const fmtTok = n => n==null?'—':n>=1e8?(n/1e8).toFixed(1)+'亿':n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(0)+'k':String(n);
+const fmtBytes = n => n==null?'—':n>=1048576?(n/1048576).toFixed(1)+' MB':n>=1024?(n/1024).toFixed(0)+' KB':n+' B';
+const p2 = x => String(x).padStart(2,'0');
+const bj = ts => { const d=new Date(ts); return `${p2(d.getMonth()+1)}/${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; };
+const hms = ts => { const d=new Date(ts); return `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; };
+const countdown = ms => { if(ms==null) return ''; const s=Math.max(0,(ms-Date.now())/1000);
+  if(s>=86400*2) return Math.floor(s/86400)+'天后'; if(s>=86400) return Math.floor(s/86400)+'天'+Math.floor(s%86400/3600)+'小时后';
+  if(s>=3600) return Math.floor(s/3600)+'小时'+Math.floor(s%3600/60)+'分后'; if(s>=60) return Math.floor(s/60)+'分后'; return Math.floor(s)+'秒后'; };
+const toMs = x => x==null?null:(typeof x==='number'?x:Date.parse(x));
+const clamp01 = x => Math.max(0,Math.min(100,x));
+const monthlyOf = s => s.monthlyCap!=null&&s.monthlySpent!=null?{used:s.monthlySpent,cap:s.monthlyCap,unit:'$'}:s.monthlyPercent!=null?{used:s.monthlyPercent,cap:100,unit:'%'}:null;
+
+/* tab 切换 */
+function showTab(p){ document.querySelector(`.tabbar button[data-p="${p}"]`).click(); }
+function gotoSession(identity,tenant){
+  showTab('p-sessions');
+  pickSession(identity,tenant);
+  trajPane('turns');
+}
+document.querySelectorAll('.tabbar button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.tabbar button').forEach(x=>x.classList.remove('on'));
+  document.querySelectorAll('section.page').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on'); $('#'+b.dataset.p).classList.add('on'); window.scrollTo(0,0);
+}));
+
+/* ================= 概览 ================= */
+function renderOverview(){
+  const today = DATA.usage.days[0];
+  const t = {req:0,err:0,tok:0};
+  for(const s of DATA.usage.subscriptions){ const d=s.by_day[today]; if(d){t.req+=d.requests;t.err+=d.errors;t.tok+=d.total_tokens;} }
+  const subs = subCards(RS);
+  $('#p-overview').innerHTML = `
+    <div class="today">
+      <div class="cell"><b class="num">${fmtTok(t.tok)}</b><span>今天 tokens</span></div>
+      <div class="cell"><b class="num">${t.req}</b><span>今天请求</span></div>
+      <div class="cell"><b class="num" style="color:${t.err?'var(--red)':'inherit'}">${t.err}</b><span>今天错误</span></div>
+      <div class="cell"><b class="num">${DATA.summary.requests}</b><span>累计请求</span></div>
+      <div class="cell"><b class="num">${DATA.summary.sessions}</b><span>累计会话</span></div>
+      <div class="cell"><b class="num">${(RS.subscriptions||[]).length}</b><span>在役订阅</span></div>
+    </div>
+    <h3 class="sec">订阅额度</h3>
+    <div class="subgrid" id="subgrid">${subs}</div>
+    <h3 class="sec">实际消耗</h3>
+    <div class="filters" id="usg-range">${USG_RANGES.map(([v,l])=>`<button class="chip ${v===usgRange?'on':''}" data-v="${v}" onclick="setUsgRange('${v}')">${l}</button>`).join('')}<span class="sep"></span>${USG_METRICS.map(([v,l])=>`<button class="chip ${v===usgMetric?'on':''}" data-v="${v}" onclick="setUsgMetric('${v}')">${l}</button>`).join('')}</div>
+    <div class="card" id="usg-card"><div class="empty">加载中…</div></div>`;
+  renderUsg();
+}
+
+/* 订阅额度卡（rs 可传冻结快照或实时 route/status；时间进度：滚动窗长度固定 5h/7d，月窗上游只给 periodEnd 按 30 天周期近似） */
+function subCards(rs){
+  return (rs.subscriptions||[]).map(x => {
+    const s = x.snapshot||{};
+    const now = Date.now();
+    const wins = [
+      {k:'5小时',len:5*3_600_000,end:toMs(s.fiveHour?.resetAt),used:s.fiveHour?.used,cap:s.fiveHour?.cap},
+      {k:'每周',len:7*86_400_000,end:toMs(s.weekly?.resetAt),used:s.weekly?.used,cap:s.weekly?.cap},
+    ];
+    const mon = monthlyOf(s); if(mon) wins.push({k:'每月',len:30*86_400_000,end:toMs(s.periodEnd),used:mon.used,cap:mon.cap});
+    for(const w of wins){
+      w.pct = w.cap&&w.used!=null ? clamp01(w.used/w.cap*100) : null;
+      w.timePct = w.end!=null ? clamp01((now-(w.end-w.len))/w.len*100) : null;
+      w.color = w.pct==null?'var(--muted)':w.pct>=80?'var(--red)':w.pct>=50?'var(--amber)':'var(--green)';
+      w.reset = w.end!=null?countdown(w.end):'';
+    }
+    const valid = wins.filter(w=>w.pct!=null);
+    const worst = valid.length ? valid.reduce((a,b)=>b.pct>a.pct?b:a) : null; // 收起态只露最紧的窗口
+    const dual = w=>`<div class="dual"><i class="u" style="width:${w.pct??0}%;background:${w.color}"></i>${w.timePct!=null?`<span class="t" style="left:${w.timePct}%"></span>`:''}</div>`;
+    const statusTag = w => w.pct!=null&&w.timePct!=null ? (w.pct>w.timePct?'<span class="tag ahead">超前</span>':'<span class="tag ok">有余</span>') : '';
+    const headPct = worst ? `<span class="wk">${worst.k}</span><b style="color:${worst.color}">${worst.pct.toFixed(0)}%</b>` : '';
+    const detail = valid.map(w=>`<div class="win">
+      <div class="lab"><span class="l">${w.k}${w.reset?` <i class="wk2">${w.reset}重置</i>`:''}</span>
+        <span class="r num">${w.timePct!=null?`<span class="muted">时间 ${w.timePct.toFixed(0)}%</span> · `:''}<b style="color:${w.color}">用量 ${w.pct.toFixed(0)}%</b>${statusTag(w)}</span></div>
+      ${dual(w)}</div>`).join('');
+    return `<div class="card subrow" onclick="this.classList.toggle('open')">
+      <div class="head"><span class="nm">${esc(x.alias)}<span class="chev">▶</span></span><span class="badge ${x.family==='ccg'?'ccgb':''}">${x.family==='ccg'?'CCG':'OCG'}</span><span class="pct num">${headPct}</span></div>
+      ${worst?dual(worst):''}
+      <div class="detail">${detail}<div class="meta"><span>快照 ${s.fetchedAt?bj(s.fetchedAt):'尚无'}</span><span class="mono">内部名 ${esc(x.name)}</span></div>
+      <div class="chips">${(x.models||[]).map(m=>`<span>${esc(m)}</span>`).join('')}</div></div></div>`;
+  }).join('');
+}
+
+/* ================= 实际消耗（直连管理口真库，堆叠柱；维度 token/请求） ================= */
+let usgRange='7';
+let usgMetric='tok';
+let usgLast=null; // {usage,liveDefs,hour} 缓存：切维度不重新 fetch
+let subgridSnapAt='';
+const USG_RANGES=[['1','24h'],['3','3 天'],['7','7 天'],['30','30 天']];
+const USG_METRICS=[['tok','token'],['req','请求']];
+const USG_COLORS=['#1a6fe8','#1a9e55','#c77c11','#9a6fd0','#d05b6a'];
+const fmtReq=n=>n>=1e4?(n/1e3).toFixed(1)+'k':n>=100?(n/1e3).toFixed(1)+'k':String(Math.round(n));
+
+function setUsgRange(v){
+  usgRange=v;
+  document.querySelectorAll('#usg-range .chip').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
+  renderUsg();
+}
+function setUsgMetric(v){
+  usgMetric=v;
+  document.querySelectorAll('#usg-range .chip').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
+  if(usgLast) paintUsg(usgLast.usage,usgLast.liveDefs,usgLast.hour); // 维度切换纯前端换列，不重新请求
+}
+
+async function renderUsg(){
+  const card=$('#usg-card'); if(!card) return;
+  const hour=usgRange!=='30';
+  try{
+    const tenant=$('#tenant')?.value||'';
+    const [usage,route]=await Promise.all([
+      fetch(`/api/audit/usage?days=${usgRange}${hour?'&bucket=hour':''}${tenant?`&tenant=${encodeURIComponent(tenant)}`:''}`)
+        .then(r=>{ if(!r.ok) throw new Error('usage '+r.status); return r.json(); }),
+      fetch('/api/route/status').then(r=>r.ok?r.json():null).catch(()=>null),
+    ]);
+    // 只画现在生效中的订阅（route/status 现查为准，拿不到再退快照口径）
+    const liveDefs=(route?.subscriptions||RS.subscriptions||[]);
+    usgLast={usage,liveDefs,hour};
+    paintUsg(usage,liveDefs,hour);
+    // 实时 route/status 顺手刷新订阅卡（快照 fetchedAt 变了才重绘，保留展开态）
+    if(route?.subscriptions?.length){
+      const el=$('#subgrid');
+      const snapAt=route.subscriptions.map(s=>s.snapshot?.fetchedAt||0).join(',');
+      if(el&&snapAt!==subgridSnapAt){
+        subgridSnapAt=snapAt;
+        const open=[...el.querySelectorAll('.subrow')].map((e,i)=>e.classList.contains('open')?i:-1).filter(i=>i>=0);
+        el.innerHTML=subCards(route);
+        open.forEach(i=>el.querySelectorAll('.subrow')[i]?.classList.add('open'));
+      }
+    }
+  }catch(error){
+    card.innerHTML='<div class="empty">拿不到 /api/audit/usage —— 实际消耗模块直连管理口，需经开发实例（127.0.0.1:8750）打开本页</div>';
+  }
+}
+
+function paintUsg(usage,liveDefs,hour){
+  const card=$('#usg-card'); if(!card) return;
+  const labels=hour?usage.hours:usage.days;
+  const aliasOf=Object.fromEntries(liveDefs.map(s=>[s.name,s.alias]));
+  const field=hour?'by_hour':'by_day';
+  const key=usgMetric==='tok'?'total_tokens':'requests';
+  // 按在役订阅顺序出线；两个 foxmail（CCG/OCG）同名不同家族，图例带家族后缀区分
+  const byName=new Map((usage.subscriptions||[]).map(s=>[s.subscription,s]));
+  const series=liveDefs.filter(d=>byName.has(d.name)).map((d,i)=>{ const s=byName.get(d.name);
+    return { name:d.name, alias:(aliasOf[d.name]||d.name).split('（')[0]+(d.family==='ccg'?'·CCG':'·OCG'), color:USG_COLORS[i%USG_COLORS.length],
+      vals:labels.map(l=>s[field][l]?.[key]??0), total:s.total }; });
+  if(!labels?.length||!series.length){ card.innerHTML='<div class="empty">这个范围里没有在役订阅的消耗</div>'; return; }
+  drawUsg(card,labels,series,hour);
+}
+
+function drawUsg(card,labels,series,hour){
+  const tok=usgMetric==='tok';
+  const tot=s=>tok?`${fmtTok(s.total.total_tokens)} tok`:`${fmtReq(s.total.requests)} 次`;
+  card.innerHTML=`
+    <div class="usg-legend">${series.map(s=>`<span><i style="background:${s.color}"></i>${esc(s.alias)}<b class="num">${tot(s)}</b>${s.total.errors?`<span class="err num">${s.total.errors} 错</span>`:''}</span>`).join('')}</div>
+    <div class="usg-wrap" id="usg-wrap"></div>`;
+  const el=$('#usg-wrap',card);
+  if(!window.CPRChart){ el.innerHTML='<div class="empty">cpr-chart.js 未加载（assets/）</div>'; return; }
+  window.CPRChart.render(el,{ labels, hour, kind:'bar', unit:usgMetric, height:window.innerWidth<900?210:280,
+    series:series.map(s=>({name:s.name,alias:s.alias,color:s.color,vals:s.vals})) });
+}
+let usgResizeTimer=0;
+addEventListener('resize',()=>{ clearTimeout(usgResizeTimer); usgResizeTimer=setTimeout(()=>{ if($('#usg-card')) renderUsg(); },200); });
+
+/* ================= 请求 ================= */
+let rPage=0, rFilter='all', rMode='sess';
+const RPP=8;
+function rowHtml(r,nested=false){
+  const bad=r.status>=400, mid=r.status===499;
+  return `<div class="${nested?'row':'card row'}" onclick="this.classList.toggle('open')">
+      <span class="dot ${bad?'bad':mid?'mid':'ok'}"></span>
+      <span class="tm num">${bj(r.ts)}</span>
+      <span class="md">${esc(r.model)}<span class="chev"> ▸</span></span>
+      <span class="sub">${esc((NAME[r.subscription]||r.subscription).split('（')[0])}</span>
+      <span class="num st"><b>${r.status}</b></span>
+      <span class="num">${fmtTok(r.total_tokens)} tok</span>
+      <span class="num">TTFT ${(r.ttft_ms/1000).toFixed(1)}s</span>
+      <span class="num">总 ${(r.ms/1000).toFixed(1)}s</span>
+      <div class="detail">
+        <div class="kv"><span class="k">完整时间</span><span class="v num">${bj(r.ts)} ${hms(r.ts)}</span></div>
+        <div class="kv"><span class="k">模型</span><span class="v">${esc(r.model)}${r.translated_model&&r.translated_model!==r.model?` → ${esc(r.translated_model)}`:''}</span></div>
+        <div class="kv"><span class="k">订阅</span><span class="v">${esc(NAME[r.subscription]||r.subscription)}</span></div>
+        <div class="kv"><span class="k">会话</span><span class="v mono">${esc(r.identity)}<span class="nw muted">（${esc(r.tenant)}）</span></span></div>
+        <div class="kv"><span class="k">tokens</span><span class="v num"><span class="nw">prompt ${fmtTok(r.prompt_tokens)}</span> · <span class="nw">completion ${fmtTok(r.completion_tokens)}</span> · <span class="nw">cache 命中 ${fmtTok(r.cache_hit_tokens)}</span></span></div>
+        <div class="kv"><span class="k">路径</span><span class="v mono">${esc(r.path)}</span></div>
+        <div class="kv"><span class="k">正文</span><span class="v">${r.capture_id?`<span class="lk" style="cursor:pointer" onclick="event.stopPropagation();gotoSession('${esc(r.identity)}','${esc(r.tenant)}')">已捕获 · 查轨迹 ›</span>`:'未捕获'}</span></div>
+      </div></div>`;
+}
+function renderRequests(){
+  const all = DATA.requests;
+  const filtered = rFilter==='all'?all:all.filter(r=>rFilter==='err'?r.status>=400:r.status===Number(rFilter));
+  let body='';
+  if(rMode==='sess'){
+    const groups=new Map();
+    for(const r of filtered){ const k=r.identity+'|'+r.tenant; if(!groups.has(k)) groups.set(k,[]); groups.get(k).push(r); }
+    body=[...groups.entries()].map(([k,rs])=>{
+      const [identity,tenant]=k.split('|');
+      const errs=rs.filter(r=>r.status>=400).length;
+      const tok=rs.reduce((a,r)=>a+(r.total_tokens||0),0);
+      const span=`${bj(rs[rs.length-1].ts)} → ${bj(rs[0].ts)}`;
+      const subs=[...new Set(rs.map(r=>r.subscription))];
+      const subTxt=subs.length===1?(NAME[subs[0]]||subs[0]).split('（')[0]:subs.length+' 个订阅';
+      return `<div class="card gcard"><div class="ghead" onclick="this.parentElement.classList.toggle('open')">
+          <span class="dot ${errs?'bad':'ok'}"></span>
+          <span class="gid mono">${esc(identity.length>26?identity.slice(0,26)+'…':identity)}</span>
+          <span class="badge">${esc(tenant)}</span>
+          <span class="gsub"><span class="chev">▶</span> ${rs.length} 条 · ${subTxt} · ${span} · <b>${fmtTok(tok)} tok</b>${errs?` · <span style="color:var(--red)">${errs} 错</span>`:''}</span></div>
+        <div class="gbody">${rs.map(r=>rowHtml(r,true)).join('')}</div></div>`;
+    }).join('')||'<div class="empty">没有匹配的请求</div>';
+  }else{
+    const pages=Math.max(1,Math.ceil(filtered.length/RPP));
+    rPage=Math.min(rPage,pages-1);
+    body=`<div class="card">${filtered.slice(rPage*RPP,rPage*RPP+RPP).map(r=>rowHtml(r)).join('')||'<div class="empty">这一页没有匹配的请求</div>'}</div>
+      <div class="pager">
+        <button ${rPage===0?'disabled':''} onclick="rPage--;renderRequests()">上一页</button>
+        <span class="pg">第 ${rPage+1} / ${pages} 页 · 共 ${filtered.length} 条</span>
+        <button ${rPage>=pages-1?'disabled':''} onclick="rPage++;renderRequests()">下一页</button>
+      </div>`;
+  }
+  $('#p-requests').innerHTML=`
+    <div class="filters">
+      <button class="chip ${rMode==='sess'?'on':''}" onclick="setRMode('sess')">按会话</button>
+      <button class="chip ${rMode==='flat'?'on':''}" onclick="setRMode('flat')">平铺</button>
+      <span class="sep"></span>
+      <button class="chip ${rFilter==='all'?'on':''}" onclick="setRFilter('all')">全部</button>
+      <button class="chip ${rFilter==='err'?'on':''}" onclick="setRFilter('err')">只看错误</button>
+    </div>
+    ${body}`;
+}
+function setRFilter(f){ rFilter=f; rPage=0; renderRequests(); }
+function setRMode(m){ rMode=m; rPage=0; renderRequests(); }
+
+/* ================= 会话（列表 + 详情钻取，原轨迹页合并进来） ================= */
+const THREAD_COLORS=['#5b8def','#3fae7a','#d29a3a','#9a6fd0','#d05b6a','#3a9ad2'];
+const traj={identity:null,tenant:null,turns:[],chain:new Map(),turnId:null};
+function trajPane(p){ $('#traj').dataset.pane=p; }
+function renderTrajSessions(q=''){
+  const rows=DATA.sessions.sessions.filter(s=>!q||s.identity.toLowerCase().includes(q)).map(s=>{
+    const bad=(s.full_miss_rate||0)>=.5;
+    return `<div class="sess ${s.identity===traj.identity?'on':''}" onclick="pickSession('${esc(s.identity)}','${esc(s.tenant||'default')}')">
+      <div class="who mono"><span class="dot ${bad?'bad':'ok'}" style="display:inline-block;margin-right:6px"></span>${esc(s.identity)}</div>
+      <div class="meta muted num">${esc(s.tenant||'default')} · ${s.requests} 请求 · ${bj(s.last_ts)} · 全miss ${(100*(s.full_miss_rate||0)).toFixed(0)}%</div></div>`;
+  }).join('')
+    ||'<div class="empty">没有匹配的会话</div>';
+  $('#traj-sessions').innerHTML=rows+`<div class="empty" style="border-bottom:0">共 ${DATA.sessions.total} 个会话，原型只灌了最近 ${DATA.sessions.sessions.length} 条。</div>`;
+}
+function pickSession(identity,tenant){
+  traj.identity=identity; traj.tenant=tenant;
+  const hasCapture = identity==='gwk_aad042334318e6144d75b44f'; // 原型只给这个会话灌了轮次/正文
+  traj.turns=hasCapture?(DATA.trajTurns||[]).slice().reverse():[];
+  traj.chain=hasCapture?new Map((DATA.trajForensics?.chain||[]).map(c=>[c.id,c])):new Map();
+  traj.turnId=null;
+  const srow=DATA.sessions.sessions.find(s=>s.identity===identity);
+  $('#traj-sess-head').innerHTML = srow
+    ? `<div class="fam-line" style="padding-bottom:0"><b class="mono" style="font-size:11.5px">${esc(identity)}</b><br>
+       <span class="num">${[nw(esc(srow.tenant||'default')),nw(`${srow.requests} 请求`),nw(`最后活跃 ${bj(srow.last_ts)}`),nw(`全miss ${(100*(srow.full_miss_rate||0)).toFixed(0)}%`),...(srow.loss_events||[]).length?[nw(`${srow.loss_events.length} 次缓存丢失`)]:[]].join(' · ')}</span></div>`
+    : `<div class="fam-line"><b class="mono" style="font-size:11.5px">${esc(identity)}</b></div>`;
+  if(!hasCapture) $('#traj-sess-head').innerHTML += '<div class="fam-line" style="color:var(--amber)">正文未捕获（该会话无 capture 轮次：租户未开 capture、或轮次已过 TTL 清理）——上面统计仍可看。</div>';
+  renderTrajSessions($('#traj-search').value.trim().toLowerCase());
+  renderTurnTree();
+  $('#traj-view').innerHTML='<div class="empty">选一轮看正文</div>';
+  $('#traj-view-title').textContent='正文';
+  trajPane('turns');
+}
+function renderTurnTree(){
+  const hasCapture = traj.identity==='gwk_aad042334318e6144d75b44f';
+  const byThread=new Map();
+  for(const t of traj.turns){ const c=traj.chain.get(t.id); const key=c?c.thread_key:'(窗口外)';
+    if(!byThread.has(key)) byThread.set(key,[]); byThread.get(key).push(t); }
+  const threads=DATA.trajForensics?.threads||[];
+  const labelOf=k=>threads.find(th=>th.key===k)?.label??k;
+  let order=(DATA.trajForensics?.threads||[]).map(th=>th.key).filter(k=>byThread.has(k));
+  for(const k of byThread.keys()) if(!order.includes(k)) order.push(k);
+  const multi=order.length>1;
+  const eff=hasCapture?DATA.trajEfficiency?.totals:null;
+  const pct=v=>v==null?'—':(v*100).toFixed(1)+'%';
+  const fam=`<div class="fam-line"><b>${multi?'deleg 家族':'单线程'}</b> · <span class="nw">${order.length} 线程</span> · <span class="nw">${traj.turns.length} 轮</span>`+
+    (eff?`<br>${[nw(`缓存效率 <b>${pct(eff.efficiency)}</b>`),nw(`浪费 ${pct(eff.waste_share)}`),nw(`重读 ×${(eff.read_multiplier??0).toFixed(1)}`),nw(`语料 ~${fmtTok(eff.corpus_tokens_est)} tok`)].join(' · ')}`:'')+
+    `</div>`;
+  $('#traj-fam').innerHTML=fam;
+  $('#traj-turns-title').textContent=`线程 / 轮次`;
+  const flagOf=(t,c)=>{
+    if(!c) return '';
+    const sw=c.boundary==='thread-switch'?'<div class="flag switch">↩ 切线（时间序上一轮属其他孩子）</div>':'';
+    if(c.prev_in_thread_id==null) return sw+'<div class="flag ok">线程起点（窗口内基线）</div>';
+    if(c.first_diff_in_thread_index!=null){
+      if(c.common_prefix_in_thread===0&&t.message_count>0) return sw+'<div class="flag break">⚠ 线程内前缀断裂：0 条与上轮相同</div>';
+      return sw+`<div class="flag">新增：第 ${c.first_diff_in_thread_index+1} 条起（${esc(c.first_diff_in_thread_role||'?')}）</div>`;
+    }
+    return sw+'<div class="flag ok">全部与上轮相同</div>';
+  };
+  const turnHtml=(t,seq,lbl)=>`<div class="turn" data-id="${t.id}" title="${esc(lbl)}" onclick="pickTurn(${t.id})">
+    <div class="l1"><span class="seq">#${seq}</span> · <b>${esc(t.model??'—')}</b> · ${t.message_count} 条 · ${fmtBytes(t.bytes)}</div>
+    <div class="flag muted">${hms(t.ts)}</div>${flagOf(t,traj.chain.get(t.id))}</div>`;
+  let html='';
+  if(!multi){
+    html=traj.turns.map((t,i)=>turnHtml(t,i+1,labelOf(order[0]??''))).join('')||'<div class="empty">该会话没有捕获轮次</div>';
+  }else{
+    html=order.map((key,i)=>{
+      const list=byThread.get(key)||[]; const color=THREAD_COLORS[i%THREAD_COLORS.length];
+      const span=list.length?`${hms(list[0].ts)} → ${hms(list[list.length-1].ts)}`:'';
+      const lbl=labelOf(key); const base=traj.turns.indexOf(list[0])+1;
+      return `<div class="th-head" onclick="const k=this.nextElementSibling;k.classList.toggle('hidden');this.querySelector('.chev').textContent=k.classList.contains('hidden')?'▸':'▾'">
+        <span class="th-dot" style="background:${color}"></span><span class="th-label">${esc(lbl)}</span>
+        <span class="th-meta num">${list.length}轮 · ${span}</span><span class="chev muted">▾</span></div>
+        <div class="th-kids">${list.map((t,j)=>turnHtml(t,base+j,lbl)).join('')}</div>`;
+    }).join('');
+  }
+  $('#traj-turns').innerHTML=html;
+}
+function pickTurn(id){
+  traj.turnId=id;
+  document.querySelectorAll('#traj-turns .turn').forEach(x=>x.classList.toggle('on',Number(x.dataset.id)===id));
+  const idx=traj.turns.findIndex(t=>t.id===id);
+  const data=DATA.trajBodies[String(id)];
+  $('#traj-view-title').textContent=`正文 · 轮次 #${idx+1}`;
+  if(!data){ $('#traj-view').innerHTML='<div class="empty">原型只灌了 3 轮正文（每线程最新一轮）；线上每轮都能看。</div>'; trajPane('view'); return; }
+  const chain=traj.chain.get(id);
+  const prev=chain?.prev_in_thread_id!=null?DATA.trajBodies[String(chain.prev_in_thread_id)]:null;
+  const prevRefs=prev?prev.refs||[]:null;
+  const msgs=data.body?.messages||[];
+  const html=msgs.map((m,i)=>{
+    const ref=(data.refs||[])[i];
+    const dupKnown=Array.isArray(prevRefs)&&ref!=null;
+    const dup=dupKnown&&prevRefs.includes(ref);
+    const tagHtml=!dupKnown?'':dup?'<span class="dup">同上轮（缓存命中段）</span>':'<span class="new">本轮新增</span>';
+    const role=String(m.role??'?');
+    const content=m.content==null?'':typeof m.content==='string'?m.content:JSON.stringify(m.content,null,2);
+    const tcs=m.tool_calls||[];
+    const long=content.length>600;
+    const parts=[];
+    parts.push('<div class="msg"><div class="msg-head"><span class="role '+esc(role)+'">'+esc(role)+'</span>');
+    parts.push('<span class="muted">第 '+(i+1)+' 条</span>');
+    parts.push(dup?'<span class="dup">同上轮（缓存命中段）</span>':dupKnown?'<span class="new">本轮新增</span>':'');
+    if(m.tool_call_id) parts.push('<span class="muted mono">回应 '+esc(m.tool_call_id)+'</span>');
+    parts.push('</div>');
+    for(const tc of tcs){
+      parts.push('<div class="msg-head"><span class="role tool">fn</span><span class="mono">'+esc(tc.function?.name??'?')+'</span></div>');
+      parts.push('<div class="msg-body clamped">'+esc(tc.function?.arguments??'')+'</div>');
+    }
+    if(content){
+      parts.push('<div class="msg-body'+(long?' clamped':'')+'">'+esc(content)+'</div>');
+      if(long) parts.push('<button class="toggle" type="button" onclick="toggleMsg(this)">展开全文 ▾</button>');
+    }
+    parts.push('</div>');
+    return parts.join('');
+  }).join('')||'<div class="empty">该轮正文缺失</div>';
+  $('#traj-view').innerHTML=`<div class="traj-note">model <b>${esc(data.body?.model??'—')}</b> · ${msgs.length} 条消息 · ${fmtBytes(data.turn?.bytes)} · capture 于 ${bj(data.turn?.ts)}</div>`+html;
+  trajPane('view');
+}
+function toggleMsg(btn){
+  const b = btn.previousElementSibling;
+  b.classList.toggle('clamped');
+  btn.textContent = b.classList.contains('clamped') ? '展开全文 ▾' : '收起 ▴';
+}
+$('#traj-search').addEventListener('input',e=>renderTrajSessions(e.target.value.trim().toLowerCase()));
+$('#tenant').addEventListener('change',()=>{ if($('#usg-card')) renderUsg(); });
+
+/* ================= 观测 ================= */
+function renderObs(){
+  const st=DATA.captureStatus;
+  const tools=(DATA.captureTools?.tools||[]);
+  const maxTok=Math.max(1,...tools.map(t=>t.result_tokens_est||0));
+  const toolRows=tools.map(t=>`<div class="row" style="cursor:default">
+      <span class="md mono" style="font-weight:500">${esc(t.tool)}</span>
+      <span class="sub num">${t.calls} 调用${t.errors?` · <span style="color:var(--red)">${t.errors}错</span>`:''}</span>
+      <span class="spark" style="max-width:140px"><i style="flex:1;height:${Math.max(2,Math.round(26*(t.result_tokens_est||0)/maxTok))}px"></i></span>
+      <span class="num" style="margin-left:auto;flex-shrink:0">≈${fmtTok(t.result_tokens_est)} tok</span></div>`).join('')
+    ||'<div class="empty">窗口内没有工具调用</div>';
+  const loops=(DATA.captureTools?.loops||[]).slice(0,5).map(l=>`${esc(l.identity.slice(0,18))}… · ${esc(l.tool)} ×${l.streak} 轮`).join('；');
+  const priv=(DATA.capturePrivacy?.hits||[]).map(h=>{
+    const f=h.first_seen_turn;
+    return `<div class="ev"><span class="tm num">${bj(h.ts)}</span><span class="badge">${esc(h.tenant)}</span>
+      <span class="badge warn">${esc(h.rule??'?')}</span>
+      <span class="det">${esc(h.role||'?')} · 第 ${h.message_index!=null?h.message_index+1:'?'} 条 · 首现 ${f?esc(f.identity.slice(0,14))+'…':'侧库已清理'}</span></div>`;
+  }).join('')||'<div class="empty">没有泄漏命中（从未保存过命中原文）</div>';
+  const dOpen = matchMedia('(min-width:900px)').matches ? ' open' : '';
+  const evs=(DATA.events||[]).slice(0,30).map(ev=>{
+    let det=ev.detail; try{det=ev.detail?JSON.stringify(JSON.parse(ev.detail)):''}catch{det=ev.detail||''}
+    const k=ev.kind||''; const cls=k.includes('rebind')?'rebind':k.includes('hold')?'hold':'';
+    return `<div class="ev"><span class="kind ${cls}">${esc(k)}</span><span class="tm num">${bj(ev.ts)}</span>
+      <span class="det mono">${esc(det).slice(0,90)}</span></div>`;
+  }).join('')||'<div class="empty">没有事件</div>';
+  $('#p-obs').innerHTML=`
+    <div class="card"><div class="capt-line">正文捕获 <b>${st.turns}</b> 轮 · 唯一正文 <b>${st.contents}</b> 条 · ${fmtBytes(st.bytes)}${st.dropped?` · 丢弃 ${st.dropped} 轮`:''}（TTL 保留期后自动清理；原文只进本机 capture.db）</div></div>
+    <div class="obs-grid">
+      <div>
+        <details class="fold"${dOpen}><summary>工具 / skill 灌上下文（7 天）<span class="cnt">${tools.length} 个工具</span></summary>
+          <div class="body"><div class="card">${toolRows}${loops?`<div class="loops">⚠ 卡住候选：${loops}</div>`:''}</div></div></details>
+        <details class="fold"${dOpen}><summary>泄漏取证命中 <span class="cnt">${(DATA.capturePrivacy?.hits||[]).length} 条</span></summary>
+          <div class="body"><div class="card">${priv}</div></div></details>
+      </div>
+      <div>
+        <details class="fold"${dOpen}><summary>系统事件流 <span class="cnt">最近 ${Math.min(30,(DATA.events||[]).length)} 条</span></summary>
+          <div class="body"><div class="card">${evs}</div></div></details>
+      </div>
+    </div>`;
+}
+
+renderOverview(); renderRequests(); renderObs(); renderTrajSessions(); pickSession('gwk_aad042334318e6144d75b44f','hermes'); trajPane('list');
+</script>
+</body>
+</html>
