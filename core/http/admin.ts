@@ -150,8 +150,14 @@ export function createAdminServer({ policy, policyAdmin, tenants, snapshots, aud
       return json(res, 200, { sessions: audit.listSessions({ limit: url.searchParams.get('limit'), tenant: url.searchParams.get('tenant') ?? undefined }) });
     }
     // 订阅实际消耗聚合（后台 v2）：按订阅×北京时间日，与上游快照（还剩多少）互补。
+    // bucket=hour → 小时桶（消耗趋势折线图，窗口上限 7 天）；默认日桶。
     if (url.pathname === '/api/audit/usage') {
-      return json(res, 200, audit.usageByDay({ days: url.searchParams.get('days'), tenant: url.searchParams.get('tenant') ?? undefined }));
+      const bucket = url.searchParams.get('bucket');
+      const tenant = url.searchParams.get('tenant') ?? undefined;
+      const days = url.searchParams.get('days');
+      return json(res, 200, bucket === 'hour'
+        ? audit.usageByHour({ days, tenant })
+        : audit.usageByDay({ days, tenant }));
     }
     // 系统事件流（后台 v2）：改绑/hold/泄漏命中等，观测页时间线用。kind 白名单外一律不过滤。
     if (url.pathname === '/api/events') {

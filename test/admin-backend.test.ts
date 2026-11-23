@@ -80,6 +80,50 @@ test('usageByDay: per subscription per BJT day bucket from the ledger', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('usageByHour: per subscription per BJT hour bucket with 7-day window cap', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-usage-hour-'));
+  const audit = new UsageAudit({ dbFile: path.join(dir, 'usage.db') });
+  const BJT = 8 * 3_600_000;
+  // now 取北京时间某天 13:30：当小时桶 + 前一小时桶（跨小时边界）
+  const dayStart = Math.floor((Date.now() + BJT) / 86_400_000) * 86_400_000 - BJT; // 今天 BJT 00:00 (epoch 语义近似)
+  const now = dayStart + 13 * 3_600_000 + 30 * 60_000;
+  const h13 = dayStart + 13 * 3_600_000;
+  const h12 = dayStart + 12 * 3_600_000;
+  const yesterday15 = dayStart - 86_400_000 + 15 * 3_600_000;
+  audit.record({ ts: h13 + 60_000, identity: 's', identity_kind: 'session', subscription: 'sub-a', status: 200 },
+    { prompt_tokens: 100, completion_tokens: 10 });
+  audit.record({ ts: h13 + 120_000, tenant: 'hermes', identity: 's', identity_kind: 'session', subscription: 'sub-a', status: 403 }, null);
+  audit.record({ ts: h12 + 60_000, identity: 's', identity_kind: 'session', subscription: 'sub-b', status: 200 },
+    { prompt_tokens: 40, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 30 } });
+  audit.record({ ts: yesterday15, identity: 's', identity_kind: 'session', subscription: 'sub-a', status: 200 },
+    { prompt_tokens: 5, completion_tokens: 1 });
+  const hour = audit.usageByHour({ days: 7, now });
+  assert.equal(hour.granularity, 'hour');
+  assert.equal(hour.day_boundary, 'Asia/Shanghai (UTC+8)');
+  assert.equal(hour.hours.length, 168); // 7 天 = 168 个小时桶
+  // 标签形如 YYYY-MM-DDTHH，且最新桶是 now 所在小时
+  assert.match(hour.hours[0], /^\d{4}-\d{2}-\d{2}T\d{2}$/);
+  const subA = hour.subscriptions.find((s) => s.subscription === 'sub-a');
+  const subB = hour.subscriptions.find((s) => s.subscription === 'sub-b');
+  assert.ok(subA && subB);
+  assert.equal(subA.total.requests, 3);
+  assert.equal(subA.total.errors, 1);
+  assert.equal(subA.total.total_tokens, 116); // 110（今天）+ 6（昨天 15 时）
+  assert.equal(Object.keys(subA.by_hour).length, 2); // 两个有数据的桶：h13 两行合一桶 + 昨天 15 时
+  assert.equal(subA.by_hour[hourLabel(h13)].requests, 2);
+  assert.equal(subB.by_hour[hourLabel(h12)].total_tokens, 44);
+  assert.equal(subB.by_hour[hourLabel(h12)].cache_hit_tokens, 30);
+  // 窗口上限：days 超喂也被压到 7 天
+  assert.equal(audit.usageByHour({ days: 30, now }).hours.length, 168);
+  // 租户过滤
+  assert.equal(audit.usageByHour({ days: 7, tenant: 'hermes', now }).subscriptions[0].total.requests, 1);
+  audit.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+  function hourLabel(ts: number): string {
+    return new Date(Math.floor((ts + BJT) / 3_600_000) * 3_600_000 - BJT).toISOString().slice(0, 13);
+  }
+});
+
 test('listSessionsPaged: sort by computed full_miss_rate with null-last and pagination', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-sessions-paged-'));
   const audit = new UsageAudit({ dbFile: path.join(dir, 'usage.db') });
@@ -132,10 +176,14 @@ test('admin v2 HTTP: paged endpoints, usage aggregation, events whitelist and st
   assert.equal(sessionsPaged.total, 1);
   assert.equal(sessionsPaged.sessions[0].requests, 2);
 
-  // 订阅实际消耗聚合端点
+  // 订阅实际消耗聚合端点（日桶 + 小时桶两种粒度）
   const usage = await fetch(`${root}/api/audit/usage?days=7`).then((r) => r.json());
   assert.equal(usage.subscriptions[0].subscription, 'sub-a');
   assert.equal(usage.subscriptions[0].total.requests, 2);
+  const usageHour = await fetch(`${root}/api/audit/usage?bucket=hour&days=7`).then((r) => r.json());
+  assert.equal(usageHour.granularity, 'hour');
+  assert.ok(usageHour.hours.length <= 168); // 小时桶窗口硬上限 7 天
+  assert.equal(usageHour.subscriptions[0].total.requests, 2); // 同账本同口径
 
   // 事件端点：kind 白名单内过滤；白名单外回落全量（不 500）
   await fetch(`${root}/api/events`).then(async (r) => { assert.equal(r.status, 200); return r.json(); });

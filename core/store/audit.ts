@@ -19,6 +19,15 @@ export interface TokenFields {
   cache_observed: boolean;
 }
 
+// 消耗聚合桶（usageByDay / usageByHour 共用一行的形状）。
+export interface UsageAgg {
+  requests: number;
+  errors: number;
+  total_tokens: number;
+  cache_hit_tokens: number;
+  cache_miss_tokens: number;
+}
+
 export function tokenFields(usage: ChatUsage | null | undefined): TokenFields {
   const source = record(usage);
   const details = record(source.prompt_tokens_details ?? source.input_tokens_details);
@@ -248,44 +257,77 @@ export class UsageAudit {
   // 订阅实际消耗聚合（后台 v2）：账本 requests 按订阅×北京时间日聚合。
   // 上游快照是「配额还剩多少」，这里是「这几天实际烧了多少」——两个口径互补，不互相替代。
   usageByDay({ days = 7, tenant, now = Date.now() }: { days?: number | string | null; tenant?: string; now?: number } = {}): {
-    days: string[]; subscriptions: { subscription: string; by_day: Record<string, { requests: number; errors: number; total_tokens: number; cache_hit_tokens: number; cache_miss_tokens: number }>; total: { requests: number; errors: number; total_tokens: number; cache_hit_tokens: number; cache_miss_tokens: number } }[];
+    days: string[]; subscriptions: { subscription: string; by_day: Record<string, UsageAgg>; total: UsageAgg }[];
     day_boundary: string;
   } {
-    return this.#read({ days: [] as string[], subscriptions: [], day_boundary: 'Asia/Shanghai (UTC+8)' }, (db) => {
-      const window = Math.max(1, Math.min(90, Math.trunc(Number(days) || 7)));
-      // 北京时间日切：桶边界 = ts + 8h 后取整天数；桶序号转回日期串时减回 8h。
+    const agg = this.#usageAgg({ days, tenant, now, unitMs: 86_400_000 });
+    return {
+      days: agg.labels,
+      subscriptions: agg.subscriptions.map(({ subscription, by_bucket, total }) => ({ subscription, by_day: by_bucket, total })),
+      day_boundary: agg.day_boundary,
+    };
+  }
+
+  // 同口径的小时桶版（消耗趋势折线图用）：桶边界 = ts + 8h 后取整小时。
+  // 窗口硬上限 7 天（168 桶）——小时桶点数密集，放更宽只会糊成噪声。
+  usageByHour({ days = 7, tenant, now = Date.now() }: { days?: number | string | null; tenant?: string; now?: number } = {}): {
+    hours: string[]; subscriptions: { subscription: string; by_hour: Record<string, UsageAgg>; total: UsageAgg }[];
+    granularity: 'hour'; day_boundary: string;
+  } {
+    const agg = this.#usageAgg({ days, tenant, now, unitMs: 3_600_000, maxWindowDays: 7 });
+    return {
+      hours: agg.labels,
+      subscriptions: agg.subscriptions.map(({ subscription, by_bucket, total }) => ({ subscription, by_hour: by_bucket, total })),
+      granularity: 'hour',
+      day_boundary: agg.day_boundary,
+    };
+  }
+
+  // usageByDay / usageByHour 共享内核：unitMs 决定桶宽（日/小时），标签都是「ts+8h 后取整」
+  // 再转回的 UTC 形式（日 = YYYY-MM-DD，小时 = YYYY-MM-DDTHH），前端按 BJT 展示。
+  #usageAgg({ days, tenant, now, unitMs, maxWindowDays = 90 }: {
+    days?: number | string | null; tenant?: string; now: number; unitMs: number; maxWindowDays?: number;
+  }): {
+    labels: string[]; subscriptions: { subscription: string; by_bucket: Record<string, UsageAgg>; total: UsageAgg }[];
+    day_boundary: string;
+  } {
+    return this.#read({ labels: [] as string[], subscriptions: [], day_boundary: 'Asia/Shanghai (UTC+8)' }, (db) => {
+      const windowDays = Math.max(1, Math.min(maxWindowDays, Math.trunc(Number(days) || 7)));
+      const buckets = Math.max(1, Math.round(windowDays * 86_400_000 / unitMs));
+      // 北京时间桶切：桶边界 = ts + 8h 后取整桶数；桶序号转回标签时减回 8h。
       const BJT_OFFSET_MS = 8 * 3_600_000;
-      const since = now - window * 86_400_000;
+      const since = now - windowDays * 86_400_000;
       const scope = tenant === undefined ? '' : ' AND tenant = ?';
       const args = tenant === undefined ? [] : [tenant];
       const rows = db.prepare(`SELECT subscription,
-        CAST((ts + ${BJT_OFFSET_MS}) / 86400000 AS INTEGER) AS day_index,
+        CAST((ts + ${BJT_OFFSET_MS}) / ${unitMs} AS INTEGER) AS bucket_index,
         COUNT(*) AS requests, SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END) AS errors,
         SUM(COALESCE(total_tokens,0)) AS total_tokens, SUM(COALESCE(cache_hit_tokens,0)) AS cache_hit_tokens,
         SUM(COALESCE(cache_miss_tokens,0)) AS cache_miss_tokens
         FROM requests WHERE ts >= ?${scope}
-        GROUP BY subscription, day_index ORDER BY day_index DESC`).all(since, ...(args as never[])) as unknown as Array<{
-        subscription: unknown; day_index: unknown; requests: number; errors: number; total_tokens: number; cache_hit_tokens: number; cache_miss_tokens: number;
+        GROUP BY subscription, bucket_index ORDER BY bucket_index DESC`).all(since, ...(args as never[])) as unknown as Array<{
+        subscription: unknown; bucket_index: unknown; requests: number; errors: number; total_tokens: number; cache_hit_tokens: number; cache_miss_tokens: number;
       }>;
-      const todayIndex = Math.floor((now + BJT_OFFSET_MS) / 86_400_000);
+      const nowIndex = Math.floor((now + BJT_OFFSET_MS) / unitMs);
+      const labelLen = unitMs >= 86_400_000 ? 10 : 13;
       const labels: string[] = [];
-      for (let i = 0; i < window; i++) {
-        labels.push(new Date((todayIndex - i) * 86_400_000 - BJT_OFFSET_MS).toISOString().slice(0, 10));
+      for (let i = 0; i < buckets; i++) {
+        labels.push(new Date((nowIndex - i) * unitMs - BJT_OFFSET_MS).toISOString().slice(0, labelLen));
       }
-      const labelOf = new Map(labels.map((label, i) => [todayIndex - i, label]));
-      interface SubDay { subscription: string; by_day: Record<string, { requests: number; errors: number; total_tokens: number; cache_hit_tokens: number; cache_miss_tokens: number }>; total: { requests: number; errors: number; total_tokens: number; cache_hit_tokens: number; cache_miss_tokens: number } }
-      const bySub = new Map<string, SubDay>();
+      const labelOf = new Map(labels.map((label, i) => [nowIndex - i, label]));
+      interface SubBucket { subscription: string; by_bucket: Record<string, UsageAgg>; total: UsageAgg }
+      const bySub = new Map<string, SubBucket>();
       for (const row of rows) {
         const subscription = String(row.subscription ?? 'unknown');
-        const label = labelOf.get(Number(row.day_index));
+        const label = labelOf.get(Number(row.bucket_index));
         if (!label) continue;
-        const entry = bySub.get(subscription) ?? { subscription, by_day: {}, total: { requests: 0, errors: 0, total_tokens: 0, cache_hit_tokens: 0, cache_miss_tokens: 0 } };
-        const day = { requests: Number(row.requests) || 0, errors: Number(row.errors) || 0, total_tokens: Number(row.total_tokens) || 0, cache_hit_tokens: Number(row.cache_hit_tokens) || 0, cache_miss_tokens: Number(row.cache_miss_tokens) || 0 };
-        entry.by_day[label] = day;
-        for (const k of Object.keys(entry.total) as (keyof typeof day)[]) entry.total[k] += day[k];
+        const entry = bySub.get(subscription) ?? { subscription, by_bucket: {}, total: { requests: 0, errors: 0, total_tokens: 0, cache_hit_tokens: 0, cache_miss_tokens: 0 } };
+        const bucket: UsageAgg = { requests: Number(row.requests) || 0, errors: Number(row.errors) || 0, total_tokens: Number(row.total_tokens) || 0, cache_hit_tokens: Number(row.cache_hit_tokens) || 0, cache_miss_tokens: Number(row.cache_miss_tokens) || 0 };
+        entry.by_bucket[label] = bucket;
+        for (const k of Object.keys(entry.total) as (keyof UsageAgg)[]) entry.total[k] += bucket[k];
         bySub.set(subscription, entry);
       }
-      return { days: labels, subscriptions: [...bySub.values()], day_boundary: 'Asia/Shanghai (UTC+8)' };
+      return { labels, subscriptions: [...bySub.values()], day_boundary: 'Asia/Shanghai (UTC+8)' };
     });
   }
 
