@@ -14,5 +14,7 @@ Blocked by: (none)
 
 ## Comments
 
-- 验证：`npm run typecheck` 0 错；`node --test` 全量绿（见 WORKLOG 当次记录的通过数）。
+- 验证：`npm run typecheck` 0 错；`node --test` 全量 220/220 绿（worktree 分支与合并后 master 各跑一遍）。
+- commit 53bef47（分支 no-identity-reject）→ merge 20fa80d，master 已推 origin（184a61f..20fa80d）。
 - 没做的验证：未对存量生产 DB 做迁移演练（本票明确不做数据迁移，历史 address 行查询路径未动）。
+- 意外改动面：8 个既有测试依赖 address 兜底（无头无 messages 期待 200）——capture.test.ts shape guard 改口径为「本地 400 不捕获」，gateway/numeric-time/family-protocol SSE 用例补会话头，routing-score 默认体补 user 消息；均保留原测试意图。
