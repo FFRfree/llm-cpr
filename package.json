@@ -9,11 +9,19 @@
   "bin": {
     "cpr": "scripts/cpr.js"
   },
+  "imports": {
+    "#pc": "./vendor/picocolors/picocolors.js"
+  },
+  "vendoredDependencies": [
+    "picocolors"
+  ],
   "files": [
     "core",
     "static",
+    "vendor",
     "scripts/cpr.js",
     "scripts/cpr.ts",
+    "scripts/vendor.ts",
     "policy.example.ts",
     ".env.example",
     "package.json"
@@ -21,10 +29,12 @@
   "scripts": {
     "start": "node core/main.ts",
     "test": "node --test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "vendor": "node scripts/vendor.ts"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
+    "picocolors": "^1.1.1",
     "typescript": "5.9.3"
   }
 }

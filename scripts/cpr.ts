@@ -27,6 +27,9 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import readline from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
+// 第三方运行时依赖经 vendor 接缝进包（ADR-0010）：#pc → package.json "imports" → vendor/picocolors 源码副本，
+// 版本正本在 devDependencies（npm run vendor 重建 vendor/）。非 TTY（管道/测试）下 picocolors 自动退纯文本。
+import pc from '#pc';
 
 const BRAND = 'llm-cpr'; // 身份面：unit 名（llm-cpr.service）与 launcher label 沿用短名
 // npm 包名（registry 面，工单 11）：scoped 名 = ffrfree 用户名空间——npm 允许用户直接以自己
@@ -50,7 +53,7 @@ function sh(command: string, cwd: string): RunResult {
 }
 
 function die(message: string): never {
-  console.error(`cpr: ${message}`);
+  console.error(pc.red(`cpr: ${message}`));
   process.exit(1);
 }
 
@@ -375,7 +378,7 @@ async function bootSmoke(root: string): Promise<boolean> {
       out += String(chunk);
       const match = /admin listening on (\S+)/.exec(out);
       if (match) {
-        console.log(`cpr: 冒烟通过（${match[1]}）`);
+        console.log(pc.green(`cpr: 冒烟通过（${match[1]}）`));
         finish(true);
       }
     });
@@ -394,7 +397,7 @@ async function bootSmoke(root: string): Promise<boolean> {
 async function doctor(): Promise<number> {
   const root = pkgRoot();
   const node = nodeRequirement(root);
-  console.log(`NODE=${node.have}${node.ok ? ' OK' : ` 不满足（要求 ${node.want}）`}`);
+  console.log(`NODE=${node.have}${node.ok ? pc.green(' OK') : pc.red(` 不满足（要求 ${node.want}）`)}`);
   console.log(`PKGROOT=${root}`);
   const isClone = fs.existsSync(path.join(root, '.git'));
   const installed = installedVersion();

@@ -34,6 +34,8 @@ function makeFixture(t: TestContext): Fixture {
   fs.mkdirSync(path.join(work, 'scripts'), { recursive: true });
   fs.cpSync(path.join(REPO, 'scripts', 'cpr.ts'), path.join(work, 'scripts', 'cpr.ts'));
   fs.cpSync(path.join(REPO, 'scripts', 'cpr.js'), path.join(work, 'scripts', 'cpr.js'));
+  // cpr.ts 顶部 import '#pc'（vendor 接缝，ADR-0010）：fixture 是最小包根，vendor/ 必须随 package.json 一起到位。
+  fs.cpSync(path.join(REPO, 'vendor'), path.join(work, 'vendor'), { recursive: true });
   fs.cpSync(path.join(REPO, 'package.json'), path.join(work, 'package.json'));
   fs.cpSync(path.join(REPO, '.env.example'), path.join(work, '.env.example'));
   fs.mkdirSync(path.join(work, 'core', 'policy'), { recursive: true });

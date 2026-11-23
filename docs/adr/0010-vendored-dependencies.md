@@ -1,0 +1,3 @@
+# 第三方运行时依赖走 vendor 随包发布，不打 bundle
+
+引第三方运行时依赖时，不进 `dependencies`、不在发布时打 bundle：依赖源码经 `npm run vendor`（清单 = package.json `vendoredDependencies`，版本唯一正本 = devDependencies）整目录拷进 `vendor/` 随包发布，业务代码一律经 package.json `imports` 的 `#别名`（如 `#pc`）引用，不写 vendor/ 深路径。取舍：换来发布物可读可审计（原始源码与 LICENSE 原样随包，用户拿到的每个字节都能直接读）与「仓库零构建」贯彻到发布（publish 即 commit）；代价是升级依赖要手动重拷（vendor/ 的 diff 进 git 历史）、安全更新无人推送。机制红线：`dependencies` 必须恒为空——`scripts/cpr.js` bootstrap 把包搬离 node_modules 后会清掉 npm 落的整个 lib/，运行时依赖装上即被删，vendor 是第三方代码进包的唯一通道（`test/vendor.test.ts` 守着）。反悔条件：依赖涨到 4-5 个以上、或引更新频繁的活库、或需要原生扩展模块时，改走发布时 esbuild 打包（`#别名` 接缝保证业务代码零改动）。
