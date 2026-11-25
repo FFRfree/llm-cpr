@@ -6,55 +6,60 @@
 <title>轨迹 · LLM CPR 后台</title>
 <link rel="stylesheet" href="/assets/app.css">
 <style>
-/* trajectory-gitgraph 票 02 改版：两列布局——左会话，右主面板（消息树 / 消息列表切换）。
-   节点 = 一个消息前缀（一次「对话状态」）；同一前缀的重试收进 ×N 节点；
-   分叉 = 曲线岔出到新泳道；分支栏勾选决定画哪些链（主干 = 最长链，也算一条分支）。
-   正文走右侧抽屉浮层（点树节点或列表行打开），不再单占一列。 */
+/* trajectory-gitgraph v4：树/列表融合成一张 git-graph 式清单（参考 git graph 扩展）。
+   每行 = 泳道切片 SVG（圆点+轨道竖线+分叉斜线）+ 彩色角色 pill + 一句话摘要；
+   点行在图内原地展开该轮新增的正文（不再弹整条消息数组的抽屉）；
+   分支选择收成顶部一排小 chips（点 chip 显隐分支，主干 = 最长链也算一条）。 */
 .traj{grid-template-columns:230px 1fr}
 #pane-main{min-width:0}
-#main-bar{display:flex;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+#main-bar{display:flex;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--border)}
 #main-bar .fam{font-size:11px;color:var(--muted);flex:1;min-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.vswitch{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;flex-shrink:0}
-.vswitch button{background:none;border:none;color:var(--muted);padding:4px 12px;cursor:pointer;font-size:12px}
-.vswitch button.on{color:var(--text);background:var(--hover)}
 #traj-branchbar{border-bottom:1px solid var(--border);font-size:12px}
-#traj-branchbar .bh{display:flex;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--border)}
+#traj-branchbar .bh{display:flex;gap:8px;align-items:center;padding:5px 10px 2px}
 #traj-branchbar .bh b{font-size:11px;color:var(--text-2)}
-#traj-branchbar .bh button{margin-left:auto;background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:2px 8px;cursor:pointer;font-size:11px}
+#traj-branchbar .bh button{margin-left:auto;background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:1px 8px;cursor:pointer;font-size:11px}
 #traj-branchbar .bh button:hover{color:var(--text);border-color:var(--border-strong)}
-.bitem{display:flex;gap:7px;padding:6px 10px;border-bottom:1px solid var(--border);cursor:pointer;align-items:flex-start}
-.bitem:hover{background:var(--hover)}
-.bitem.off{opacity:.38}
-.bitem input{margin-top:3px;accent-color:var(--success);flex-shrink:0}
-.bitem .tx{flex:1;min-width:0;overflow:hidden}
-.bitem .tx .l1{font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.bitem .tx .l2{font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.gwrap{overflow-x:auto;max-width:100%}
-#gtraj-svg g.nodeg{cursor:pointer}
-#gtraj-svg g.nodeg:hover .hitrect{fill:var(--hover)}
-#gtraj-svg g.nodeg.cur circle.dot{stroke:var(--text);stroke-width:2}
-.traj-note2{padding:6px 10px;font-size:10px;color:var(--muted);border-bottom:1px solid var(--border)}
-/* 列表视图 */
-.lrow{display:flex;gap:8px;align-items:center;padding:7px 10px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px}
-.lrow:hover,.lrow.cur{background:var(--hover)}
-.lrow .st{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:var(--muted)}
-.lrow .idx{font-family:var(--mono);color:var(--muted);width:44px;flex-shrink:0}
-.lrow .tm{font-family:var(--mono);width:66px;flex-shrink:0}
-.lrow .tk{font-size:10px;color:var(--muted);border:1px solid var(--border);border-radius:6px;padding:0 5px;font-family:var(--mono);flex-shrink:0;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.lrow .tx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-2)}
-.lrow .by{font-family:var(--mono);color:var(--muted);flex-shrink:0}
-/* 抽屉：正文浮层 */
-#drawer{position:fixed;top:0;right:0;bottom:0;width:min(560px,94vw);background:var(--surface);border-left:1px solid var(--border-strong);box-shadow:-8px 0 24px rgba(0,0,0,.25);z-index:60;display:flex;flex-direction:column}
-#drawer.hidden{display:none}
-#dhead{padding:10px 14px;border-bottom:1px solid var(--border);flex-shrink:0}
-#dhead .dtitle{font-size:12px;font-weight:700;margin-bottom:6px;word-break:break-all}
-#dclose{float:right;background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:1px 8px;cursor:pointer}
-#dclose:hover{color:var(--text)}
-#dbody{overflow-y:auto;flex:1;padding:0 0 40px}
-#attempt-strip{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 0}
-#attempt-strip button{background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:2px 9px;cursor:pointer;font-size:11px;font-family:var(--mono)}
-#attempt-strip button.on{color:var(--text);border-color:var(--border-strong);background:var(--hover)}
-#attempt-strip i{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:3px}
+.bchips{display:flex;flex-wrap:wrap;gap:5px;padding:2px 10px 7px}
+.bchip{display:inline-flex;align-items:center;gap:5px;max-width:250px;background:none;border:1px solid var(--border);border-radius:20px;padding:1px 9px 1px 7px;cursor:pointer;font-size:11px;color:var(--text-2)}
+.bchip i{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:var(--muted)}
+.bchip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.bchip em{font-style:normal;font-family:var(--mono);font-size:10px;color:var(--muted);flex-shrink:0}
+.bchip.on{border-color:var(--border-strong);color:var(--text)}
+.bchip.off{opacity:.35}
+.bchip.dis{opacity:.22;cursor:default}
+.traj-note2{padding:5px 10px;font-size:10px;color:var(--muted);border-bottom:1px solid var(--border)}
+/* 图行：泳道切片 + 两行内容（摘要 / 元信息），行高固定保证竖线切片对齐 */
+.grow{display:flex;align-items:stretch;border-bottom:1px solid var(--border);cursor:pointer;min-width:0}
+.grow:hover,.grow.cur{background:var(--hover)}
+.grow .rail{flex-shrink:0;display:block}
+.gcell{flex:1;min-width:0;padding:6px 10px 5px 0}
+.gl1{display:flex;gap:7px;align-items:center;height:18px;min-width:0}
+.pill{flex-shrink:0;color:var(--surface);border-radius:5px;padding:0 6px;font-size:10px;font-weight:700;line-height:15px;min-width:34px;text-align:center;text-transform:lowercase}
+.gsum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--text)}
+.xb{flex-shrink:0;font-size:10px;font-family:var(--mono);border:1px solid var(--border);border-radius:6px;padding:0 5px}
+.gl2{display:flex;gap:8px;align-items:center;height:15px;font-size:10px;color:var(--muted);font-family:var(--mono);min-width:0;margin-top:2px}
+.gl2 .tm,.gl2 .stt,.gl2 .sp{flex-shrink:0}
+.gl2 .stt{font-weight:700}
+.gl2 .tk{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 行内展开：正文面板（只装该轮新增的消息） */
+.gdetail{border-bottom:1px solid var(--border);background:var(--hover);display:flex;min-width:0}
+.gdetail .railc{position:relative;flex-shrink:0}
+.rv{position:absolute;top:0;bottom:0;width:1.5px;opacity:.45}
+.gbody{flex:1;min-width:0;padding:6px 10px 12px 0}
+.phead{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--muted);padding:2px 0 6px}
+.phead .pnum{font-weight:700;color:var(--text-2)}
+.phead .pmeta{font-family:var(--mono);font-size:10px}
+.ptgl{margin-left:auto;display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;flex-shrink:0}
+.ptgl button{background:none;border:none;color:var(--muted);font-size:10px;padding:2px 9px;cursor:pointer}
+.ptgl button.on{color:var(--text);background:var(--surface)}
+.pstrip{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:2px 0 6px;font-size:11px;color:var(--muted)}
+.pstrip button{background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:1px 8px;cursor:pointer;font-size:11px;font-family:var(--mono)}
+.pstrip button.on{color:var(--text);border-color:var(--border-strong);background:var(--surface)}
+.pstrip i{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:3px}
+.pload{padding:10px 0;font-size:12px;color:var(--muted)}
+.pmsg{max-height:420px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.pmsg .msg{padding:8px 12px}
+.pmsg pre{max-height:240px;overflow:auto}
 @media (max-width:760px){.traj{grid-template-columns:1fr}}
 </style>
 </head>
@@ -63,8 +68,9 @@
 <h2>轨迹查看器</h2>
 <p class="muted" style="font-size:12px;margin:0 0 4px">
   会话内每条请求是往同一棵「消息前缀树」上走一步：节点 = 一个消息前缀（对话状态），连线 = 追加消息，
-  分叉 = 同一前缀拐出不同走向，同一前缀的重试收进 ×N 节点。左列挑会话 → 右侧切「消息树」
-  （分支可勾选，主干 = 最长链，也是一条分支）或「消息列表」（按轮平铺）→ 点开看该状态任意一次尝试的完整正文。
+  分叉 = 同一前缀拐出不同走向，同一前缀的重试收进 ×N 节点。左列挑会话 → 右侧一张 git-graph 式清单
+  （树即列表）：每行一句摘要说明这条消息干了什么，点行在图内直接展开该轮新增的正文；
+  分支收成顶部一排 chips，点 chip 显隐对应分支（主干 = 最长链，也是一条分支）。
 </p>
 <div class="toolbar">
   <input id="f-search" type="search" placeholder="会话 ID 过滤…" autocomplete="off">
@@ -76,38 +82,26 @@
     <ul id="traj-sessions"></ul>
   </section>
   <section id="pane-main">
-    <div id="main-bar">
-      <div class="vswitch">
-        <button data-view="tree" class="on">消息树</button>
-        <button data-view="list">消息列表</button>
-      </div>
-      <div class="fam" id="traj-family">挑一个会话</div>
-    </div>
+    <div id="main-bar"><div class="fam" id="traj-family">挑一个会话</div></div>
     <div id="traj-branchbar" hidden></div>
     <div id="traj-main"><div class="empty" style="padding:20px;text-align:center">选一个会话</div></div>
   </section>
 </div>
 </main>
 
-<aside id="drawer" class="hidden" aria-hidden="true">
-  <div id="dhead">
-    <button id="dclose" type="button">✕ 关闭</button>
-    <div class="dtitle" id="dtitle"></div>
-    <div id="attempt-strip" hidden></div>
-  </div>
-  <div id="dbody"></div>
-</aside>
-
 <script src="/assets/app.js"></script>
 <script>
 'use strict';
 const state = { sessions: [], identity: null, tenant: null, turns: [], turnId: null,
   chainByTurn: new Map(), chain: [], forest: null, branches: [], sel: {}, statusByCapture: new Map(),
-  roleByHash: new Map(), previewByNode: new Map(), outOfWindow: 0, view: 'tree' };
+  roleByHash: new Map(), previewByNode: new Map(), outOfWindow: 0,
+  expanded: new Set(), attempt: new Map(), panelAll: new Map(), bodies: new Map(), pvPending: new Set(), graph: null };
 // 泳道配色（亮暗两套主题下都可见）。
 const RAILS = ['#3fae7a', '#d29a3a', '#5b8def', '#9a6fd0', '#d05b6a', '#3a9ad2', '#7aa23f', '#b06fd0'];
+const LANE_W = 22, ROW_H = 46, DOT_R = 6, DOT_Y = 16, RAIL_PAD = 14, MAX_LANES = 8;
 const fmtTime = (ts) => ts ? new Date(ts).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
 const stCol = (s) => s == null ? 'var(--muted)' : (s < 300 ? 'var(--success)' : s === 499 ? 'var(--muted)' : 'var(--danger)');
+const ROLE_COL = { user: 'var(--accent-bright, #5b8def)', assistant: 'var(--success)', tool: 'var(--muted)', system: 'var(--warning)' };
 
 /* ---- 左列：会话清单（不变） ---- */
 async function loadSessions() {
@@ -210,51 +204,97 @@ function buildForest(chain, threadLabels) {
   state.branches = branches;
 }
 
-/* ---- 主面板：视图切换 ---- */
-function setView(view) {
-  state.view = view;
-  $$('#main-bar .vswitch button').forEach((b) => b.classList.toggle('on', b.dataset.view === view));
-  $('#traj-branchbar').hidden = view !== 'tree';
-  renderMain();
-}
-function renderMain() {
-  if (!state.forest) return;
-  $('#traj-branchbar').hidden = state.view !== 'tree'; // 初次装载时摘掉模板里的 hidden 属性
-  if (state.view === 'tree') { renderBranchbar(); renderTree(); }
-  else renderList();
-  markCur();
-}
-/* 列表视图：全部轮次按旧→新平铺（编号与树的 ts 序一致），点行开抽屉 */
-function renderList() {
-  const oldToNew = state.turns.slice().reverse();
-  const byId = new Map(oldToNew.map((t, i) => [t.id, i + 1]));
-  const chainIdx = new Map(state.chain.map((e, i) => [e.id, i]));
-  $('#traj-main').innerHTML =
-    (state.outOfWindow ? `<div class="traj-note2">${state.outOfWindow} 轮在 500 轮取证窗口外（编号按窗口内）。</div>` : '') +
-    oldToNew.map((t) => {
-      const e = chainIdx.has(t.id) ? state.chain[chainIdx.get(t.id)] : null;
-      const st = state.statusByCapture.get(t.capture_id)?.status;
-      const dups = e?.common_prefix_in_thread;
-      return `<div class="lrow" data-turn="${t.id}">` +
-        `<span class="st" style="background:${stCol(st)}"></span>` +
-        `<span class="idx">#${byId.get(t.id)}</span>` +
-        `<span class="tm">${fmtTime(t.ts)}</span>` +
-        `<span class="tk">${esc(String(e?.thread_key ?? '').slice(0, 10))}</span>` +
-        `<span class="tx">${dups != null ? `同前 ${dups} 条 · ` : ''}${e?.first_diff_in_thread_role ? `[${esc(e.first_diff_in_thread_role)}]` : ''}</span>` +
-        `<span class="by">${Math.round(t.bytes / 1024)}KB</span>` +
-        `</div>`;
-    }).join('');
-  $$('#traj-main .lrow').forEach((el) => el.addEventListener('click', () => openDrawerForTurn(Number(el.dataset.turn))));
-}
-function markCur() {
-  $$('#gtraj-svg g.nodeg').forEach((g) => {
-    const n = state.forest.byId.get(Number(g.dataset.node));
-    g.classList.toggle('cur', !!n && n.turns.some((t) => t.id === state.turnId));
-  });
-  $$('#traj-main .lrow').forEach((el) => el.classList.toggle('cur', Number(el.dataset.turn) === state.turnId));
+/* ---- 可见图：泳道全局分配（跨树连续，chips 颜色与轨道一致）、行序按 ts ---- */
+function visibleGraph() {
+  const hide = hiddenSet();
+  const visible = state.forest.nodes.filter((n) => !hide.has(n.id));
+  const visIds = new Set(visible.map((n) => n.id));
+  const kids = new Map();
+  for (const n of visible) if (n.parent && visIds.has(n.parent.id)) (kids.get(n.parent.id) || kids.set(n.parent.id, []).get(n.parent.id)).push(n);
+  const roots = visible.filter((n) => !n.parent || !visIds.has(n.parent.id));
+  const sizes = state.forest.sizes;
+  let nextLane = 0;
+  const laneOf = new Map(), order = [];
+  for (const treeRoot of state.forest.roots) {
+    const treeIds = subtreeOf(treeRoot);
+    const treeRoots = roots.filter((r) => treeIds.has(r.id)).sort((a, b) => a.turns[0].ts - b.turns[0].ts);
+    if (!treeRoots.length) continue;
+    const tn = [], stack = treeRoots.slice().reverse();
+    while (stack.length) {
+      const n = stack.pop();
+      if (tn.some((x) => x.id === n.id)) continue;
+      tn.push(n);
+      (kids.get(n.id) || []).slice().reverse().forEach((c) => stack.push(c));
+    }
+    for (const r of treeRoots) laneOf.set(r.id, nextLane++);
+    for (const n of tn) {
+      const kk = (kids.get(n.id) || []).slice().sort((a, b) => sizes.get(b.id) - sizes.get(a.id));
+      kk.forEach((c, i) => laneOf.set(c.id, i === 0 ? laneOf.get(n.id) : nextLane++));
+    }
+    order.push(...tn);
+  }
+  order.sort((a, b) => a.turns[0].ts - b.turns[0].ts);
+  const rowOf = new Map(order.map((n, i) => [n.id, i]));
+  const edges = [];
+  for (const n of order) for (const c of (kids.get(n.id) || [])) edges.push({ pl: laneOf.get(n.id), cl: laneOf.get(c.id), pr: rowOf.get(n.id), cr: rowOf.get(c.id) });
+  const gapV = new Map(); // 行间隙 -> 该间隙穿过的竖线泳道集（同道父子边）
+  for (const e of edges) if (e.pl === e.cl && e.cr > e.pr) for (let g = e.pr; g < e.cr; g++) (gapV.get(g) || gapV.set(g, new Set()).get(g)).add(e.pl);
+  return { order, laneOf, kids, edges, gapV, nLanes: Math.max(1, nextLane) };
 }
 
-/* ---- 树渲染（分支栏 + git-graph） ---- */
+/* ---- 主面板 ---- */
+function renderMain() {
+  if (!state.forest) return;
+  $('#traj-branchbar').hidden = false;
+  state.graph = visibleGraph();
+  const scrollY = window.scrollY; // 状态异步补拉等触发的重绘不丢滚动位置
+  renderBranchbar();
+  renderRows();
+  window.scrollTo(0, scrollY);
+  markCur();
+}
+function markCur() {
+  $$('#traj-main .grow').forEach((el) => {
+    const n = state.forest.byId.get(Number(el.dataset.node));
+    el.classList.toggle('cur', !!n && n.turns.some((t) => t.id === state.turnId));
+  });
+}
+
+/* ---- 分支 chips（紧凑条，点 chip 显隐分支） ---- */
+function renderBranchbar() {
+  const ancHidden = (b) => {
+    if (b.trunk) return false;
+    let p = b.parent;
+    while (p) { const ab = state.branches.find((x) => !x.trunk && x.node === p); if (ab && state.sel[ab.id] === false) return true; p = p.parent; }
+    return false;
+  };
+  let chips = '';
+  for (const b of state.branches) {
+    const dis = ancHidden(b);
+    const on = !dis && state.sel[b.id] !== false;
+    const pv = state.previewByNode.get(b.node.id);
+    const label = b.trunk ? '★ 主干' : (pv || b.label || `分支 ${b.id}`).slice(0, 14);
+    const meta = b.trunk
+      ? `主干（最长链）· ${b.count} 状态 · ${fmtTime(b.ts)} 起`
+      : `⎇ 自第 ${b.forkAt} 条分出 · ${b.count} 状态 · ${fmtTime(b.ts)} 起`;
+    const lane = state.graph.laneOf.get(b.node.id);
+    const col = on && lane != null ? railCol(lane) : 'var(--muted)';
+    chips += `<button class="bchip${dis ? ' dis' : on ? ' on' : ' off'}" data-b="${esc(b.id)}"${dis ? ' disabled' : ''} title="${esc(meta)}">` +
+      `<i style="background:${col}"></i><span>${esc(label)}</span><em>${b.count}</em></button>`;
+  }
+  $('#traj-branchbar').innerHTML =
+    (state.outOfWindow ? `<div class="traj-note2">${state.outOfWindow} 轮在 500 轮取证窗口外，未入图。</div>` : '') +
+    `<div class="bh"><b>分支 ${state.branches.length}（含主干）</b><button id="ball">全选</button><button id="bnone">只看主干</button></div><div class="bchips">${chips}</div>`;
+  $$('#traj-branchbar .bchip').forEach((el) => el.addEventListener('click', () => {
+    if (el.disabled) return;
+    state.sel[el.dataset.b] = !el.classList.contains('on'); // off→on / on→off
+    renderMain();
+  }));
+  $('#ball').addEventListener('click', () => { state.branches.forEach((b) => { state.sel[b.id] = true; }); renderMain(); });
+  $('#bnone').addEventListener('click', () => { state.branches.forEach((b) => { state.sel[b.id] = !!b.trunk; }); renderMain(); });
+}
+
+/* ---- 隐藏集 / 泳道色 ---- */
 function hiddenSet() {
   const hide = new Set();
   for (const [id, on] of Object.entries(state.sel)) {
@@ -274,58 +314,6 @@ function retryColor(list) {
   if (st.length && st.every((s) => s != null && s >= 400 && s !== 499)) return 'var(--danger)';
   return 'var(--warning)';
 }
-function renderBranchbar() {
-  const ancHidden = (b) => {
-    if (b.trunk) return false;
-    let p = b.parent;
-    while (p) { const ab = state.branches.find((x) => !x.trunk && x.node === p); if (ab && state.sel[ab.id] === false) return true; p = p.parent; }
-    return false;
-  };
-  const trunkCount = state.branches.filter((b) => b.trunk).length;
-  let h = `<div class="bh"><b>分支 ${state.branches.length} 条（含 ${trunkCount} 主干）</b><button id="ball">全选</button><button id="bnone">只看主干</button></div>`;
-  if (state.outOfWindow) h += `<div class="traj-note2">${state.outOfWindow} 轮在 500 轮取证窗口外，未入图。</div>`;
-  for (const b of state.branches) {
-    const dis = ancHidden(b);
-    const checked = !dis && state.sel[b.id] !== false;
-    const pv = state.previewByNode.get(b.node.id);
-    const meta = b.trunk
-      ? `主干（最长）· ${b.count} 状态 · ${fmtTime(b.ts)}起`
-      : `⎇ 第 ${b.forkAt} 条分出 · ${b.count} 状态 · ${fmtTime(b.ts)}起`;
-    h += `<label class="bitem${dis ? ' off' : ''}" data-b="${esc(b.id)}" style="padding-left:${10 + b.depth * 12}px">` +
-      `<input type="checkbox" ${checked ? 'checked' : ''}${dis ? ' disabled' : ''}>` +
-      `<span class="tx"><span class="l1">${esc((b.trunk ? '★ ' : '') + (pv || b.label || '').slice(0, 42))}</span><span class="l2">${meta}</span></span></label>`;
-  }
-  $('#traj-branchbar').innerHTML = h;
-  $$('#traj-branchbar .bitem').forEach((el) => el.addEventListener('click', () => {
-    const cb = el.querySelector('input');
-    if (cb.disabled) return;
-    state.sel[el.dataset.b] = cb.checked; // click 之后 input 已翻转，读新状态
-    renderMain();
-  }));
-  $('#ball').addEventListener('click', () => { state.branches.forEach((b) => { state.sel[b.id] = true; }); renderMain(); });
-  $('#bnone').addEventListener('click', () => { state.branches.forEach((b) => { state.sel[b.id] = !!b.trunk; }); renderMain(); });
-}
-const LANE_W = 26, ROW_H = 52, DOT_R = 7, LABEL_W = 320;
-function renderTree() {
-  const hide = hiddenSet();
-  const visible = state.forest.nodes.filter((n) => !hide.has(n.id));
-  const visIds = new Set(visible.map((n) => n.id));
-  const kids = new Map(); // 可见子关系
-  for (const n of visible) if (n.parent && visIds.has(n.parent.id)) (kids.get(n.parent.id) || kids.set(n.parent.id, []).get(n.parent.id)).push(n);
-  if (!visible.length) { $('#traj-main').innerHTML = '<div class="empty" style="padding:20px;text-align:center">没有勾选任何链——至少勾一条。</div>'; return; }
-  // 根 = 父不可见的节点（主干隐藏后各分支自成轨）；按所属树分组，一树一节
-  const roots = visible.filter((n) => !n.parent || !visIds.has(n.parent.id));
-  let out = '';
-  for (const treeRoot of state.forest.roots) {
-    const treeIds = subtreeOf(treeRoot);
-    const treeRoots = roots.filter((r) => treeIds.has(r.id));
-    if (!treeRoots.length) continue;
-    out += treeSvg(kids, treeRoots);
-  }
-  $('#traj-main').innerHTML = out || '<div class="empty">没有可展示的轮次</div>';
-  $$('#gtraj-svg g.nodeg').forEach((g) => g.addEventListener('click', () => openDrawerForNode(Number(g.dataset.node))));
-  markCur();
-}
 // 树根的全部后代 id 集
 const subtreeCache = new Map();
 function subtreeOf(root) {
@@ -334,84 +322,193 @@ function subtreeOf(root) {
   while (stack.length) { const n = stack.pop(); if (ids.has(n.id)) continue; ids.add(n.id); n.children.forEach((c) => stack.push(c)); }
   subtreeCache.set(root.id, ids); return ids;
 }
-function treeSvg(kids, rootsRaw) {
-  const roots = rootsRaw.slice().sort((a, b) => a.turns[0].ts - b.turns[0].ts);
-  const tn = [], stack = roots.slice().reverse();
-  while (stack.length) { const n = stack.pop(); if (tn.some((x) => x.id === n.id)) continue; tn.push(n); (kids.get(n.id) || []).slice().reverse().forEach((c) => stack.push(c)); }
-  tn.sort((a, b) => a.turns[0].ts - b.turns[0].ts);
-  const sizes = state.forest.sizes;
-  const lane = new Map(); let nextLane = 0;
-  for (const r of roots) lane.set(r.id, nextLane++);
-  for (const n of tn) {
-    const kk = (kids.get(n.id) || []).slice().sort((a, b) => sizes.get(b.id) - sizes.get(a.id));
-    kk.forEach((c, i) => lane.set(c.id, i === 0 ? lane.get(n.id) : nextLane++));
-  }
-  const nLanes = Math.max(1, nextLane);
-  const yOf = new Map(); tn.forEach((n, i) => yOf.set(n.id, i));
-  const H = tn.length * ROW_H + 12, LW = 16 + nLanes * LANE_W;
-  const lx = (l) => 16 + l * LANE_W;
-  let svg = `<div class="gwrap"><svg id="gtraj-svg" width="${LW + LABEL_W}" height="${H}" font-family="var(--mono)">`;
-  // 轨道
-  const laneRows = new Map();
-  for (const n of tn) { const l = lane.get(n.id); (laneRows.get(l) || laneRows.set(l, []).get(l)).push(yOf.get(n.id)); }
-  for (const [l, ys] of laneRows) { ys.sort((a, b) => a - b); if (ys.length > 1) svg += `<line x1="${lx(l)}" y1="${ys[0] * ROW_H + 30}" x2="${lx(l)}" y2="${ys[ys.length - 1] * ROW_H + 30}" stroke="${railCol(l)}" stroke-width="1.5" opacity="0.5"/>`; }
-  // 分叉曲线
-  for (const n of tn) for (const c of (kids.get(n.id) || [])) {
-    if (lane.get(c.id) === lane.get(n.id)) continue;
-    const x1 = lx(lane.get(n.id)), y1 = yOf.get(n.id) * ROW_H + 30, x2 = lx(lane.get(c.id)), y2 = yOf.get(c.id) * ROW_H + 30;
-    svg += `<path d="M${x1} ${y1} C${x1} ${y1 + 20} ${x2} ${y2 - 20} ${x2} ${y2}" stroke="${railCol(lane.get(c.id))}" stroke-width="1.5" fill="none" opacity="0.85"/>`;
-  }
-  // 节点
-  for (const n of tn) {
-    const y = yOf.get(n.id) * ROW_H + 30, x = lx(lane.get(n.id));
-    const ns = n.turns.length, dotR = DOT_R + (ns > 1 ? 2 : 0);
-    const dots = n.turns.map((t) => { const r = state.statusByCapture.get(t.capture_id); return r ? r.status : null; });
-    svg += `<g class="nodeg" data-node="${n.id}">`;
-    svg += `<rect class="hitrect" x="0" y="${y - ROW_H / 2 + 8}" width="${LW + LABEL_W}" height="${ROW_H}" fill="transparent"/>`;
-    if (ns > 1) svg += `<rect x="${x - 24}" y="${y - dotR - 13}" width="28" height="13" rx="6" fill="${retryColor(n.turns)}"/><text x="${x - 10}" y="${y - dotR - 3}" font-size="9" fill="var(--surface)" text-anchor="middle" font-weight="700">×${ns}</text>`;
-    svg += `<circle class="dot" cx="${x}" cy="${y}" r="${dotR}" fill="${railCol(lane.get(n.id))}" stroke="var(--surface)" stroke-width="1.5"/>`;
-    if ((kids.get(n.id) || []).length > 1) svg += `<path d="M${x + dotR + 2} ${y - 4} l6 4 l-6 4 z" fill="var(--warning)"/>`;
-    const t0 = n.turns[0], tN = n.turns[ns - 1];
-    let l1 = `<text x="${LW + 4}" y="${y - 3}" font-size="10"><tspan fill="var(--muted)">${fmtTime(t0.ts)}${ns > 1 ? ' → ' + fmtTime(tN.ts) : ''}</tspan>`;
-    if (ns > 1) l1 += `<tspan fill="${retryColor(n.turns)}" dx="7">${dots.map(() => '●').join('')}</tspan>`;
-    const lastStatus = state.statusByCapture.get(tN.capture_id)?.status;
-    l1 += `<tspan fill="${stCol(lastStatus)}" dx="7">${lastStatus ?? '—'}</tspan>`;
-    l1 += `<tspan fill="var(--muted)" dx="7">${Math.round(tN.bytes / 1024)}KB·${n.refs.length}条</tspan></text>`;
-    // 第二行：新增了什么——优先已知预览，否则角色 + 位置
+
+/* ---- git-graph 清单：每行 = 泳道切片 SVG + 角色 pill + 摘要；点行图内展开 ---- */
+function renderRows() {
+  const g = state.graph;
+  if (!g.order.length) { $('#traj-main').innerHTML = '<div class="empty" style="padding:20px;text-align:center">没有可展示的轮次</div>'; return; }
+  const RAILW = RAIL_PAD * 2 + Math.min(g.nLanes, MAX_LANES) * LANE_W;
+  const cx = (l) => RAIL_PAD + Math.min(l, MAX_LANES - 1) * LANE_W + LANE_W / 2;
+  const lerpX = (e, t) => cx(e.pl) + (cx(e.cl) - cx(e.pl)) * (t - e.pr) / (e.cr - e.pr);
+  let html = state.outOfWindow ? `<div class="traj-note2">${state.outOfWindow} 轮在 500 轮取证窗口外（编号按窗口内）。</div>` : '';
+  g.order.forEach((n, r) => {
+    const ns = n.turns.length, tN = n.turns[ns - 1], t0 = n.turns[0];
     const parentLen = n.parent ? n.parent.refs.length : 0;
     const addedCount = n.refs.length - parentLen;
-    const role = state.roleByHash.get(n.refs[parentLen]) ?? (n.parent ? '?' : 'S');
+    const role = String(state.roleByHash.get(n.refs[parentLen]) ?? (n.parent ? '?' : 'S')).toLowerCase();
     const pv = state.previewByNode.get(n.id);
-    const l2 = pv ? esc(pv.slice(0, 44)) + (pv.length > 44 ? '…' : '')
-      : (n.parent ? `[${role}] 第 ${parentLen + 1} 条起 +${addedCount}` : '[S] 线程起点');
-    svg += l1;
-    svg += `<text x="${LW + 4}" y="${y + 12}" font-size="11" fill="var(--text-2)">${l2}</text>`;
-    svg += `</g>`;
+    const fallback = n.parent ? `[${role}] 第 ${parentLen + 1} 条起 +${addedCount}` : '[S] 线程起点';
+    const lastStatus = state.statusByCapture.get(tN.capture_id)?.status;
+    // 泳道切片：轨道竖线 + 分叉斜线 + 圆点 + 分叉三角
+    let s = `<svg class="rail" width="${RAILW}" height="${ROW_H}" aria-hidden="true">`;
+    const L = g.laneOf.get(n.id);
+    if (r > 0 && g.gapV.get(r - 1)?.has(L)) s += `<line x1="${cx(L)}" y1="0" x2="${cx(L)}" y2="${DOT_Y}" stroke="${railCol(L)}" stroke-width="1.5" opacity="0.5"/>`;
+    if (r < g.order.length - 1 && g.gapV.get(r)?.has(L)) s += `<line x1="${cx(L)}" y1="${DOT_Y}" x2="${cx(L)}" y2="${ROW_H}" stroke="${railCol(L)}" stroke-width="1.5" opacity="0.5"/>`;
+    for (const e of g.edges) {
+      if (e.pl === e.cl || e.pr > r || e.cr < r) continue;
+      const x1 = e.pr === r ? cx(e.pl) : lerpX(e, r), y1 = e.pr === r ? DOT_Y : 0;
+      const x2 = e.cr === r ? cx(e.cl) : lerpX(e, r + 1), y2 = e.cr === r ? DOT_Y : ROW_H;
+      s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${railCol(e.cl)}" stroke-width="1.5" opacity="0.85"/>`;
+    }
+    const dotR = DOT_R + (ns > 1 ? 2 : 0);
+    s += `<circle cx="${cx(L)}" cy="${DOT_Y}" r="${dotR}" fill="${railCol(L)}" stroke="var(--surface)" stroke-width="1.5"/>`;
+    if ((g.kids.get(n.id) || []).length > 1) s += `<path d="M${cx(L) + dotR + 3} ${DOT_Y - 4} l6 4 l-6 4 z" fill="var(--warning)"/>`;
+    s += '</svg>';
+    html += `<div class="grow" data-node="${n.id}">${s}` +
+      `<div class="gcell">` +
+      `<div class="gl1"><span class="pill" id="pl-${n.id}" style="background:${ROLE_COL[role] ?? 'var(--muted)'}">${esc(role)}</span>` +
+      `<span class="gsum" id="pv-${n.id}">${esc(pv ? pv.slice(0, 90) : fallback)}</span>` +
+      (ns > 1 ? `<span class="xb" style="color:${retryColor(n.turns)};border-color:${retryColor(n.turns)}">×${ns}</span>` : '') +
+      `</div>` +
+      `<div class="gl2"><span class="tm">${fmtTime(tN.ts)}</span><span class="stt" style="color:${stCol(lastStatus)}">${lastStatus ?? '—'}</span>` +
+      `<span class="sp">+${addedCount}</span><span class="sp">${Math.round(tN.bytes / 1024)}KB</span>` +
+      (ns > 1 ? `<span class="sp">${fmtTime(t0.ts)}→</span>` : '') +
+      `<span class="tk">${esc(String(n.threadKey ?? '').slice(0, 14))}</span></div></div></div>`;
+    if (state.expanded.has(n.id)) html += `<div class="gdetail" data-node="${n.id}"><div class="railc" style="width:${RAILW}px">` + railCont(r, RAILW) + `</div><div class="gbody"><div class="pload">加载中…</div></div></div>`;
+  });
+  $('#traj-main').innerHTML = html;
+  $$('#traj-main .grow').forEach((el) => el.addEventListener('click', () => toggleNode(Number(el.dataset.node))));
+  for (const id of state.expanded) {
+    const row = $(`#traj-main .grow[data-node="${id}"]`);
+    const panel = $(`#traj-main .gdetail[data-node="${id}"]`);
+    const n = state.forest.byId.get(id);
+    if (row && panel && n) loadPanel(n, panel); // 展开态重渲染后回填（正文走缓存）
   }
-  svg += '</svg></div>';
-  return svg;
 }
-/* 链根预览：懒取正文（链数通常个位数） */
-async function loadPreviews() {
-  const want = state.branches.filter((b) => !state.previewByNode.has(b.node.id) && !state.previewByNode.has('pend:' + b.node.id));
-  for (const b of want.slice(0, 12)) {
-    state.previewByNode.set('pend:' + b.node.id, 1);
-    try {
-      const n = b.node;
-      const parentLen = n.parent ? n.parent.refs.length : 0;
-      const data = await fetchJson(`/api/capture/turns/${n.turns[0].id}`);
-      const msgs = data.body?.messages || [];
-      for (let i = 0; i < msgs.length && i < (data.refs || []).length; i++) state.roleByHash.set(data.refs[i], String(msgs[i].role ?? '?'));
-      const added = msgs.slice(parentLen)
-        .filter((m) => { const r = String(m.role ?? ''); return r === 'user' || r === 'assistant'; })
-        .map((m) => {
-          const c = typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.filter((p) => p?.type === 'text').map((p) => p.text).join(' ') : '';
-          return String(c).replace(/\s+/g, ' ').trim();
-        }).filter(Boolean).slice(0, 2).join(' ／ ');
-      state.previewByNode.set(n.id, added || `+${n.refs.length - parentLen} 条（无文本）`);
-    } catch { /* 预览失败不挡轨迹 */ }
+// 展开面板左缘的轨道延续：该行间隙里穿过的竖线用绝对定位 div 拉满整块高度
+function railCont(r, railw) {
+  const g = state.graph;
+  const cx = (l) => RAIL_PAD + Math.min(l, MAX_LANES - 1) * LANE_W + LANE_W / 2;
+  let h = `<svg width="${railw}" height="${ROW_H}" aria-hidden="true">`;
+  const set = g.gapV.get(r) || new Set();
+  for (const e of g.edges) if (e.pl !== e.cl && e.pr <= r && e.cr >= r + 1) {
+    const x1 = cx(e.pl) + (cx(e.cl) - cx(e.pl)) * (r + 1 - e.pr) / (e.cr - e.pr);
+    const x2 = e.cr === r + 1 ? cx(e.cl) : cx(e.pl) + (cx(e.cl) - cx(e.pl)) * (r + 2 - e.pr) / (e.cr - e.pr);
+    h += `<line x1="${x1}" y1="0" x2="${x2}" y2="${ROW_H}" stroke="${railCol(e.cl)}" stroke-width="1.5" opacity="0.85"/>`;
   }
-  if (state.view === 'tree' && state.forest) { renderBranchbar(); renderTree(); markCur(); }
+  h += '</svg>';
+  for (const l of set) if (l <= MAX_LANES - 1) h += `<i class="rv" style="left:${cx(l) - 0.75}px;background:${railCol(l)}"></i>`;
+  return h;
+}
+
+/* ---- 行内展开：点行 → 面板装该轮新增的消息（默认），可切「全部消息」 ---- */
+function toggleNode(nodeId) {
+  const row = $(`#traj-main .grow[data-node="${nodeId}"]`);
+  if (!row) return;
+  const old = $(`#traj-main .gdetail[data-node="${nodeId}"]`);
+  if (state.expanded.has(nodeId)) {
+    state.expanded.delete(nodeId);
+    row.classList.remove('open');
+    if (old) old.remove();
+    return;
+  }
+  state.expanded.add(nodeId);
+  row.classList.add('open');
+  const node = state.forest.byId.get(nodeId);
+  if (!node) return;
+  const RAILW = RAIL_PAD * 2 + Math.min(state.graph.nLanes, MAX_LANES) * LANE_W;
+  const r = state.graph.order.findIndex((x) => x.id === nodeId);
+  const panel = document.createElement('div');
+  panel.className = 'gdetail'; panel.dataset.node = String(nodeId);
+  panel.innerHTML = `<div class="railc" style="width:${RAILW}px">${railCont(r, RAILW)}</div><div class="gbody"><div class="pload">加载中…</div></div>`;
+  row.after(panel);
+  loadPanel(node, panel);
+}
+async function loadPanel(node, panel) {
+  const ns = node.turns.length;
+  const want = state.attempt.get(node.id) ?? node.turns[ns - 1].id;
+  let data;
+  try { data = await getBody(want); }
+  catch (e) { if (panel.isConnected) panel.querySelector('.gbody').innerHTML = `<div class="pload">正文加载失败：${esc(e.message)}</div>`; return; }
+  if (!panel.isConnected || panel.dataset.node !== String(node.id)) return;
+  const parentLen = node.parent ? node.parent.refs.length : 0;
+  const body = data.body || {};
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const refs = data.refs || [];
+  const idx = state.turns.findIndex((t) => t.id === want);
+  const showAll = state.panelAll.get(node.id) === true;
+  const head = `<div class="phead"><span class="pnum">轮次 #${idx + 1}</span><span>${esc(body.model ?? '—')}</span>` +
+    `<span class="pmeta">${messages.length} 条 · ${fmtBytes(data.turn?.bytes)} · capture_id ${esc(String(data.turn?.capture_id ?? ''))}</span>` +
+    `<span class="ptgl"><button data-pall="0" class="${showAll ? '' : 'on'}">只看新增</button><button data-pall="1" class="${showAll ? 'on' : ''}">全部消息</button></span></div>`;
+  const strip = ns > 1 ? `<div class="pstrip">同一状态的尝试：` + node.turns.map((t, i) => {
+    const r = state.statusByCapture.get(t.capture_id);
+    return `<button data-attempt="${t.id}" class="${t.id === want ? 'on' : ''}"><i style="background:${stCol(r?.status)}"></i>#${i + 1} ${r?.status ?? ''} ${fmtTime(t.ts)}</button>`;
+  }).join('') + '</div>' : '';
+  const list = showAll
+    ? messages.map((m, i) => ({ m, i, prev: refs.slice(0, parentLen) }))
+    : messages.slice(parentLen).map((m, j) => ({ m, i: parentLen + j, prev: null }));
+  const msgs = list.map((x) => renderMessage(x.m, x.i, x.prev, refs[x.i])).join('')
+    || '<div class="empty" style="padding:14px">该轮正文缺失（降级状态）</div>';
+  panel.querySelector('.gbody').innerHTML = head + strip + `<div class="pmsg">${msgs}</div>`;
+  $$('.ptgl button', panel.querySelector('.gbody')).forEach((b) => b.addEventListener('click', () => {
+    state.panelAll.set(node.id, b.dataset.pall === '1');
+    loadPanel(node, panel);
+  }));
+  $$('[data-attempt]', panel.querySelector('.gbody')).forEach((b) => b.addEventListener('click', () => {
+    state.attempt.set(node.id, Number(b.dataset.attempt));
+    loadPanel(node, panel);
+  }));
+  $$('.msg .toggle', panel.querySelector('.gbody')).forEach((btn) => btn.addEventListener('click', () => {
+    const body2 = btn.previousElementSibling;
+    body2.classList.toggle('clamped');
+    btn.textContent = body2.classList.contains('clamped') ? '展开全文 ▾' : '收起 ▴';
+  }));
+  state.turnId = want;
+  markCur();
+}
+
+/* ---- 正文缓存 + 摘要（全部节点渐进懒取，改行内文本不重绘整图） ---- */
+async function getBody(turnId) {
+  if (state.bodies.has(turnId)) return state.bodies.get(turnId);
+  const data = await fetchJson(`/api/capture/turns/${turnId}`);
+  const msgs = data.body?.messages || [];
+  const refs = data.refs || [];
+  for (let i = 0; i < msgs.length && i < refs.length; i++) state.roleByHash.set(refs[i], String(msgs[i].role ?? '?'));
+  state.bodies.set(turnId, data);
+  return data;
+}
+function summarizeAdded(n, data) {
+  const parentLen = n.parent ? n.parent.refs.length : 0;
+  const added = (data.body?.messages || []).slice(parentLen);
+  const parts = [];
+  for (const m of added) {
+    const role = String(m.role ?? '?');
+    let text = typeof m.content === 'string' ? m.content
+      : Array.isArray(m.content) ? m.content.filter((p) => p?.type === 'text').map((p) => p.text).join(' ') : '';
+    text = String(text).replace(/\s+/g, ' ').trim();
+    if (!text && Array.isArray(m.tool_calls)) text = '🔧 ' + m.tool_calls.map((tc) => tc.function?.name ?? '?').join(',');
+    if (text && role !== 'tool') parts.push(text);
+    if (parts.length >= 2) break;
+  }
+  return parts.join(' ／ ') || `+${n.refs.length - parentLen} 条（无文本）`;
+}
+function applyPreview(nodeId, sum) {
+  const pv = $(`#pv-${nodeId}`);
+  if (pv) pv.textContent = sum.slice(0, 90);
+  const n = state.forest.byId.get(nodeId);
+  const parentLen = n?.parent ? n.parent.refs.length : 0;
+  const role = String(state.roleByHash.get(n?.refs[parentLen]) ?? (n?.parent ? '?' : 'S')).toLowerCase();
+  const pl = $(`#pl-${nodeId}`);
+  if (pl && ROLE_COL[role]) { pl.textContent = role; pl.style.background = ROLE_COL[role]; }
+}
+async function loadPreviews() {
+  if (!state.forest) return;
+  const queue = state.forest.nodes.slice().sort((a, b) => a.turns[0].ts - b.turns[0].ts);
+  let i = 0;
+  const worker = async () => {
+    while (i < queue.length) {
+      const n = queue[i++];
+      if (state.previewByNode.has(n.id) || state.pvPending.has(n.id)) continue;
+      state.pvPending.add(n.id);
+      try {
+        const data = await getBody(n.turns[n.turns.length - 1].id);
+        const sum = summarizeAdded(n, data);
+        state.previewByNode.set(n.id, sum);
+        applyPreview(n.id, sum);
+      } catch { state.previewByNode.set(n.id, null); }
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker(), worker()]);
 }
 
 /* ---- 会话数据装载 ---- */
@@ -419,8 +516,9 @@ async function loadTurns(identity, tenant) {
   state.identity = identity; state.tenant = tenant;
   state.turnId = null; state.chainByTurn = new Map();
   state.chain = []; state.forest = null; state.branches = []; state.sel = {};
-  state.statusByCapture = new Map(); state.roleByHash = new Map(); state.previewByNode = new Map(); subtreeCache.clear();
-  closeDrawer();
+  state.statusByCapture = new Map(); state.roleByHash = new Map(); state.previewByNode = new Map();
+  state.expanded = new Set(); state.attempt = new Map(); state.panelAll = new Map();
+  state.bodies = new Map(); state.pvPending = new Set(); subtreeCache.clear();
   const [turns, forensics] = await Promise.all([
     fetchJson(`/api/capture/turns?identity=${encodeURIComponent(identity)}&tenant=${encodeURIComponent(tenant)}&limit=500`),
     fetchJson(`/api/capture/cache-forensics?identity=${encodeURIComponent(identity)}&tenant=${encodeURIComponent(tenant)}&limit=500`).catch(() => null),
@@ -440,12 +538,15 @@ async function loadTurns(identity, tenant) {
   renderMain();
 }
 
-/* ---- 抽屉：正文浮层（树节点 / 列表行共用；×N 节点顶部带尝试切换条） ---- */
+/* ---- 消息卡（面板内复用；prevRefs 为 null 时全部标「本轮新增」） ---- */
 function renderMessage(msg, index, prevRefs, refHash) {
   const role = String(msg.role ?? '?');
   const dup = Array.isArray(prevRefs) && prevRefs.includes(refHash);
   const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
-  const content = msg.content == null ? '' : typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content, null, 2);
+  const content = msg.content == null ? '' : typeof msg.content === 'string' ? msg.content
+    : Array.isArray(msg.content) ? (msg.content.filter((p) => p?.type === 'text').map((p) => p.text).join('\n')
+      || JSON.stringify(msg.content, null, 2))
+    : JSON.stringify(msg.content, null, 2);
   const toolTag = msg.tool_call_id ? ` · 回应 <span class="mono">${esc(msg.tool_call_id)}</span>` : '';
   const long = content.length > 600;
   return `<div class="msg">
@@ -464,67 +565,7 @@ function renderMessage(msg, index, prevRefs, refHash) {
   </div>`;
 }
 
-async function renderTurnIntoDrawer(id) {
-  state.turnId = id;
-  const chain = state.chainByTurn.get(id);
-  const prevTurn = chain?.prev_in_thread_id != null ? state.turns.find((t) => t.id === chain.prev_in_thread_id) ?? null : null;
-  const data = await fetchJson(`/api/capture/turns/${id}`);
-  const prevRefs = prevTurn ? (await fetchJson(`/api/capture/turns/${prevTurn.id}`).catch(() => null))?.refs ?? null : null;
-  const body = data.body || {};
-  const messages = Array.isArray(body.messages) ? body.messages : [];
-  const refs = data.refs || [];
-  const idx = state.turns.findIndex((t) => t.id === id);
-  $('#dtitle').textContent = `轮次 #${idx + 1} · model ${body.model ?? '—'} · ${messages.length} 条 · ${fmtBytes(data.turn?.bytes)} · capture ${fmtClock(data.turn?.ts)} · capture_id ${String(data.turn?.capture_id ?? '')}`;
-  $('#dbody').innerHTML =
-    `<div class="traj-note" style="padding:8px 14px">哈希引用列表（盐化）：${refs.length ? esc(refs[0].slice(0, 12)) + '… 等 ' + refs.length + ' 条' : '—'}</div>` +
-    messages.map((m, i) => renderMessage(m, i, prevRefs, refs[i])).join('') || '<div class="empty" style="padding:20px">该轮正文缺失（降级状态）</div>';
-  $$('.msg .toggle', $('#dbody')).forEach((btn) => btn.addEventListener('click', () => {
-    const body2 = btn.previousElementSibling;
-    body2.classList.toggle('clamped');
-    btn.textContent = body2.classList.contains('clamped') ? '展开全文 ▾' : '收起 ▴';
-  }));
-  markCur();
-}
-
-function openDrawer() {
-  $('#drawer').classList.remove('hidden');
-  $('#drawer').setAttribute('aria-hidden', 'false');
-}
-function closeDrawer() {
-  $('#drawer').classList.add('hidden');
-  $('#drawer').setAttribute('aria-hidden', 'true');
-}
-$('#dclose').addEventListener('click', closeDrawer);
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
-
-async function openDrawerForTurn(turnId) {
-  const n = state.forest?.nodes.find((x) => x.turns.some((t) => t.id === turnId));
-  if (n) await openDrawerForNode(n.id, turnId);
-  else { openDrawer(); $('#attempt-strip').hidden = true; await renderTurnIntoDrawer(turnId); }
-}
-async function openDrawerForNode(nodeId, preferTurnId) {
-  const n = state.forest.byId.get(nodeId);
-  if (!n || !n.turns.length) return;
-  openDrawer();
-  const strip = $('#attempt-strip');
-  if (n.turns.length > 1) {
-    strip.hidden = false;
-    strip.innerHTML = '同一状态的尝试：' + n.turns.map((t, i) => {
-      const r = state.statusByCapture.get(t.capture_id);
-      return `<button data-turn="${t.id}" class="${t.id === state.turnId ? 'on' : ''}"><i style="background:${stCol(r?.status)}"></i>#${i + 1} ${r?.status ?? ''} ${fmtTime(t.ts)}</button>`;
-    }).join('');
-    $$('#attempt-strip button').forEach((btn) => btn.addEventListener('click', () => {
-      $$('#attempt-strip button').forEach((b) => b.classList.remove('on'));
-      btn.classList.add('on');
-      renderTurnIntoDrawer(Number(btn.dataset.turn)).catch((err) => { $('#err').textContent = `正文加载失败：${err.message}`; });
-    }));
-  } else strip.hidden = true;
-  const target = n.turns.find((t) => t.id === preferTurnId) ?? n.turns.find((t) => t.id === state.turnId) ?? n.turns[n.turns.length - 1];
-  await renderTurnIntoDrawer(target.id);
-}
-
 /* ---- 事件 ---- */
-$$('#main-bar .vswitch button').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
 $('#traj-sessions').addEventListener('click', (e) => {
   const li = e.target.closest('li[data-identity]');
   if (!li) return;
@@ -544,14 +585,18 @@ initChrome('trajectory.html').then(async () => {
   $$('#traj-sessions li').forEach((x) => x.classList.remove('active'));
   li.classList.add('active');
   const captureId = params.get('capture_id');
+  await loadTurns(identity, li.dataset.tenant);
   if (captureId) {
-    // 从请求页跳来：定位该 capture_id 所在节点并直接开抽屉
-    await loadTurns(identity, li.dataset.tenant);
+    // 从请求页跳来：定位该 capture_id 所在节点并图内展开
     const turn = state.turns.find((t) => t.capture_id === captureId);
     const node = turn && state.forest ? state.forest.nodes.find((n) => n.turns.some((t) => t.id === turn.id)) : null;
-    if (node) { setView('tree'); await openDrawerForNode(node.id, turn.id); }
-    else { setView('list'); $('#err').textContent = `轮次 ${captureId.slice(0, 8)}… 不在最近 500 轮里（可能已过 TTL 清理）`; }
-  } else await loadTurns(identity, li.dataset.tenant);
+    if (node) {
+      state.attempt.set(node.id, turn.id);
+      state.expanded.add(node.id);
+      renderMain();
+      $(`#traj-main .grow[data-node="${node.id}"]`)?.scrollIntoView({ block: 'center' });
+    } else $('#err').textContent = `轮次 ${captureId.slice(0, 8)}… 不在最近 500 轮里（可能已过 TTL 清理）`;
+  }
 });
 </script>
 </body>
