@@ -125,6 +125,8 @@ export interface CacheChainEntry {
   common_prefix_in_thread: number | null;
   first_diff_in_thread_index: number | null;
   first_diff_in_thread_role: string | null;
+  // 本轮完整盐化哈希引用列表（轨迹页前端建前缀树用；与 turns/:id 的 refs 同源同义，无新增暴露面）。
+  refs: string[];
 }
 
 // 线程汇总（票 02）：一个 identity（deleg 家族）内按首条 user 消息拆出的并行孩子清单。
@@ -478,7 +480,7 @@ export class CaptureStore {
       const entry: CacheChainEntry = { id: row.id, capture_id: row.capture_id, ts: row.ts, bytes: row.bytes, message_count: row.message_count,
         prev_id: null, prev_ts: null, common_prefix: refs.length, first_diff_index: null, first_diff_role: null, chars_delta: null, prev_message_count: null,
         thread_key: threadKey, boundary: 'first', prev_in_thread_id: null, prev_in_thread_ts: null,
-        common_prefix_in_thread: null, first_diff_in_thread_index: null, first_diff_in_thread_role: null };
+        common_prefix_in_thread: null, first_diff_in_thread_index: null, first_diff_in_thread_role: null, refs };
       if (previous) {
         const bound = Math.min(previous.refs.length, refs.length);
         let i = 0;
@@ -535,13 +537,22 @@ export class CaptureStore {
     return { chain, threads };
   }
 
-  // 内容哈希对应消息的正文文本（线程 label 用）：字符串 content 原样截断，结构化 content 转字符串。
+  // 内容哈希对应消息的正文文本（线程 label 用）：字符串 content 原样截断；结构化 content
+  // 拼接 text part（多模态 part 的 JSON 串对 label 是噪声，截断后只剩 '……' 看不出话题）。
   contentText(hash: string, clip = 160): string {
     const row = this.#db.prepare('SELECT body FROM content WHERE hash=?').get(hash) as { body: string } | undefined;
     if (!row) return '(content unavailable)';
     try {
       const parsed = JSON.parse(row.body) as { content?: unknown };
-      const text = typeof parsed.content === 'string' ? parsed.content : JSON.stringify(parsed.content ?? parsed);
+      let text: string;
+      if (typeof parsed.content === 'string') text = parsed.content;
+      else if (Array.isArray(parsed.content)) {
+        const parts = parsed.content
+          .filter((p): p is { type?: string; text?: string } => typeof p === 'object' && p !== null)
+          .map((p) => (p.type === 'text' || typeof p.text === 'string' ? String(p.text) : `[${p.type ?? 'part'}]`));
+        text = parts.join(' ／ ') || JSON.stringify(parsed.content);
+      } else text = JSON.stringify(parsed.content ?? parsed);
+      text = text.replace(/\s+/g, ' ').trim();
       return text.length > clip ? `${text.slice(0, clip)}…` : text;
     } catch { return '(content unavailable)'; }
   }

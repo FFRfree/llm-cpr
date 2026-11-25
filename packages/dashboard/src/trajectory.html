@@ -6,30 +6,41 @@
 <title>轨迹 · LLM CPR 后台</title>
 <link rel="stylesheet" href="/assets/app.css">
 <style>
-/* family-observability 票 01：中列树形（父会话 → 线程 → 轮次）。单线程会话退化为平铺，不加折叠层。 */
-#traj-family{padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted)}
-#traj-family .fam-line{margin:0 0 2px}
-.traj-thread>.th-head{display:flex;gap:6px;align-items:baseline;padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border);background:var(--surface)}
-.traj-thread>.th-head:hover{background:var(--hover)}
-.th-dot{flex:none;width:8px;height:8px;border-radius:50%;transform:translateY(-1px)}
-.th-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
-.th-meta{flex:none;color:var(--muted);font-size:10px;font-variant-numeric:tabular-nums}
-.th-caret{flex:none;color:var(--muted);font-size:10px}
-.traj-thread>ul{list-style:none;margin:0;padding:0}
-.traj-thread>ul.hidden{display:none}
-/* 树形层级感：轮次行缩进 + 左侧引导线挂到所属线程。 */
-.traj-thread>ul li{padding-left:18px;margin-left:14px;border-left:2px solid color-mix(in srgb, var(--border) 70%, transparent)}
-.t-flag.switch{color:var(--muted)}
+/* trajectory-gitgraph 票 02：中列 = git-graph 前缀树 + 分支勾选栏。
+   节点 = 一个消息前缀（一次「对话状态」）；同一前缀的重试收进 ×N 节点；
+   分叉 = 曲线岔出到新泳道；左栏勾选决定画哪些链（主干 = 最长链，也算一条分支）。 */
+.traj{grid-template-columns:230px 1fr 1.1fr}
+#traj-branchbar{border-bottom:1px solid var(--border);font-size:12px}
+#traj-branchbar .bh{display:flex;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--border)}
+#traj-branchbar .bh b{font-size:11px;color:var(--text-2)}
+#traj-branchbar .bh button{margin-left:auto;background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:2px 8px;cursor:pointer;font-size:11px}
+#traj-branchbar .bh button:hover{color:var(--text);border-color:var(--border-strong)}
+.bitem{display:flex;gap:7px;padding:6px 10px;border-bottom:1px solid var(--border);cursor:pointer;align-items:flex-start}
+.bitem:hover{background:var(--hover)}
+.bitem.off{opacity:.38}
+.bitem input{margin-top:3px;accent-color:var(--success);flex-shrink:0}
+.bitem .tx{flex:1;min-width:0;overflow:hidden}
+.bitem .tx .l1{font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bitem .tx .l2{font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gwrap{overflow-x:auto;max-width:100%}
+#gtraj-svg g.nodeg{cursor:pointer}
+#gtraj-svg g.nodeg:hover .hitrect{fill:var(--hover)}
+#gtraj-svg g.nodeg.cur circle.dot{stroke:var(--text);stroke-width:2}
+.traj-note2{padding:6px 10px;font-size:10px;color:var(--muted);border-bottom:1px solid var(--border)}
+/* ×N 尝试切换条（右列顶部） */
+#attempt-strip{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px 14px;border-bottom:1px solid var(--border)}
+#attempt-strip button{background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:2px 9px;cursor:pointer;font-size:11px;font-family:var(--mono)}
+#attempt-strip button.on{color:var(--text);border-color:var(--border-strong);background:var(--hover)}
+#attempt-strip i{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:3px}
 </style>
 </head>
 <body>
 <main>
 <h2>轨迹查看器</h2>
 <p class="muted" style="font-size:12px;margin:0 0 4px">
-  每轮请求的完整 messages 数组（内容寻址侧库逐字节还原）。左侧挑会话 → 中间按「线程」看（deleg
-  家族共享会话身份：多个 subagent 的轮次交错落库，线程键 = 首条 user 消息指纹，同一孩子的所有轮恒定）
-  → 右侧读正文。绿色「同上轮」= 与线程内上一轮哈希一致（缓存命中的部分）；红色 = 线程内前缀断裂；
-  「切线」= 时间序上一轮是另一个孩子的轮次，不算断裂。
+  会话内每条请求是往同一棵「消息前缀树」上走一步：节点 = 一个消息前缀（对话状态），连线 = 追加消息，
+  分叉 = 同一前缀拐出不同走向，同一前缀的重试收进 ×N 节点。左列挑会话 → 中列 git-graph（左栏勾选展示哪些链，
+  主干 = 最长链，也是一条分支）→ 右列读该状态任意一次尝试的完整正文。
 </p>
 <div class="toolbar">
   <input id="f-search" type="search" placeholder="会话 ID 过滤…" autocomplete="off">
@@ -40,14 +51,16 @@
     <h3>会话（有捕获的）</h3>
     <ul id="traj-sessions"></ul>
   </section>
-  <section id="pane-turns">
-    <h3>线程 / 轮次</h3>
+  <section id="pane-tree">
+    <h3>前缀树（勾选要展示的分支）</h3>
     <div id="traj-family"></div>
-    <ul id="traj-turns"></ul>
+    <div id="traj-branchbar"></div>
+    <div id="traj-graph"></div>
   </section>
   <section id="pane-view">
     <h3 id="view-title">正文</h3>
-    <div id="traj-view"><div id="traj-empty">选一轮看正文</div></div>
+    <div id="attempt-strip" hidden></div>
+    <div id="traj-view"><div id="traj-empty">选一个节点看正文</div></div>
   </section>
 </div>
 </main>
@@ -55,12 +68,15 @@
 <script src="/assets/app.js"></script>
 <script>
 'use strict';
-const state = { sessions: [], identity: null, tenant: null, turns: [], refsByTurn: new Map(), turnId: null, chainByTurn: new Map() };
-const THREAD_COLORS = ['#5b8def', '#3fae7a', '#d29a3a', '#9a6fd0', '#d05b6a', '#3a9ad2', '#7aa23f', '#b06fd0'];
-// 树形里的紧凑时间（HH:MM:SS）：fmtClock 带全日期，260px 中列会撑出横向滚动。
+const state = { sessions: [], identity: null, tenant: null, turns: [], refsByTurn: new Map(), turnId: null,
+  chainByTurn: new Map(), chain: [], forest: null, branches: [], sel: {}, statusByCapture: new Map(),
+  roleByHash: new Map(), previewByNode: new Map(), nodeId: null, outOfWindow: 0 };
+// 泳道配色（亮暗两套主题下都可见）。
+const RAILS = ['#3fae7a', '#d29a3a', '#5b8def', '#9a6fd0', '#d05b6a', '#3a9ad2', '#7aa23f', '#b06fd0'];
 const fmtTime = (ts) => ts ? new Date(ts).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
+const stColor = (s) => s == null ? 'var(--muted)' : (s < 300 ? 'var(--success)' : s === 499 ? 'var(--muted)' : 'var(--danger)');
 
-/* ---- 左列：会话清单（取账本会话，租户按全局筛选；无捕获的会话点开轮次会是空列表） ---- */
+/* ---- 左列：会话清单（不变） ---- */
 async function loadSessions() {
   const q = $('#f-search').value.trim().toLowerCase();
   const data = await fetchJson(withTenant('/api/audit/sessions?page=1&page_size=200&sort=last_ts&order=desc'));
@@ -72,13 +88,11 @@ async function loadSessions() {
     </li>`).join('') || '<li class="empty">没有匹配的会话</li>';
 }
 
-/* 会话头部：家族徽标 + 缓存效率（family-observability 票 03；获取失败静默）。 */
+/* 会话头部：家族徽标 + 缓存效率（沿用 family-observability 票 03）。 */
 async function loadFamilyHeader(turns) {
-  const chainCount = state.chainByTurn.size;
   const threadKeys = new Set();
   for (const entry of state.chainByTurn.values()) threadKeys.add(entry.thread_key);
-  const totalTurns = turns.length;
-  let line1 = `<div class="fam-line"><b>${threadKeys.size > 1 ? 'deleg 家族' : '单线程'}</b> · ${threadKeys.size || '?'} 线程 · ${totalTurns} 轮${chainCount ? '' : ' · 取证链不可用'}</div>`;
+  let line1 = `<div class="fam-line" style="padding:6px 10px"><b>${threadKeys.size > 1 ? 'deleg 家族' : '单线程'}</b> · ${threadKeys.size || '?'} 线程 · ${turns.length} 轮（图内 ${state.chain.length}）</div>`;
   $('#traj-family').innerHTML = line1;
   if (!state.identity) return;
   try {
@@ -86,83 +100,274 @@ async function loadFamilyHeader(turns) {
     const pct = (v) => v == null ? '—' : `${(v * 100).toFixed(1)}%`;
     const k = (v) => v == null ? '—' : v.toLocaleString(undefined, { maximumFractionDigits: 0 });
     $('#traj-family').innerHTML =
-      `${line1}<div class="fam-line">缓存效率 <b>${pct(eff.totals?.efficiency)}</b> · 浪费 ${pct(eff.totals?.waste_share)} · 重读 ×${k(eff.totals?.read_multiplier)} · 语料 ~${k(eff.totals?.corpus_tokens_est)} tok${eff.totals?.turns_skipped_no_usage ? ` · ${eff.totals.turns_skipped_no_usage} 轮无 usage 未计入` : ''}</div>`;
+      `${line1}<div class="fam-line" style="padding:0 10px 6px">缓存效率 <b>${pct(eff.totals?.efficiency)}</b> · 浪费 ${pct(eff.totals?.waste_share)} · 重读 ×${k(eff.totals?.read_multiplier)} · 语料 ~${k(eff.totals?.corpus_tokens_est)} tok${eff.totals?.turns_skipped_no_usage ? ` · ${eff.totals.turns_skipped_no_usage} 轮无 usage 未计入` : ''}</div>`;
   } catch { /* 效率条失败不挡轨迹 */ }
 }
 
-/* ---- 中列：选中会话的轮次，按线程分组成树（升序） ---- */
+/* ---- 账本状态：按 capture_id 对回 status/ttft（分页拉到盖住最早轮次为止） ---- */
+async function loadStatuses(tenant, identity, sinceTs) {
+  state.statusByCapture = new Map();
+  for (let page = 1; page <= 20; page++) {
+    const data = await fetchJson(`/api/audit/requests?tenant=${encodeURIComponent(tenant)}&identity=${encodeURIComponent(identity)}&page=${page}&page_size=200`);
+    const rows = data.requests || [];
+    if (!rows.length) break;
+    for (const r of rows) if (r.capture_id) state.statusByCapture.set(r.capture_id, r);
+    if (rows.length < 200 || Math.min(...rows.map((r) => r.ts)) < sinceTs - 60_000) break;
+  }
+}
+
+/* ---- 前缀森林：节点 = 一个 refs 前缀；同一前缀的轮次收进同一节点 ---- */
+function buildForest(chain, threadLabels) {
+  const trie = new Map(); // refs.join('\u0000') -> node
+  const nodes = [];
+  for (const entry of chain) {
+    const refs = entry.refs || [];
+    if (!refs.length) continue;
+    let parent = null;
+    for (let l = refs.length - 1; l >= 1; l--) {
+      const p = trie.get(refs.slice(0, l).join('\u0000'));
+      if (p) { parent = p; break; }
+    }
+    const key = refs.join('\u0000');
+    let node = trie.get(key);
+    if (!node) {
+      node = { id: nodes.length, refs, parent, children: [], turns: [], threadKey: entry.thread_key };
+      nodes.push(node); trie.set(key, node);
+      if (parent) parent.children.push(node);
+    }
+    node.turns.push(entry);
+    // 角色表：链条目已知「第 N 条起分歧，角色 X」→ 记 hash→role。
+    if (entry.first_diff_in_thread_index != null && entry.first_diff_in_thread_role)
+      state.roleByHash.set(refs[entry.first_diff_in_thread_index], entry.first_diff_in_thread_role);
+  }
+  // 子树规模 + 主干（每棵树从根起反复走「子孙最多」的孩子）
+  const sizes = new Map();
+  const sizeOf = (n) => {
+    if (sizes.has(n.id)) return sizes.get(n.id);
+    sizes.set(n.id, 1); // 防环占位（refs 前缀树天然无环，稳妥起见）
+    const total = 1 + n.children.reduce((s, c) => s + sizeOf(c), 0);
+    sizes.set(n.id, total);
+    return total;
+  };
+  const roots = nodes.filter((n) => !n.parent);
+  const trunks = new Map(); // treeRootId -> [nodeIds]
+  for (const root of roots) { sizeOf(root); const path = []; let cur = root; while (cur) { path.push(cur.id); const kids = cur.children.slice().sort((a, b) => sizes.get(b.id) - sizes.get(a.id)); cur = kids[0] || null; } trunks.set(root.id, path); }
+  // 分支 = 分叉点上非主干的每个孩子
+  const branches = [];
+  const walk = (n, treeRoot, depth) => {
+    const kk = n.children.slice().sort((a, b) => sizes.get(b.id) - sizes.get(a.id));
+    kk.forEach((c, i) => {
+      if (i > 0) branches.push({ id: String(c.id), parent: n, node: c, treeRoot, forkAt: n.refs.length + 1, count: sizes.get(c.id), ts: c.turns[0].ts, depth: depth + 1 });
+      walk(c, treeRoot, i > 0 ? depth + 1 : depth);
+    });
+  };
+  for (const root of roots) {
+    const label = threadLabels.get(root.threadKey) ?? root.threadKey.slice(0, 12);
+    branches.push({ id: 'trunk-' + root.id, trunk: true, node: root, treeRoot: root, count: trunks.get(root.id).length, ts: root.turns[0].ts, depth: 0, label });
+    walk(root, root, 0);
+  }
+  branches.sort((a, b) => (a.trunk ? -1 : b.trunk ? 1 : a.ts - b.ts));
+  state.forest = { nodes, roots, sizes, trunks, byId: new Map(nodes.map((n) => [n.id, n])) };
+  state.branches = branches;
+}
+
+/* ---- 中列渲染：分支栏 + git-graph ---- */
+function hiddenSet() {
+  const hide = new Set();
+  for (const [id, on] of Object.entries(state.sel)) {
+    if (on) continue;
+    const b = state.branches.find((x) => x.id === id);
+    if (!b) continue;
+    if (b.trunk) { for (const nid of state.forest.trunks.get(b.treeRoot.id)) hide.add(nid); continue; }
+    const stack = [b.node];
+    while (stack.length) { const n = stack.pop(); if (hide.has(n.id)) continue; hide.add(n.id); n.children.forEach((c) => stack.push(c)); }
+  }
+  return hide;
+}
+function railCol(l) { return RAILS[l % RAILS.length]; }
+function stCol(s) { return s == null ? 'var(--muted)' : (s < 300 ? 'var(--success)' : s === 499 ? 'var(--muted)' : 'var(--danger)'); }
+function retryColor(list) { const st = list.map((t) => { const r = state.statusByCapture.get(t.capture_id); return r ? r.status : null; });
+  if (st.length && st.every((s) => s != null && s < 300)) return 'var(--success)';
+  if (st.length && st.every((s) => s != null && s >= 400 && s !== 499)) return 'var(--danger)';
+  return 'var(--warning)'; }
+
+function renderBranchbar(hide) {
+  const ancHidden = (b) => {
+    if (b.trunk) return false;
+    let p = b.parent;
+    while (p) { const ab = state.branches.find((x) => !x.trunk && x.node === p); if (ab && state.sel[ab.id] === false) return true; p = p.parent; }
+    return false;
+  };
+  const trunkCount = state.branches.filter((b) => b.trunk).length;
+  let h = `<div class="bh"><b>分支 ${state.branches.length} 条（含 ${trunkCount} 主干）</b><button id="ball">全选</button><button id="bnone">只看主干</button></div>`;
+  if (state.outOfWindow) h += `<div class="traj-note2">${state.outOfWindow} 轮在 500 轮取证窗口外，未入图。</div>`;
+  for (const b of state.branches) {
+    const dis = ancHidden(b);
+    const checked = !dis && state.sel[b.id] !== false;
+    const pv = state.previewByNode.get(b.node.id);
+    const meta = b.trunk
+      ? `主干（最长）· ${b.count} 状态 · ${fmtTime(b.ts)}起`
+      : `⎇ 第 ${b.forkAt} 条分出 · ${b.count} 状态 · ${fmtTime(b.ts)}起`;
+    h += `<label class="bitem${dis ? ' off' : ''}" data-b="${esc(b.id)}" style="padding-left:${10 + b.depth * 12}px">` +
+      `<input type="checkbox" ${checked ? 'checked' : ''}${dis ? ' disabled' : ''}>` +
+      `<span class="tx"><span class="l1">${esc((b.trunk ? '★ ' : '') + (pv || b.label || '').slice(0, 42))}</span><span class="l2">${meta}</span></span></label>`;
+  }
+  $('#traj-branchbar').innerHTML = h;
+  $$('#traj-branchbar .bitem').forEach((el) => el.addEventListener('click', () => {
+    const cb = el.querySelector('input');
+    if (cb.disabled) return;
+    state.sel[el.dataset.b] = cb.checked; // click 之后 input 已翻转，读新状态
+    renderTree();
+  }));
+  $('#ball').addEventListener('click', () => { state.branches.forEach((b) => { state.sel[b.id] = true; }); renderTree(); });
+  $('#bnone').addEventListener('click', () => { state.branches.forEach((b) => { state.sel[b.id] = !!b.trunk; }); renderTree(); });
+}
+
+const LANE_W = 26, ROW_H = 52, DOT_R = 7, LABEL_W = 320;
+function renderTree() {
+  const hide = hiddenSet();
+  const visible = state.forest.nodes.filter((n) => !hide.has(n.id));
+  const visIds = new Set(visible.map((n) => n.id));
+  const kids = new Map(); // 可见子关系
+  for (const n of visible) if (n.parent && visIds.has(n.parent.id)) (kids.get(n.parent.id) || kids.set(n.parent.id, []).get(n.parent.id)).push(n);
+  if (!visible.length) { $('#traj-graph').innerHTML = '<div class="empty" style="padding:20px;text-align:center">没有勾选任何链——左侧至少勾一条。</div>'; return; }
+  // 根 = 父不可见的节点（主干隐藏后各分支自成轨）；按所属树分组，一树一节
+  const roots = visible.filter((n) => !n.parent || !visIds.has(n.parent.id));
+  let out = '';
+  for (const treeRoot of state.forest.roots) {
+    const treeIds = subtreeOf(treeRoot);
+    const treeRoots = roots.filter((r) => treeIds.has(r.id));
+    if (!treeRoots.length) continue;
+    out += treeSvg(kids, treeRoots);
+  }
+  $('#traj-graph').innerHTML = out || '<div class="empty">没有可展示的轮次</div>';
+  $$('#gtraj-svg g.nodeg').forEach((g) => g.addEventListener('click', () => loadNode(Number(g.dataset.node))));
+  markCur();
+}
+// 树根的全部后代 id 集
+const subtreeCache = new Map();
+function subtreeOf(root) {
+  if (subtreeCache.has(root.id)) return subtreeCache.get(root.id);
+  const ids = new Set(); const stack = [root];
+  while (stack.length) { const n = stack.pop(); if (ids.has(n.id)) continue; ids.add(n.id); n.children.forEach((c) => stack.push(c)); }
+  subtreeCache.set(root.id, ids); return ids;
+}
+function treeSvg(kids, rootsRaw) {
+  const roots = rootsRaw.slice().sort((a, b) => a.turns[0].ts - b.turns[0].ts);
+  const tn = [], stack = roots.slice().reverse();
+  while (stack.length) { const n = stack.pop(); if (tn.some((x) => x.id === n.id)) continue; tn.push(n); (kids.get(n.id) || []).slice().reverse().forEach((c) => stack.push(c)); }
+  tn.sort((a, b) => a.turns[0].ts - b.turns[0].ts);
+  const sizes = state.forest.sizes;
+  const lane = new Map(); let nextLane = 0;
+  for (const r of roots) lane.set(r.id, nextLane++);
+  for (const n of tn) {
+    const kk = (kids.get(n.id) || []).slice().sort((a, b) => sizes.get(b.id) - sizes.get(a.id));
+    kk.forEach((c, i) => lane.set(c.id, i === 0 ? lane.get(n.id) : nextLane++));
+  }
+  const nLanes = Math.max(1, nextLane);
+  const yOf = new Map(); tn.forEach((n, i) => yOf.set(n.id, i));
+  const H = tn.length * ROW_H + 12, LW = 16 + nLanes * LANE_W;
+  const lx = (l) => 16 + l * LANE_W;
+  let svg = `<div class="gwrap"><svg id="gtraj-svg" width="${LW + LABEL_W}" height="${H}" font-family="var(--mono)">`;
+  // 轨道
+  const laneRows = new Map();
+  for (const n of tn) { const l = lane.get(n.id); (laneRows.get(l) || laneRows.set(l, []).get(l)).push(yOf.get(n.id)); }
+  for (const [l, ys] of laneRows) { ys.sort((a, b) => a - b); if (ys.length > 1) svg += `<line x1="${lx(l)}" y1="${ys[0] * ROW_H + 30}" x2="${lx(l)}" y2="${ys[ys.length - 1] * ROW_H + 30}" stroke="${railCol(l)}" stroke-width="1.5" opacity="0.5"/>`; }
+  // 分叉曲线
+  for (const n of tn) for (const c of (kids.get(n.id) || [])) {
+    if (lane.get(c.id) === lane.get(n.id)) continue;
+    const x1 = lx(lane.get(n.id)), y1 = yOf.get(n.id) * ROW_H + 30, x2 = lx(lane.get(c.id)), y2 = yOf.get(c.id) * ROW_H + 30;
+    svg += `<path d="M${x1} ${y1} C${x1} ${y1 + 20} ${x2} ${y2 - 20} ${x2} ${y2}" stroke="${railCol(lane.get(c.id))}" stroke-width="1.5" fill="none" opacity="0.85"/>`;
+  }
+  // 节点
+  for (const n of tn) {
+    const y = yOf.get(n.id) * ROW_H + 30, x = lx(lane.get(n.id));
+    const ns = n.turns.length, dotR = DOT_R + (ns > 1 ? 2 : 0);
+    const dots = n.turns.map((t) => { const r = state.statusByCapture.get(t.capture_id); return r ? r.status : null; });
+    svg += `<g class="nodeg" data-node="${n.id}">`;
+    svg += `<rect class="hitrect" x="0" y="${y - ROW_H / 2 + 8}" width="${LW + LABEL_W}" height="${ROW_H}" fill="transparent"/>`;
+    if (ns > 1) svg += `<rect x="${x - 24}" y="${y - dotR - 13}" width="28" height="13" rx="6" fill="${retryColor(n.turns)}"/><text x="${x - 10}" y="${y - dotR - 3}" font-size="9" fill="var(--surface)" text-anchor="middle" font-weight="700">×${ns}</text>`;
+    svg += `<circle class="dot" cx="${x}" cy="${y}" r="${dotR}" fill="${railCol(lane.get(n.id))}" stroke="var(--surface)" stroke-width="1.5"/>`;
+    if ((kids.get(n.id) || []).length > 1) svg += `<path d="M${x + dotR + 2} ${y - 4} l6 4 l-6 4 z" fill="var(--warning)"/>`;
+    const t0 = n.turns[0], tN = n.turns[ns - 1];
+    let l1 = `<text x="${LW + 4}" y="${y - 3}" font-size="10"><tspan fill="var(--muted)">${fmtTime(t0.ts)}${ns > 1 ? ' → ' + fmtTime(tN.ts) : ''}</tspan>`;
+    if (ns > 1) l1 += `<tspan fill="${retryColor(n.turns)}" dx="7">${dots.map(() => '●').join('')}</tspan>`;
+    const lastStatus = state.statusByCapture.get(tN.capture_id)?.status;
+    l1 += `<tspan fill="${stCol(lastStatus)}" dx="7">${lastStatus ?? '—'}</tspan>`;
+    l1 += `<tspan fill="var(--muted)" dx="7">${Math.round(tN.bytes / 1024)}KB·${n.refs.length}条</tspan></text>`;
+    // 第二行：新增了什么——优先已知预览，否则角色 + 位置
+    const parentLen = n.parent ? n.parent.refs.length : 0;
+    const addedCount = n.refs.length - parentLen;
+    const role = state.roleByHash.get(n.refs[parentLen]) ?? (n.parent ? '?' : 'S');
+    const pv = state.previewByNode.get(n.id);
+    const l2 = pv ? esc(pv.slice(0, 44)) + (pv.length > 44 ? '…' : '')
+      : (n.parent ? `[${role}] 第 ${parentLen + 1} 条起 +${addedCount}` : '[S] 线程起点');
+    svg += l1;
+    svg += `<text x="${LW + 4}" y="${y + 12}" font-size="11" fill="var(--text-2)">${l2}</text>`;
+    svg += `</g>`;
+  }
+  svg += '</svg></div>';
+  return svg;
+}
+function markCur() {
+  $$('#gtraj-svg g.nodeg').forEach((g) => {
+    const n = state.forest.byId.get(Number(g.dataset.node));
+    g.classList.toggle('cur', !!n && n.turns.some((t) => t.id === state.turnId));
+  });
+}
+/* 分支根预览：懒取正文（分支数通常个位数） */
+async function loadPreviews() {
+  const want = state.branches.filter((b) => !state.previewByNode.has(b.node.id) && !state.previewByNode.has('pend:' + b.node.id));
+  for (const b of want.slice(0, 12)) {
+    state.previewByNode.set('pend:' + b.node.id, 1);
+    try {
+      const n = b.node;
+      const parentLen = n.parent ? n.parent.refs.length : 0;
+      const data = await fetchJson(`/api/capture/turns/${n.turns[0].id}`);
+      const msgs = data.body?.messages || [];
+      for (let i = 0; i < msgs.length && i < (data.refs || []).length; i++) state.roleByHash.set(data.refs[i], String(msgs[i].role ?? '?'));
+      const added = msgs.slice(parentLen)
+        .filter((m) => { const r = String(m.role ?? ''); return r === 'user' || r === 'assistant'; })
+        .map((m) => {
+          const c = typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.filter((p) => p?.type === 'text').map((p) => p.text).join(' ') : '';
+          return String(c).replace(/\s+/g, ' ').trim();
+        }).filter(Boolean).slice(0, 2).join(' ／ ');
+      state.previewByNode.set(n.id, added || `+${n.refs.length - parentLen} 条（无文本）`);
+    } catch { /* 预览失败不挡轨迹 */ }
+  }
+  renderBranchbar(hiddenSet());
+}
+
+/* ---- 中列数据装载 ---- */
 async function loadTurns(identity, tenant) {
   state.identity = identity; state.tenant = tenant;
-  state.turnId = null; state.refsByTurn = new Map(); state.chainByTurn = new Map();
+  state.turnId = null; state.nodeId = null; state.refsByTurn = new Map(); state.chainByTurn = new Map();
+  state.chain = []; state.forest = null; state.branches = []; state.sel = {};
+  state.statusByCapture = new Map(); state.roleByHash = new Map(); state.previewByNode = new Map(); subtreeCache.clear();
   const [turns, forensics] = await Promise.all([
     fetchJson(`/api/capture/turns?identity=${encodeURIComponent(identity)}&tenant=${encodeURIComponent(tenant)}&limit=500`),
     fetchJson(`/api/capture/cache-forensics?identity=${encodeURIComponent(identity)}&tenant=${encodeURIComponent(tenant)}&limit=500`).catch(() => null),
   ]);
-  state.turns = (turns.turns || []).slice().reverse(); // API 返回新→旧，时间线要旧→新
+  const allTurns = (turns.turns || []).slice().reverse(); // 旧→新
   if (forensics) {
-    for (let i = 0; i < (forensics.chain || []).length; i++) state.chainByTurn.set(forensics.chain[i].id, forensics.chain[i]);
+    state.chain = forensics.chain || [];
+    for (const e of state.chain) state.chainByTurn.set(e.id, e);
   }
-  // 分线程：turn → threadKey（取证链缺行的老轮次落 '(窗口外)' 桶）。
-  const byThread = new Map();
-  for (const t of state.turns) {
-    const chain = state.chainByTurn.get(t.id);
-    const key = chain ? chain.thread_key : '(窗口外)';
-    (byThread.get(key) || byThread.set(key, []).get(key)).push(t);
-  }
-  const threadOrder = (forensics?.threads || []).map((th) => th.key).filter((key) => byThread.has(key));
-  for (const key of byThread.keys()) if (!threadOrder.includes(key)) threadOrder.push(key);
-  const labelOf = (key) => (forensics?.threads || []).find((th) => th.key === key)?.label ?? key;
-  const multi = threadOrder.length > 1;
-
-  const turnHtml = (t, seq, threadLabel) => {
-    const chain = state.chainByTurn.get(t.id);
-    let flag = '';
-    if (chain) {
-      // 切线（family-observability 票 01）：时间序上一轮属其他孩子——不算断裂，小标提示。
-      const switchTag = chain.boundary === 'thread-switch'
-        ? '<div class="t-flag switch">↩ 切线（时间序上一轮属其他孩子）</div>' : '';
-      if (chain.prev_in_thread_id == null) flag = `${switchTag}<div class="t-flag ok">线程起点（窗口内基线）</div>`;
-      else if (chain.first_diff_in_thread_index != null) {
-        if (chain.common_prefix_in_thread === 0 && t.message_count > 0)
-          flag = `${switchTag}<div class="t-flag break">⚠ 线程内前缀断裂：0 条与上轮相同</div>`;
-        else flag = `${switchTag}<div class="t-flag">新增：第 ${chain.first_diff_in_thread_index + 1} 条起（${esc(chain.first_diff_in_thread_role || '?')}）</div>`;
-      } else flag = `${switchTag}<div class="t-flag ok">全部与上轮相同</div>`;
-    }
-    return `<li data-id="${t.id}" title="${esc(threadLabel)}">
-      <div>#${seq} · <span class="t-model">${esc(t.model ?? '—')}</span> · ${t.message_count} 条 · ${fmtBytes(t.bytes)}</div>
-      <div class="meta muted">${fmtTime(t.ts)}</div>
-      ${flag}
-    </li>`;
-  };
-
-  if (!multi) {
-    // 单线程退化：与旧版平铺等价（无线程层）。
-    $('#traj-turns').innerHTML = state.turns.map((t, i) => turnHtml(t, i + 1, labelOf(threadOrder[0] ?? ''))).join('')
-      || '<li class="empty">该会话没有捕获轮次（租户未开 capture 或轮次已过 TTL 清理）</li>';
-  } else {
-    $('#traj-turns').innerHTML = threadOrder.map((key, i) => {
-      const list = byThread.get(key) || [];
-      const color = THREAD_COLORS[i % THREAD_COLORS.length];
-      const span = list.length ? `${fmtTime(list[0].ts)} → ${fmtTime(list[list.length - 1].ts)}` : '';
-      const label = labelOf(key);
-      const baseSeq = state.turns.indexOf(list[0]) + 1;
-      return `<li class="traj-thread">
-        <div class="th-head" data-thread="${esc(key)}" title="${esc(label)}">
-          <span class="th-dot" style="background:${color}"></span>
-          <span class="th-label">${esc(label)}</span>
-          <span class="th-meta">${list.length}轮 · ${span}</span>
-          <span class="th-caret">▾</span>
-        </div>
-        <ul>${list.map((t, j) => turnHtml(t, baseSeq + j, label)).join('')}</ul>
-      </li>`;
-    }).join('');
-  }
-  loadFamilyHeader(state.turns).catch(() => {});
+  state.outOfWindow = allTurns.length - state.chain.length;
+  const threadLabels = new Map((forensics?.threads || []).map((th) => [th.key, th.label]));
+  const sinceTs = state.chain.length ? state.chain[0].ts : 0;
+  buildForest(state.chain, threadLabels);
   $('#view-title').textContent = `正文 · ${identity}`;
-  $('#traj-view').innerHTML = '<div id="traj-empty">选一轮看正文</div>';
+  $('#traj-view').innerHTML = '<div id="traj-empty">选一个节点看正文</div>';
+  $('#attempt-strip').hidden = true;
+  loadStatuses(tenant, identity, sinceTs).then(() => { renderTree(); renderBranchbar(hiddenSet()); }).catch(() => {});
+  renderTree();
+  renderBranchbar(hiddenSet());
+  loadFamilyHeader(allTurns).catch(() => {});
+  loadPreviews().catch(() => {});
 }
 
-/* ---- 右列：单轮完整 messages 渲染。逐条消息用 refs 与线程内上一轮 refs 对比标重复/新增 ---- */
+/* ---- 右列：×N 节点先给尝试切换条，再渲染选中尝试的正文（正文渲染逻辑不变） ---- */
 function renderMessage(msg, index, prevRefs, refHash) {
   const role = String(msg.role ?? '?');
   const dup = Array.isArray(prevRefs) && prevRefs.includes(refHash);
@@ -188,20 +393,18 @@ function renderMessage(msg, index, prevRefs, refHash) {
 
 async function loadTurn(id) {
   state.turnId = id;
-  const idx = state.turns.findIndex((t) => t.id === id);
   const chain = state.chainByTurn.get(id);
-  // 「上一轮」用线程内上一轮（deleg 家族时间序上一轮可能是别的孩子，比对无意义）。
   const prevTurn = chain?.prev_in_thread_id != null ? state.turns.find((t) => t.id === chain.prev_in_thread_id) ?? null : null;
   const data = await fetchJson(`/api/capture/turns/${id}`);
   state.refsByTurn.set(id, data.refs || []);
   if (prevTurn && !state.refsByTurn.has(prevTurn.id)) {
-    // 线程内上一轮的 refs 没拿过：轻量补一次（缓存起来，翻轮次时零成本）
     try { const prev = await fetchJson(`/api/capture/turns/${prevTurn.id}`); state.refsByTurn.set(prevTurn.id, prev.refs || []); } catch {}
   }
   const prevRefs = state.refsByTurn.get(prevTurn?.id ?? '') ?? null;
   const body = data.body || {};
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const refs = data.refs || [];
+  const idx = state.turns.findIndex((t) => t.id === id);
   $('#view-title').textContent = `正文 · 轮次 #${idx + 1}（${esc(state.identity)}） · capture_id ${esc(String(data.turn?.capture_id ?? ''))}`;
   $('#traj-view').innerHTML =
     `<div class="traj-note" style="padding:8px 14px">model <b>${esc(body.model ?? '—')}</b> · ${messages.length} 条消息 · ${fmtBytes(data.turn?.bytes)} · capture 于 ${fmtClock(data.turn?.ts)} · 哈希引用列表（盐化）：${refs.length ? esc(refs[0].slice(0, 12)) + '… 等 ' + refs.length + ' 条' : '—'}</div>` +
@@ -211,6 +414,25 @@ async function loadTurn(id) {
     body2.classList.toggle('clamped');
     btn.textContent = body2.classList.contains('clamped') ? '展开全文 ▾' : '收起 ▴';
   }));
+  markCur();
+}
+
+async function loadNode(nodeId) {
+  const n = state.forest.byId.get(nodeId);
+  if (!n || !n.turns.length) return;
+  state.nodeId = nodeId;
+  markCur();
+  const strip = $('#attempt-strip');
+  if (n.turns.length > 1) {
+    strip.hidden = false;
+    strip.innerHTML = '同一状态的尝试：' + n.turns.map((t, i) => {
+      const r = state.statusByCapture.get(t.capture_id);
+      return `<button data-turn="${t.id}" class="${t.id === state.turnId ? 'on' : ''}"><i style="background:${stCol(r?.status)}"></i>#${i + 1} ${r?.status ?? ''} ${fmtTime(t.ts)}</button>`;
+    }).join('');
+    $$('#attempt-strip button').forEach((btn) => btn.addEventListener('click', () => loadTurn(Number(btn.dataset.turn)).catch((err) => { $('#err').textContent = `正文加载失败：${err.message}`; })));
+  } else strip.hidden = true;
+  const target = n.turns.find((t) => t.id === state.turnId) ?? n.turns[n.turns.length - 1];
+  await loadTurn(target.id);
 }
 
 /* ---- 事件 ---- */
@@ -220,21 +442,6 @@ $('#traj-sessions').addEventListener('click', (e) => {
   $$('#traj-sessions li').forEach((x) => x.classList.remove('active'));
   li.classList.add('active');
   loadTurns(li.dataset.identity, li.dataset.tenant).catch((err) => { $('#err').textContent = `轮次加载失败：${err.message}`; });
-});
-$('#traj-turns').addEventListener('click', (e) => {
-  const threadHead = e.target.closest('.th-head');
-  if (threadHead) {
-    const kids = threadHead.nextElementSibling;
-    if (kids && kids.tagName === 'UL') kids.classList.toggle('hidden');
-    const caret = threadHead.querySelector('.th-caret');
-    if (caret) caret.textContent = kids.classList.contains('hidden') ? '▸' : '▾';
-    return;
-  }
-  const li = e.target.closest('li[data-id]');
-  if (!li) return;
-  $$('#traj-turns li[data-id]').forEach((x) => x.classList.remove('active'));
-  li.classList.add('active');
-  loadTurn(Number(li.dataset.id)).catch((err) => { $('#err').textContent = `正文加载失败：${err.message}`; });
 });
 $('#f-search').addEventListener('input', () => loadSessions().catch(() => {}));
 
@@ -249,17 +456,15 @@ initChrome('trajectory.html').then(async () => {
       li.classList.add('active');
       const captureId = params.get('capture_id');
       if (captureId) {
-        // 从请求页跳来：定位该 capture_id 的轮次并直接展开正文
+        // 从请求页跳来：定位该 capture_id 所在的节点并直接展开正文
         await loadTurns(identity, li.dataset.tenant);
         const turn = state.turns.find((t) => t.capture_id === captureId);
-        if (turn) {
-          const item = $(`#traj-turns li[data-id="${turn.id}"]`);
-          item?.click();
-        } else $('#err').textContent = `轮次 ${captureId.slice(0, 8)}… 不在最近 500 轮里（可能已过 TTL 清理）`;
+        const node = turn && state.forest ? state.forest.nodes.find((n) => n.turns.some((t) => t.id === turn.id)) : null;
+        if (node) { state.turnId = turn.id; await loadNode(node.id); }
+        else $('#err').textContent = `轮次 ${captureId.slice(0, 8)}… 不在最近 500 轮里（可能已过 TTL 清理）`;
       }
       return;
     }
-    // 会话不在第一页：直接按参数拉
     $('#err').textContent = `会话 ${identity} 不在最近 200 个会话里，请从列表里挑`;
   }
 });
