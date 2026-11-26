@@ -22,3 +22,8 @@
 - 节点第二行标签 = [角色] 第 N 条起 +K；预览文本懒加载（只 fetch 分支根/主干根的正文，≤12 个）。
 - 状态点数据来自账本 requests（按 capture_id 分页对回），随会话加载二次渲染。
 - 页面时区沿用现状（toLocaleTimeString 设备本地），本票不动时区口径。
+- （2026-11-26 验收时用户拍板）聚合口径钉死：轨迹页严格按 agent 传给网关的会话 id（x-session-id → identity）聚合，
+  **不做跨身份按 thread_key 归并**——即使实测出现同一逻辑会话分裂成两个 identity（Hermes 中途换发 session id，
+  新 id 还原样重放了几轮旧前缀，例：本对话 gwk_dcfb154c…/10:54 前 与 gwk_1745adc9…/10:57 起，thread_key 同为
+  fc505c5cf6cf…，两边 capture 零交集），页面也各画各的，宁可显示成两条不完整会话，不自动拼回。
+  按 thread_key 归并留作将来想法，不做现行承诺。

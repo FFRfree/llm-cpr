@@ -34,6 +34,7 @@
 #rail-layer{position:absolute;top:0;left:0;bottom:0;pointer-events:none;z-index:0;overflow:visible}
 #rail-layer .rl{position:absolute;width:1.5px;opacity:.5;border-radius:1px}
 #rail-layer .rd{position:absolute;border-radius:50%;border:1.5px solid var(--surface);box-sizing:border-box}
+#rail-layer .rd.rg{background:var(--surface);border-width:2px}
 #rail-layer .rk{position:absolute;width:0;height:0;border-top:4px solid transparent;border-bottom:4px solid transparent;border-left:6px solid var(--warning)}
 #rail-layer .rsvg{position:absolute;pointer-events:none;overflow:visible}
 #stream-list{position:relative;z-index:1}
@@ -238,8 +239,7 @@ function visibleGraph() {
   for (const n of visible) if (n.parent && visIds.has(n.parent.id)) (kids.get(n.parent.id) || kids.set(n.parent.id, []).get(n.parent.id)).push(n);
   const roots = visible.filter((n) => !n.parent || !visIds.has(n.parent.id));
   const sizes = state.forest.sizes;
-  let nextLane = 0;
-  const laneOf = new Map(), order = [];
+  const order = [];
   for (const treeRoot of state.forest.roots) {
     const treeIds = subtreeOf(treeRoot);
     const treeRoots = roots.filter((r) => treeIds.has(r.id)).sort((a, b) => a.turns[0].ts - b.turns[0].ts);
@@ -251,17 +251,70 @@ function visibleGraph() {
       tn.push(n);
       (kids.get(n.id) || []).slice().reverse().forEach((c) => stack.push(c));
     }
-    for (const r of treeRoots) laneOf.set(r.id, nextLane++);
-    for (const n of tn) {
-      const kk = (kids.get(n.id) || []).slice().sort((a, b) => sizes.get(b.id) - sizes.get(a.id));
-      kk.forEach((c, i) => laneOf.set(c.id, i === 0 ? laneOf.get(n.id) : nextLane++));
-    }
     order.push(...tn);
   }
   order.sort((a, b) => a.turns[0].ts - b.turns[0].ts);
-  const edges = [];
-  for (const n of order) for (const c of (kids.get(n.id) || [])) edges.push({ p: n.id, c: c.id, pl: laneOf.get(n.id), cl: laneOf.get(c.id) });
-  return { order, laneOf, kids, edges, nLanes: Math.max(1, nextLane) };
+  /* git graph 式列回收（用户拍板，替代"一分支占一道到底"）：分支线从分叉行（父节点行）活到本分支末行，之后该列让出。
+     分支头 = 可见根 或 非最长子（孩子按子树大小排序取 i>0，与 buildBranches 同口径）；分支 id 也同口径
+     （'trunk-<rootid>' / '<nodeid>'），分支 chips 直接用 branchColor 查色。颜色跟分支走（列会被复用）。 */
+  const kidIdx = new Map();
+  for (const [pid, kk] of kids) kk.slice().sort((a, b) => sizes.get(b.id) - sizes.get(a.id)).forEach((c, i) => kidIdx.set(c.id, i));
+  const bOf = new Map();
+  const branchOf = (n) => {
+    if (bOf.has(n.id)) return bOf.get(n.id);
+    let bid;
+    if (!n.parent) bid = 'trunk-' + n.id;
+    else if (!visIds.has(n.parent.id)) bid = String(n.id); // 祖先分支被隐藏：自成一轨，id 对齐它的分支 chip
+    else bid = (kidIdx.get(n.id) || 0) > 0 ? String(n.id) : branchOf(n.parent);
+    bOf.set(n.id, bid);
+    return bid;
+  };
+  const rowOfNode = new Map();
+  order.forEach((n, i) => rowOfNode.set(n.id, i));
+  const headOfBid = new Map(), bMeta = new Map();
+  for (const n of order) {
+    const b = branchOf(n);
+    const isHead = !n.parent || !visIds.has(n.parent.id) || (kidIdx.get(n.id) || 0) > 0;
+    const m = bMeta.get(b) || (bMeta.set(b, { birth: Infinity, last: -1 }), bMeta.get(b));
+    m.last = Math.max(m.last, rowOfNode.get(n.id));
+    if (!isHead || headOfBid.has(b)) continue;
+    headOfBid.set(b, n.id);
+    m.birth = n.parent && visIds.has(n.parent.id) ? rowOfNode.get(n.parent.id) : rowOfNode.get(n.id);
+  }
+  const laneFreeAt = [], laneOfBranch = new Map(), laneOf = new Map();
+  const bids = [...bMeta.keys()].sort((x, y) => {
+    const mx = bMeta.get(x), my = bMeta.get(y);
+    return mx.birth - my.birth || (kidIdx.get(headOfBid.get(x)) || 0) - (kidIdx.get(headOfBid.get(y)) || 0) || String(x).localeCompare(String(y));
+  });
+  for (const b of bids) {
+    const m = bMeta.get(b);
+    let l = 0;
+    while (l < laneFreeAt.length && laneFreeAt[l] >= m.birth) l++;
+    if (l === laneFreeAt.length) laneFreeAt.push(m.last);
+    laneFreeAt[l] = m.last;
+    laneOfBranch.set(b, l);
+  }
+  for (const n of order) laneOf.set(n.id, laneOfBranch.get(bOf.get(n.id)) ?? 0);
+  const branchInfo = new Map(), branchColor = new Map();
+  bids.forEach((b, i) => {
+    const head = headOfBid.get(b), hn = state.forest.byId.get(Number(String(head).replace(/^trunk-/, '')));
+    const info = {
+      head,
+      parent: hn && hn.parent && visIds.has(hn.parent.id) ? hn.parent.id : null,
+      lane: laneOfBranch.get(b),
+      lastNode: null,
+      color: RAILS[i % RAILS.length],
+    };
+    branchInfo.set(b, info);
+    branchColor.set(b, info.color);
+  });
+  for (const [bid, bi] of branchInfo) {
+    // lastNode = 本分支行号最大的节点（流序里最后一次出现）
+    let best = null, bestRow = -1;
+    for (const n of order) if (bOf.get(n.id) === bid) { const r = rowOfNode.get(n.id); if (r > bestRow) { bestRow = r; best = n.id; } }
+    bi.lastNode = best;
+  }
+  return { order, laneOf, kids, branchOf: bOf, branchInfo, branchColor, nLanes: Math.max(1, laneFreeAt.length) };
 }
 
 /* ---- 主面板 ---- */
@@ -301,7 +354,7 @@ function renderBranchbar() {
       ? `主干（最长链）· ${b.count} 轮 · ${fmtTime(b.ts)} 起`
       : `⎇ 自第 ${b.forkAt} 条分出 · ${b.count} 轮 · ${fmtTime(b.ts)} 起`;
     const lane = state.graph.laneOf.get(b.node.id);
-    const col = on && lane != null ? railCol(lane) : 'var(--muted)';
+    const col = on ? (state.graph.branchColor.get(b.id) || (lane != null ? railCol(lane) : 'var(--muted)')) : 'var(--muted)';
     chips += `<button class="bchip${dis ? ' dis' : on ? ' on' : ' off'}" data-b="${esc(b.id)}"${dis ? ' disabled' : ''} title="${esc(meta)}">` +
       `<i style="background:${col}"></i><span>${esc(label)}</span><em>${b.count}</em></button>`;
   }
@@ -542,30 +595,46 @@ function drawRail() {
     const r = h.getBoundingClientRect();
     yOf.set(Number(el.dataset.node), r.top - stop + r.height / 2);
   });
+  const seg = (x, y1, y2, col) => `<i class="rl" style="left:${x - 0.75}px;top:${Math.round(y1)}px;height:${Math.round(y2 - y1)}px;background:${col}"></i>`;
+  const stub = (x, y, col) => seg(x, y - DOT_R - 4, y + DOT_R + 4, col);
+  const bend = (x1, y1, x2, y2, col) => {
+    const L = Math.min(x1, x2) - 3, T = y1 - 3;
+    const w = Math.abs(x2 - x1) + 6, h = Math.max(y2 - y1, 1) + 6;
+    const lx1 = x1 - L, lx2 = x2 - L, dy = (h - 6) * 0.5;
+    return `<svg class="rsvg" style="left:${L}px;top:${T}px" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
+      `<path d="M${lx1} 3 C${lx1} ${3 + dy} ${lx2} ${h - 3 - dy} ${lx2} ${h - 3}" stroke="${col}" stroke-width="1.5" fill="none" opacity="0.9"/></svg>`;
+  };
   let s = '';
-  for (const e of state.graph.edges) {
-    const yp = yOf.get(e.p), yc = yOf.get(e.c);
-    if (yp == null || yc == null) continue;
-    if (e.pl === e.cl) {
-      // 同道竖线：一根 div 从父圆点拉到子圆点
-      s += `<i class="rl" style="left:${laneX(e.cl) - 0.75}px;top:${Math.round(yp)}px;height:${Math.round(yc - yp)}px;background:${railCol(e.cl)}"></i>`;
-    } else {
-      // 跨道分叉：一支独立小 SVG（各自尺寸都小，不积成大图层）
-      const x1 = laneX(e.pl), x2 = laneX(e.cl);
-      const L = Math.min(x1, x2) - 4, T = yp - 4;
-      const w = Math.abs(x2 - x1) + 8, h = yc - yp + 8;
-      const lx1 = x1 - L, lx2 = x2 - L, dy = (yc - yp) * 0.45;
-      s += `<svg class="rsvg" style="left:${L}px;top:${T}px" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
-        `<path d="M${lx1} 4 C${lx1} ${4 + dy} ${lx2} ${h - 4 - dy} ${lx2} ${h - 4}" stroke="${railCol(e.cl)}" stroke-width="1.5" fill="none" opacity="0.85"/></svg>`;
+  /* git graph 语言：分支 = 分叉点处 ≤2 行高的短弯换道 + 笔直竖线贯穿到本分支末节点；列回收后线短图紧凑 */
+  for (const bi of state.graph.branchInfo.values()) {
+    const yh = yOf.get(bi.head), yl = yOf.get(bi.lastNode);
+    if (yh == null || yl == null) continue;
+    const x = laneX(bi.lane);
+    if (bi.parent == null) {
+      if (yl - yh > 6) s += seg(x, yh, yl, bi.color);
+      else s += stub(x, yh, bi.color);
+      continue;
     }
+    const yp = yOf.get(bi.parent);
+    if (yp == null) continue;
+    const x1 = laneX(state.graph.laneOf.get(bi.parent) ?? bi.lane);
+    const yEnd = Math.min(yp + 64, yl); // 短弯最多 ~1.5 行高，弯完即直线
+    if (yEnd > yp + 1 && Math.abs(x1 - x) > 1) s += bend(x1, yp, x, yEnd, bi.color);
+    else if (yl > yp) s += seg(x, Math.max(yp, yh), yl, bi.color);
+    if (yEnd < yl - 6) s += seg(x, yEnd, yl, bi.color);
+    else if (yl - yEnd < 6 && Math.abs(x1 - x) > 1 && yl - yh < 6) s += stub(x, yl, bi.color);
   }
   for (const n of state.graph.order) {
     const y = yOf.get(n.id);
     if (y == null) continue;
     const l = state.graph.laneOf.get(n.id);
+    if (l == null) continue;
+    const col = state.graph.branchColor.get(state.graph.branchOf.get(n.id)) || RAILS[0];
     const rr = DOT_R + (n.turns.length > 1 ? 2 : 0);
-    if ((state.graph.kids.get(n.id) || []).length > 1) s += `<i class="rk" style="left:${laneX(l) + rr + 3}px;top:${y - 4}px"></i>`;
-    s += `<i class="rd" style="left:${laneX(l) - rr}px;top:${y - rr}px;width:${rr * 2}px;height:${rr * 2}px;background:${railCol(l)}"></i>`;
+    const fork = (state.graph.kids.get(n.id) || []).length > 1;
+    s += fork
+      ? `<i class="rd rg" style="left:${laneX(l) - rr - 1.5}px;top:${y - rr - 1.5}px;width:${rr * 2 + 3}px;height:${rr * 2 + 3}px;border-color:${col}"></i>`
+      : `<i class="rd" style="left:${laneX(l) - rr}px;top:${y - rr}px;width:${rr * 2}px;height:${rr * 2}px;background:${col}"></i>`;
   }
   layer.innerHTML = s;
 }
