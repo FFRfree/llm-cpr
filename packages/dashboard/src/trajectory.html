@@ -597,17 +597,22 @@ function drawRail() {
   });
   const seg = (x, y1, y2, col) => `<i class="rl" style="left:${x - 0.75}px;top:${Math.round(y1)}px;height:${Math.round(y2 - y1)}px;background:${col}"></i>`;
   const stub = (x, y, col) => seg(x, y - DOT_R - 4, y + DOT_R + 4, col);
+  /* mhutchie git graph 同款换道曲线（MIT 期 4af8583 web/graph.ts L92）：C x1,(y1+d) x2,(y2-d) x2,y2，
+     d=0.8×跨度——两端竖直引线各 0.8 行、过冲出中点，中间一次果断横摆，观感即 VSCode 那种大圆弧 */
   const bend = (x1, y1, x2, y2, col) => {
+    const d = 0.8 * (y2 - y1);
     const L = Math.min(x1, x2) - 3, T = y1 - 3;
     const w = Math.abs(x2 - x1) + 6, h = Math.max(y2 - y1, 1) + 6;
     const lx1 = x1 - L, lx2 = x2 - L;
-    const dx = lx2 - lx1, dy = h - 6;
-    // peel-off 弧：从分叉点斜出（~35°），竖直汇入分支列（git graph 的分叉观感，比纯 S 圆润）
     return `<svg class="rsvg" style="left:${L}px;top:${T}px" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
-      `<path d="M${lx1} 3 C${lx1 + dx * 0.35} ${3 + dy * 0.25} ${lx2} ${3 + dy * 0.55} ${lx2} ${h - 3}" stroke="${col}" stroke-width="1.5" fill="none" opacity="0.9"/></svg>`;
+      `<path d="M${lx1} 3 C${lx1} ${3 + d} ${lx2} ${h - 3 - d} ${lx2} ${h - 3}" stroke="${col}" stroke-width="1.5" fill="none" opacity="0.9"/></svg>`;
   };
   let s = '';
-  /* git graph 语言：分支 = 分叉点处 ≤2 行高的短弯换道 + 笔直竖线贯穿到本分支末节点；列回收后线短图紧凑 */
+  /* git graph 语言：分支 = 分叉点处约一行的短弯换道 + 笔直竖线贯穿到本分支末节点；列回收后线短图紧凑。
+     弯的跨度锚"典型行距"（thead 中心间距中位数）而非首节点行——行高不均时弯不至于被撑变形 */
+  const ys = [...yOf.values()].sort((a, b) => a - b);
+  let ONE_ROW = 44;
+  if (ys.length > 2) { const df = []; for (let i = 1; i < ys.length; i++) df.push(ys[i] - ys[i - 1]); df.sort((a, b) => a - b); ONE_ROW = Math.max(24, df[df.length >> 1] || 44); }
   for (const bi of state.graph.branchInfo.values()) {
     const yh = yOf.get(bi.head), yl = yOf.get(bi.lastNode);
     if (yh == null || yl == null) continue;
@@ -620,11 +625,12 @@ function drawRail() {
     const yp = yOf.get(bi.parent);
     if (yp == null) continue;
     const x1 = laneX(state.graph.laneOf.get(bi.parent) ?? bi.lane);
-    const yEnd = Math.min(yp + 112, yh); // 弯线必须落在本分支首节点行（首点在线上）；缺口大时弯 112px 后直线贯穿
-    if (yEnd > yp + 1 && Math.abs(x1 - x) > 1) s += bend(x1, yp, x, yEnd, bi.color);
+    const yT = Math.min(yp + ONE_ROW, yh); // 弯只占约一行；首节点行内必已到本列，首点永远在线上
+    const bent = yT - yp > 2 && Math.abs(x1 - x) > 1;
+    if (bent) s += bend(x1, yp, x, yT, bi.color);
     else if (yl > yp) s += seg(x, Math.max(yp, yh), yl, bi.color);
-    if (yEnd < yl - 6) s += seg(x, yEnd, yl, bi.color);
-    else if (yl - yEnd < 6 && Math.abs(x1 - x) > 1 && yl - yh < 6) s += stub(x, yl, bi.color);
+    if (bent && yT < yl - 6) s += seg(x, yT, yl, bi.color);
+    else if (bent && yl - yh < 6) s += stub(x, yl, bi.color);
   }
   for (const n of state.graph.order) {
     const y = yOf.get(n.id);
