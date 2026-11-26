@@ -223,8 +223,17 @@ try {
   assert.equal(dashboard.status, 200);
   const dashboardHtml = await dashboard.text();
   assert.ok(dashboardHtml.includes('<html'), '看板应为 HTML');
-  assert.ok(dashboardHtml.length > 5000, '看板内容长度异常');
-  record('看板静态资源', `${dashboardHtml.length} 字节`);
+  /* SPA 形态（dashboard-preact 起五视图组件化）：壳页是薄壳（~700B，import map + #app），
+     看板主体在 assets/pages/*.js 与 vendor/ —— 验壳内容 + 关键资产可达，不再验整页长度 */
+  assert.ok(dashboardHtml.includes('id="app"'), 'SPA 壳应有 #app 挂载点');
+  assert.ok(dashboardHtml.includes('importmap'), 'SPA 壳应有 import map');
+  const appJs = await fetch(`${adminUrl}/assets/pages/app.js`);
+  assert.equal(appJs.status, 200, 'SPA 顶栏模块应可达');
+  assert.ok((await appJs.text()).length > 2000, 'SPA 顶栏模块内容异常');
+  const vendor = await fetch(`${adminUrl}/assets/vendor/preact.js`);
+  assert.equal(vendor.status, 200, 'preact vendor 应可达');
+  assert.ok(dashboardHtml.length > 300, '看板壳内容异常');
+  record('看板静态资源', `壳 ${dashboardHtml.length}B + 顶栏模块/vendor 可达`);
 
   assert.ok(fs.existsSync(sessionsDb), '应使用显式指定的 data.db');
   const strayDbs = fs.readdirSync(releaseDir).filter((name: string): boolean => name.endsWith('.db'));
