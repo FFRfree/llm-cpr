@@ -377,6 +377,8 @@ export function View({ reloadKey }) {
     let queued = false;
     const schedule = () => { if (queued) return; queued = true; requestAnimationFrame(() => { queued = false; drawRail(); }); };
     const drawRail = () => {
+      /* 壳 header 是 sticky 顶栏：把它的实时高度写进 CSS 变量，本视图的 sticky 元素（work-bar/会话列）让出顶栏 */
+      document.documentElement.style.setProperty('--shell-header-h', (document.querySelector('#app > header')?.offsetHeight || 0) + 'px');
       const stream = streamRef.current, list = listRef.current, layer = layerRef.current;
       const g = st.graph;
       if (!stream || !list || !layer || !g || !list.querySelector('.tblock')) { if (layer) layer.innerHTML = ''; return; }
@@ -560,8 +562,8 @@ function FamLine({ st, family, progress }) {
 const TRAJ_CSS = `
 .traj{grid-template-columns:260px 1fr;align-items:start}
 #pane-main{min-width:0;max-height:none;overflow:visible}
-#pane-sessions{position:sticky;top:8px;max-height:calc(100vh - 16px);overflow-y:auto}
-#work-bar{position:sticky;top:0;z-index:30;background:var(--surface);border-bottom:1px solid var(--border)}
+#pane-sessions{position:sticky;top:calc(var(--shell-header-h, 56px) + 8px);max-height:calc(100vh - var(--shell-header-h, 56px) - 16px);overflow-y:auto}
+#work-bar{position:sticky;top:var(--shell-header-h, 56px);z-index:30;background:var(--surface);border-bottom:1px solid var(--border)}
 #work-bar .fam{padding:7px 12px 2px;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #work-bar .bchips{display:flex;flex-wrap:wrap;gap:5px;padding:2px 12px 7px}
 .bchip{display:inline-flex;align-items:center;gap:5px;max-width:250px;background:none;border:1px solid var(--border);border-radius:20px;padding:1px 9px 1px 7px;cursor:pointer;font-size:11px;color:var(--text-2)}
