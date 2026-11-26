@@ -44,8 +44,6 @@
 .thead:hover{background:var(--hover)}
 .th1{display:flex;gap:7px;align-items:center;height:18px;min-width:0}
 .th1 .pill{flex-shrink:0;color:var(--surface);border-radius:5px;padding:0 6px;font-size:10px;font-weight:700;line-height:15px;min-width:34px;text-align:center;text-transform:lowercase}
-.th1 .tsum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--text)}
-.th1 .xb{flex-shrink:0;font-size:10px;font-family:var(--mono);border:1px solid var(--border);border-radius:6px;padding:0 5px}
 .th1 .xn{flex-shrink:0;background:none;border:1px solid var(--border);border-radius:6px;padding:0 7px;cursor:pointer;font-size:10px;font-family:var(--mono)}
 .th1 .xn:hover{filter:brightness(1.15)}
 .th1 .caret{flex-shrink:0;color:var(--muted);font-size:10px;width:10px;text-align:center}
@@ -58,13 +56,17 @@
 .astrip button{background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:1px 8px;cursor:pointer;font-size:11px;font-family:var(--mono)}
 .astrip button.on{color:var(--text);border-color:var(--border-strong);background:var(--hover)}
 .astrip i{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:3px}
-.tbody{padding:2px 12px 12px 0;cursor:default}
+.tbody{display:flex;flex-direction:column;gap:7px;padding:2px 12px 12px 0;cursor:default}
 .tload{padding:2px 0;font-size:11px;color:var(--muted)}
-/* 消息卡：轮展开后每条消息一张卡；系统/工具回显再折叠一层 */
-.mcard{border:1px solid var(--border);border-radius:8px;padding:7px 10px;margin:7px 0 0;background:var(--surface);font-size:12px;min-width:0}
-.mcard:last-child{margin-bottom:0}
-.seclab{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--muted);letter-spacing:.5px;margin:9px 0 -3px}
-.seclab::after{content:'';flex:1;height:1px;background:var(--border)}
+/* 消息气泡（用户拍板 bubble list）：LLM 侧（assistant 回复）靠左绿，harness 侧靠右——user 蓝、工具结果/系统灰 */
+.mcard{border:1px solid var(--border);border-radius:10px;padding:7px 10px;background:var(--surface);font-size:12px;min-width:0;align-self:flex-start;max-width:82%}
+.mcard.m-llm{border-color:color-mix(in srgb,var(--success) 40%,var(--border));background:color-mix(in srgb,var(--success) 7%,var(--surface))}
+.mcard.m-llm .mr{color:var(--success)}
+.mcard.m-h{align-self:flex-end}
+.mcard.m-h .mr{color:var(--muted)}
+.mcard.m-h.r-user{border-color:color-mix(in srgb,var(--accent-bright,#5b8def) 40%,var(--border));background:color-mix(in srgb,var(--accent-bright,#5b8def) 7%,var(--surface))}
+.mcard.r-tool,.mcard.r-system{align-self:flex-end;font-size:11px;padding:4px 9px;max-width:70%}
+.morehint{align-self:center;background:none;border:1px dashed var(--border);color:var(--muted);border-radius:8px;padding:2px 10px;cursor:pointer;font-size:10px}
 .mcard.r-user{border-left:3px solid var(--accent-bright,#5b8def)}
 .mcard.r-assistant{border-left:3px solid var(--success)}
 .mcard.r-tool,.mcard.r-system{border-left:3px solid var(--muted);color:var(--text-2)}
@@ -91,10 +93,9 @@
 <main>
 <h2>轨迹工作台</h2>
 <p class="muted" style="font-size:12px;margin:0 0 4px">
-  左列挑会话 → 右侧是这条会话的轮次流（从上到下按时间排）：每轮默认收起成一行摘要
-  （角色 + 一句话说明这条消息干了什么 + 时间/状态），点行展开该轮新增的消息卡，再点收起——
-  show more / show less，不被一口气灌满。每条消息只出现一次（= 它被首次追加的那一轮），
-  轮内工具调用、系统提示、工具回显再折叠一层。
+  左列挑会话 → 右侧是这条会话的轮次流（从上到下按时间排）：一轮 = 一次发给模型的请求，行内以聊天气泡展示该轮新增消息——
+  LLM 侧（assistant 回复）靠左绿，harness 侧（你的输入 / 工具结果 / 系统）靠右蓝灰；收起态只露前 2 条气泡，
+  点行展开全量（工具调用可点开看参数，工具回显/系统提示再折叠一层，长文钳 10 行）。每条消息只出现一次（= 它被首次追加的那一轮）。
   树结构画在左缘泳道：一个圆点 = 一轮（同一前缀的重试收进 ×N），分叉 = 同一前缀拐出不同走向。
   顶栏 chips 显隐分支（主干 = 最长链，也是一条分支）；Hermes 压缩改写历史产生的续段会标「压缩续段」。
 </p>
@@ -416,41 +417,41 @@ function renderStream() {
     const parentLen = n.parent ? n.parent.refs.length : 0;
     const addedCount = n.refs.length - parentLen;
     const role = roleOf(n);
-    const pv = state.previewByNode.get(n.id);
     const fallback = n.parent ? `[${role}] 第 ${parentLen + 1} 条起 +${addedCount}` : '[S] 线程起点';
     const r = state.statusByCapture.get(tN.capture_id);
     html += `<div class="tblock${state.expanded.has(n.id) ? ' open' : ''}" data-node="${n.id}">` +
       `<div class="thead" data-node="${n.id}">` +
       `<div class="th1"><span class="pill" id="pl-${n.id}" style="background:${ROLE_COL[role] ?? 'var(--muted)'}">${esc(role)}</span>` +
-      `<span class="tsum" id="pv-${n.id}">${esc(pv ? pv.slice(0, 90) : fallback)}</span>` +
       (ns > 1 ? `<button class="xn" data-xn="${n.id}" style="color:${retryColor(n.turns)};border-color:${retryColor(n.turns)}">×${ns} 尝试</button>` : '') +
       `<span class="caret">${state.expanded.has(n.id) ? '▴' : '▾'}</span></div>` +
       `<div class="th2"><span class="tm">${fmtTime(tN.ts)}</span><span class="stt" style="color:${stCol(r?.status)}">${r?.status ?? '—'}</span>` +
       `<span class="sp">+${addedCount}</span>` +
       (ns > 1 ? `<span class="sp">${fmtTime(t0.ts)}→</span>` : '') +
       (!n.parent ? `<span class="troot" id="tr-${n.id}">线程起点</span>` : '') +
-      `<span class="tk">${esc(String(n.threadKey ?? '').slice(0, 14))}</span></div></div>`;
-    if (state.expanded.has(n.id)) html += `<div class="tbody"><div class="tload">加载中…</div></div>`;
+      `<span class="tk">${esc(String(n.threadKey ?? '').slice(0, 14))}</span></div></div>` +
+      `<div class="tbody"><div class="tload">${esc(fallback)}</div></div></div>`;
   }
   $('#stream-list').innerHTML = html;
   $('#stream-list').style.marginLeft = railW() + 'px';
-  for (const id of state.expanded) mountBody(state.forest.byId.get(id)); // 展开态重渲染后回填（正文走缓存）
+  for (const n of g.order) renderBubbles(n); // 已缓存正文的行立即出气泡；未拉过的由 fillAll 渐进填
   fillAll();
 }
-/* 轮摘要原位更新（后台正文拉到后）；展开态不动消息区 */
-function applyRowMeta(n, data) {
+/* 正文拉到后原位回填：pill 角色 / 线程起点·压缩续段标签 / 该行气泡 */
+function updateRowMetaBits(n, data) {
   const role = roleOf(n, data);
   const pl = $(`#pl-${n.id}`);
   if (pl && ROLE_COL[role]) { pl.textContent = role; pl.style.background = ROLE_COL[role]; }
-  const pv = $(`#pv-${n.id}`);
-  if (pv) pv.textContent = summarizeAdded(n, data).slice(0, 90);
   if (!n.parent) {
     const msgs = data.body?.messages || [];
     const tr = $(`#tr-${n.id}`);
     if (tr && msgs[1]) tr.textContent = String(msgs[1].role ?? '').toLowerCase() !== 'user' ? '压缩续段' : '线程起点';
   }
 }
-/* 点行展开 / 再点收起 */
+function applyRowMeta(n, data) {
+  updateRowMetaBits(n, data);
+  renderBubbles(n);
+}
+/* 点行展开 / 再点收起：气泡流在收起态钳 2 条，展开全量 */
 function toggleNode(nodeId) {
   const block = $(`#stream-list .tblock[data-node="${nodeId}"]`);
   if (!block) return;
@@ -459,8 +460,6 @@ function toggleNode(nodeId) {
   if (state.expanded.has(nodeId)) {
     state.expanded.delete(nodeId);
     block.classList.remove('open');
-    block.querySelector('.tbody')?.remove();
-    block.querySelector('.astrip')?.remove();
     const c = block.querySelector('.caret');
     if (c) c.textContent = '▾';
   } else {
@@ -468,47 +467,39 @@ function toggleNode(nodeId) {
     block.classList.add('open');
     const c = block.querySelector('.caret');
     if (c) c.textContent = '▴';
-    mountBody(n);
   }
+  renderBubbles(n);
   scheduleRail();
 }
-function mountBody(n) {
+/* 行体渲染：气泡流（LLM 侧左绿 / harness 侧右蓝灰）。收起态钳 2 条 + 「还有 N 条」；展开全量。
+   正文未到时保留占位，由 fillAll 渐进回填；展开未缓存时现拉 */
+function renderBubbles(n) {
   if (!n) return;
   const block = $(`#stream-list .tblock[data-node="${n.id}"]`);
-  if (!block || block.querySelector('.tbody')) return;
-  const div = document.createElement('div');
-  div.className = 'tbody';
-  div.innerHTML = '<div class="tload">加载中…</div>';
-  block.querySelector('.thead').after(div);
-  fillBody(n, div);
-}
-async function fillBody(n, div) {
+  if (!block) return;
+  const div = block.querySelector('.tbody');
+  if (!div) return;
   const want = state.attempt.get(n.id) ?? n.turns[n.turns.length - 1].id;
   div.dataset.want = String(want);
-  let data = state.bodies.get(want);
+  const data = state.bodies.get(want);
   if (!data) {
-    try { data = await getBody(want); }
-    catch (e) { if (div.isConnected && div.dataset.want === String(want)) div.innerHTML = `<div class="tload">正文加载失败：${esc(e.message)}</div>`; return; }
+    if (div.dataset.loading === String(want)) return; // 已在途
+    div.dataset.loading = String(want);
+    div.innerHTML = '<div class="tload">加载中…</div>';
+    getBody(want).then(() => { delete div.dataset.loading; if (div.isConnected && div.dataset.want === String(want)) renderBubbles(n); })
+      .catch((e) => { delete div.dataset.loading; if (div.isConnected && div.dataset.want === String(want)) div.innerHTML = `<div class="tload">正文加载失败：${esc(e.message)}</div>`; });
+    return;
   }
-  if (!div.isConnected || div.dataset.want !== String(want)) return; // 已收起或换了尝试，弃
+  delete div.dataset.loading;
+  updateRowMetaBits(n, data); // 气泡直出路径也回填 pill/起点标签（否则先到的行 pill 停在占位符）
+  const open = state.expanded.has(n.id);
   const parentLen = n.parent ? n.parent.refs.length : 0;
   const added = (data.body?.messages || []).slice(parentLen);
-  let html;
-  if (!added.length) {
-    html = '<div class="tload">（本轮无新增消息——同前缀的另一次尝试）</div>';
-  } else {
-    // 新增段分组：开头的 assistant 消息 = 上一条请求的回复（入账），其后首个非 assistant = 触发本次请求的新输入
-    const parts = [];
-    const answered = !!n.parent && String(added[0].role ?? '').toLowerCase() === 'assistant';
-    let labInput = answered;
-    added.forEach((m, j) => {
-      if (j === 0 && answered) parts.push('<div class="seclab">回答 · 上一条请求的回复</div>');
-      else if (labInput && String(m.role ?? '').toLowerCase() !== 'assistant') { parts.push('<div class="seclab">本轮新输入</div>'); labInput = false; }
-      parts.push(msgCard(m, parentLen + j));
-    });
-    html = parts.join('');
-  }
-  div.innerHTML = html;
+  if (!added.length) { div.innerHTML = '<div class="tload">（本轮无新增消息——同前缀的另一次尝试）</div>'; scheduleRail(); return; }
+  const cards = added.map((m, j) => msgCard(m, parentLen + j));
+  div.innerHTML = (!open && cards.length > 3)
+    ? cards.slice(0, 2).join('') + `<button class="morehint" data-node="${n.id}">⋯ 还有 ${cards.length - 2} 条 · 点行展开</button>`
+    : cards.join('');
   scheduleRail();
 }
 /* 消息卡：系统/工具回显默认折叠，工具调用收成一行 chip，长文钳 10 行（show more/less） */
@@ -525,14 +516,16 @@ function msgCard(m, idx) {
     return `<button class="tcl">🔧 ${esc(tcall.function?.name ?? '?')}</button><div class="targs"><pre>${esc(pretty)}</pre></div>`;
   }).join('')}</div>` : '';
   const respond = m.tool_call_id ? `<span class="mi">回应 ${esc(String(m.tool_call_id))}</span>` : '';
-  const mh = `<div class="mh"><span class="mr">${esc(role)}</span><span class="mi">#${idx + 1}</span>${respond}</div>`;
+  const side = role === 'assistant' ? 'm-llm' : 'm-h'; // LLM 侧靠左，harness 侧靠右（用户拍板的 bubble 语义）
+  const who = role === 'assistant' ? 'LLM · assistant' : `harness · ${role}`;
+  const mh = `<div class="mh"><span class="mr">${esc(who)}</span><span class="mi">#${idx + 1}</span>${respond}</div>`;
   if (role === 'system' || role === 'tool') {
     const brief = text.replace(/\s+/g, ' ').slice(0, 110);
-    return `<div class="mcard fold r-${esc(role)}">${mh}` +
+    return `<div class="mcard fold ${side} r-${esc(role)}">${mh}` +
       (text ? `<button class="mfold">${esc(brief)}${text.length > 110 ? '…' : ''} ▸</button><div class="mbody"><div class="mtext">${esc(text)}</div></div>` : '') + tc + '</div>';
   }
   const long = text.length > 800;
-  return `<div class="mcard r-${esc(role)}">${mh}${tc}` +
+  return `<div class="mcard ${side} r-${esc(role)}">${mh}${tc}` +
     (text ? `<div class="mtext${long ? ' clamp' : ''}">${esc(text)}</div>${long ? '<button class="mfold2">展开全文 ▾</button>' : ''}` : '') + '</div>';
 }
 /* 正文缓存（重渲染/展开复用）+ 角色表回填 */
@@ -545,23 +538,7 @@ async function getBody(turnId) {
   state.bodies.set(turnId, data);
   return data;
 }
-/* 一行摘要的素材：该轮新增了什么（第一二条有文本的） */
-function summarizeAdded(n, data) {
-  const parentLen = n.parent ? n.parent.refs.length : 0;
-  const added = (data.body?.messages || []).slice(parentLen);
-  const parts = [];
-  for (const m of added) {
-    const role = String(m.role ?? '?');
-    let text = typeof m.content === 'string' ? m.content
-      : Array.isArray(m.content) ? m.content.filter((p) => p?.type === 'text').map((p) => p.text).join(' ') : '';
-    text = String(text).replace(/\s+/g, ' ').trim();
-    if (!text && Array.isArray(m.tool_calls)) text = '🔧 ' + m.tool_calls.map((tc) => tc.function?.name ?? '?').join(',');
-    if (text && role !== 'tool') parts.push(text);
-    if (parts.length >= 2) break;
-  }
-  return parts.join(' ／ ') || `+${n.refs.length - parentLen} 条（无文本）`;
-}
-/* 后台渐进拉正文：只为了填行摘要/角色/压缩续段标签（顺带暖缓存，展开即开） */
+/* 后台渐进拉正文：填气泡/角色/压缩续段标签（正文缓存与展开共用） */
 let fillRun = 0;
 async function fillAll() {
   if (!state.graph) return;
@@ -703,6 +680,8 @@ $('#stream-list').addEventListener('click', (e) => {
     scheduleRail();
     return;
   }
+  const hint = e.target.closest('.morehint');
+  if (hint) { toggleNode(Number(hint.dataset.node)); return; }
   const xn = e.target.closest('.xn');
   if (xn) {
     const nid = Number(xn.dataset.xn);
@@ -728,12 +707,11 @@ $('#stream-list').addEventListener('click', (e) => {
     const n = state.forest.byId.get(nid);
     state.attempt.set(nid, Number(at.dataset.attempt));
     block.querySelector('.astrip')?.remove();
-    const tbody = block.querySelector('.tbody');
-    if (tbody) fillBody(n, tbody);
+    renderBubbles(n);
     scheduleRail();
     const want = state.attempt.get(nid) ?? n.turns[n.turns.length - 1].id;
     if (!state.bodies.has(want)) { // 切到没拉过正文的尝试：拉到后回填
-      getBody(want).then(() => { const b = $(`#stream-list .tblock[data-node="${nid}"] .tbody`); if (b) fillBody(n, b); scheduleRail(); }).catch(() => {});
+      getBody(want).then(() => { renderBubbles(n); scheduleRail(); }).catch(() => {});
     }
     return;
   }
