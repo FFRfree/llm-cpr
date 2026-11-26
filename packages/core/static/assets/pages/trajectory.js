@@ -583,6 +583,8 @@ const TRAJ_CSS = `
 #rail-layer .rl{position:absolute;width:1.5px;opacity:.5;border-radius:1px}
 #rail-layer .rd{position:absolute;border-radius:50%;border:1.5px solid var(--surface);box-sizing:border-box}
 #rail-layer .rd.rg{background:var(--surface);border-width:2px}
+#rail-layer .rk{position:absolute;width:0;height:0;border-top:4px solid transparent;border-bottom:4px solid transparent;border-left:6px solid var(--warning)}
+#rail-layer .rsvg{position:absolute;pointer-events:none;overflow:visible}
 #stream-list{position:relative;z-index:1}
 .tblock{border-bottom:1px solid var(--border)}
 .thead{padding:7px 12px 7px 0;cursor:pointer;min-width:0}
