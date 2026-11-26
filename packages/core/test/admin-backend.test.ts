@@ -11,6 +11,7 @@ import { createGatewayServers } from '../src/http/server.ts';
 import { UsageAudit } from '../src/store/audit.ts';
 import { CaptureStore } from '../src/store/capture.ts';
 import type { GatewayConfig } from '../src/contracts.ts';
+import { DatabaseSync } from 'node:sqlite';
 
 const close = (server: Server): Promise<Error | undefined> => new Promise<Error | undefined>((resolve) => server.close(resolve));
 
@@ -174,4 +175,132 @@ test('turnBody exposes per-message refs for the trajectory dedup view', () => {
   assert.deepEqual(restored.refs, first!.refs); // 相同正文 → 相同哈希序列（轨迹页「同上轮」判据）
   capture.close();
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---- 轨迹聚合（tree / tree-diffs）：后端建树 + 新增段分页（tree-aggregation-api.md） ----
+
+interface TreeFixture { capture: CaptureStore; ids: number[]; dir: string; dbFile: string; }
+function buildTreeFixture(): TreeFixture {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-tree-'));
+  const dbFile = path.join(dir, 'capture.db');
+  const capture = new CaptureStore({ dbFile, ttlDays: 1, maxBodyBytes: 0, logger: {}, scheduleSweep: false });
+  // 5 轮：t1 起点 → t2 续（新增回答+新输入）→ t3 = t2 重试（refs 全等）→ t4 同前缀分岔 → t5 压缩重启（无共享前缀）
+  const bodies = [
+    { model: 'm', messages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'u1' }] },
+    { model: 'm', messages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'u1' }, { role: 'assistant', content: 'a1' }, { role: 'user', content: 'u2' }] },
+    { model: 'm', messages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'u1' }, { role: 'assistant', content: 'a1' }, { role: 'user', content: 'u2' }] },
+    { model: 'm', messages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'u1' }, { role: 'assistant', content: 'a1' }, { role: 'user', content: 'u4-branch' }] },
+    { model: 'm', messages: [{ role: 'system', content: 'sys-v2' }, { role: 'user', content: 'u3' }] },
+  ];
+  const ids: number[] = [];
+  for (const body of bodies) {
+    const out = capture.capture({ tenant: 'main', identity: 's', identityKind: 'session', model: 'm', body, rawBytes: 100 });
+    assert.ok(out.captureId);
+    capture.sweepNow(); // 立即落盘，listTurns 才查得到（flush 队列 250ms）
+    ids.push(capture.listTurns({}).find((t) => t.capture_id === out.captureId)!.id);
+  }
+  return { capture, ids, dir, dbFile };
+}
+
+test('buildTree: parent by longest refs prefix, ×N retry merged, roles and window bounds', () => {
+  const { capture, ids, cleanup } = (() => { const f = buildTreeFixture(); return { ...f, cleanup: () => { f.capture.close(); fs.rmSync(f.dir, { recursive: true, force: true }); } }; })();
+  const tree = capture.buildTree('main', 's', 500);
+  assert.equal(tree.nodes.length, 4); // t1 / t2+t3 同节点 / t4 / t5
+  assert.equal(tree.window_turns, 5);
+  assert.equal(tree.out_of_window, 0);
+  const t1 = tree.nodes.find((n) => n.turns.some((t) => t.turn_id === ids[0]))!;
+  const t23 = tree.nodes.find((n) => n.turns.length === 2)!;
+  const t4 = tree.nodes.find((n) => n.turns.some((t) => t.turn_id === ids[3]))!;
+  const t5 = tree.nodes.find((n) => n.turns.some((t) => t.turn_id === ids[4]))!;
+  assert.ok(t1 && t23 && t4 && t5);
+  assert.equal(t1.parent, null); // 线程起点
+  assert.equal(t23.parent, t1.id); assert.equal(t23.parent_len, 2);
+  assert.equal(t4.parent, t1.id); assert.equal(t4.parent_len, 2); // 与 t2 同父 → 兄弟分支
+  assert.equal(t5.parent, null); // 压缩重启：与谁都不是前缀 → 新根
+  assert.deepEqual(t1.added_count, 2);
+  assert.deepEqual(t23.added_count, 2);
+  assert.deepEqual(t23.added_roles, ['assistant', 'user']); // 回答+新输入（气泡判别口径）
+  assert.deepEqual(t5.added_roles, ['system', 'user']);
+  assert.ok((t1.added_bytes ?? 0) > 0 && (t23.added_bytes ?? 0) > 0);
+  assert.deepEqual(tree.roots.sort(), [t1.id, t5.id].sort());
+  assert.ok(Object.keys(tree.thread_labels).length >= 2); // 两个 thread_key（u1 系 / u3）
+  assert.ok(tree.window.since_ts > 0 && tree.window.upto_ts >= tree.window.since_ts);
+  cleanup();
+});
+
+test('treeDiffs: keyset pagination covers every turn exactly once with diff slices', () => {
+  const { capture, ids, cleanup } = (() => { const f = buildTreeFixture(); return { ...f, cleanup: () => { f.capture.close(); fs.rmSync(f.dir, { recursive: true, force: true }); } }; })();
+  const tree = capture.buildTree('main', 's', 500);
+  const w = tree.window;
+  const seen: Array<{ turn_id: number; start: number; messages: unknown[] }> = [];
+  let afterTs = 0, afterId = 0, pages = 0;
+  while (pages < 10) {
+    const page = capture.treeDiffs('main', 's', { afterTs, afterId, sinceTs: w.since_ts, sinceId: w.since_id, uptoTs: w.upto_ts, limitTurns: 2 });
+    pages += 1;
+    for (const item of page.items) seen.push({ turn_id: item.turn_id, start: item.start, messages: item.messages as unknown[] });
+    if (page.done) break;
+    assert.ok(page.next_after);
+    afterTs = page.next_after.ts; afterId = page.next_after.id;
+  }
+  assert.deepEqual(seen.map((s) => s.turn_id).sort((x, y) => x - y), [...ids].sort((x, y) => x - y)); // 每轮恰好一次
+  const byId = new Map(seen.map((s) => [s.turn_id, s]));
+  assert.equal(byId.get(ids[0])!.start, 0);
+  assert.equal(byId.get(ids[0])!.messages.length, 2);
+  const t2 = byId.get(ids[1])!;
+  const t3 = byId.get(ids[2])!;
+  assert.equal(t2.start, 2); // 新增段从父轮长度起
+  assert.deepEqual((t2.messages[0] as { role: string }).role, 'assistant');
+  assert.deepEqual((t2.messages[1] as { role: string }).role, 'user');
+  assert.deepEqual(t3.messages, t2.messages); // 重试轮 diff 与原轮一致（refs 全等）
+  assert.equal(byId.get(ids[4])!.start, 0); // 压缩重启：全量即新增
+  const full = capture.turnBody(ids[1])!; // turnBody 交叉验证：diff 切片与全量拼装一致
+  assert.deepEqual(t2.messages[0] as object, (full.body.messages as unknown[])[2]);
+  cleanup();
+});
+
+test('treeDiffs: byte cap truncates and lone oversized turn still emitted', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpr-tree-cap-'));
+  const capture = new CaptureStore({ dbFile: path.join(dir, 'capture.db'), ttlDays: 1, maxBodyBytes: 0, logger: {}, scheduleSweep: false });
+  const big = 'x'.repeat(3 * 1024 * 1024);
+  const out1 = capture.capture({ tenant: 'main', identity: 's', identityKind: 'session', model: 'm', body: { model: 'm', messages: [{ role: 'user', content: big }] }, rawBytes: 100 });
+  const out2 = capture.capture({ tenant: 'main', identity: 's', identityKind: 'session', model: 'm', body: { model: 'm', messages: [{ role: 'user', content: 'small' }] }, rawBytes: 100 });
+  assert.ok(out1.captureId && out2.captureId);
+  capture.sweepNow();
+  const tree = capture.buildTree('main', 's', 500);
+  const w = tree.window;
+  const page = capture.treeDiffs('main', 's', { sinceTs: w.since_ts, sinceId: w.since_id, uptoTs: w.upto_ts, limitTurns: 60, byteCap: 64 * 1024 });
+  assert.equal(page.items.length, 1); // 孤轮豁免：3MB 独轮单独成页
+  assert.equal((page.items[0].messages[0] as { content: string }).content.length, 3 * 1024 * 1024);
+  assert.equal(page.done, false);
+  assert.ok(page.next_after);
+  const page2 = capture.treeDiffs('main', 's', { afterTs: page.next_after.ts, afterId: page.next_after.id, sinceTs: w.since_ts, sinceId: w.since_id, uptoTs: w.upto_ts, limitTurns: 60, byteCap: 64 * 1024 });
+  assert.equal(page2.items.length, 1);
+  assert.equal(page2.done, true);
+  capture.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('treeDiffs: content TTL-missing hash degrades to null message, tree added_bytes null', () => {
+  const f = buildTreeFixture();
+  const t2full = f.capture.turnBody(f.ids[1])!;
+  const victim = t2full.refs[2]; // a1 的哈希
+  f.capture.close();
+  const raw = new DatabaseSync(f.dbFile);
+  raw.prepare('DELETE FROM content WHERE hash=?').run(victim);
+  raw.close();
+  const store = new CaptureStore({ dbFile: f.dbFile, ttlDays: 1, maxBodyBytes: 0, logger: {}, scheduleSweep: false });
+  try {
+    const tree = store.buildTree('main', 's', 500);
+    const t23 = tree.nodes.find((n) => n.turns.some((t) => t.turn_id === f.ids[1]))!;
+    assert.equal(t23.added_bytes, null); // 半截降级标记
+    assert.deepEqual(t23.added_roles, [null, 'user']); // 首条正文没了 → role null
+    const w = tree.window;
+    const page = store.treeDiffs('main', 's', { sinceTs: w.since_ts, sinceId: w.since_id, uptoTs: w.upto_ts, limitTurns: 60 });
+    const item = page.items.find((i) => i.turn_id === f.ids[1])!;
+    assert.equal(item.messages[0], null); // 正文缺失 → null 占位
+    assert.deepEqual((item.messages[1] as { role: string }).role, 'user'); // 其余条目不受连累
+  } finally {
+    store.close();
+    fs.rmSync(f.dir, { recursive: true, force: true });
+  }
 });

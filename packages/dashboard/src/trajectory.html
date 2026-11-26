@@ -124,9 +124,9 @@
 <script>
 'use strict';
 const state = { sessions: [], identity: null, tenant: null, turns: [], turnId: null,
-  chainByTurn: new Map(), chain: [], forest: null, branches: [], sel: {}, statusByCapture: new Map(),
-  roleByHash: new Map(), previewByNode: new Map(), outOfWindow: 0,
-  attempt: new Map(), bodies: new Map(), pvPending: new Set(), graph: null, expanded: new Set() };
+  tree: null, forest: null, branches: [], sel: {},
+  previewByNode: new Map(), outOfWindow: 0,
+  attempt: new Map(), bodies: new Map(), graph: null, expanded: new Set() };
 // 泳道配色（亮暗两套主题下都可见）。
 const RAILS = ['#3fae7a', '#d29a3a', '#5b8def', '#9a6fd0', '#d05b6a', '#3a9ad2', '#7aa23f', '#b06fd0'];
 const LANE_W = 22, DOT_R = 6, RAIL_PAD = 14, MAX_LANES = 8;
@@ -152,55 +152,33 @@ async function loadSessions() {
 }
 
 /* 顶栏：家族徽标 + 缓存效率（压缩进一行）。 */
-async function loadFamilyHeader(turns) {
-  const threadKeys = new Set();
-  for (const entry of state.chainByTurn.values()) threadKeys.add(entry.thread_key);
-  let line1 = `<b>${threadKeys.size > 1 ? 'deleg 家族' : '单线程'}</b> · ${threadKeys.size || '?'} 线程 · ${turns.length} 轮`;
-  $('#traj-family').innerHTML = line1;
-  if (!state.identity) return;
-  try {
-    const eff = await fetchJson(`/api/capture/cache-efficiency?identity=${encodeURIComponent(state.identity)}&tenant=${encodeURIComponent(state.tenant)}&limit=500`);
-    const pct = (v) => v == null ? '—' : `${(v * 100).toFixed(1)}%`;
-    const k = (v) => v == null ? '—' : v.toLocaleString(undefined, { maximumFractionDigits: 0 });
-    $('#traj-family').innerHTML =
-      `${line1} · 效率 <b>${pct(eff.totals?.efficiency)}</b> · 浪费 ${pct(eff.totals?.waste_share)} · 重读 ×${k(eff.totals?.read_multiplier)} · ~${k(eff.totals?.corpus_tokens_est)} tok${eff.totals?.turns_skipped_no_usage ? ` · ${eff.totals.turns_skipped_no_usage} 轮无 usage` : ''}`;
-  } catch { /* 效率条失败不挡轨迹 */ }
+/* 家族头：摘要直接用 tree.summary（后端算好），不再单独打 cache-efficiency */
+function renderFamily(s) {
+  const pct = (v) => v == null ? '—' : `${(v * 100).toFixed(1)}%`;
+  const k = (v) => v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 });
+  const base = `<b>${s && s.threads > 1 ? 'deleg 家族' : '单线程'}</b> · ${s ? s.threads : '?'} 线程 · ${s ? s.turns : state.turns.length} 轮`;
+  $('#traj-family').innerHTML = !s ? base
+    : `${base} · 效率 <b>${pct(s.efficiency)}</b> · 浪费 ${pct(s.waste_share)} · 重读 ×${k(s.read_multiplier)} · ~${k(s.corpus_tokens_est)} tok${s.turns_skipped_no_usage ? ` · ${s.turns_skipped_no_usage} 轮无 usage` : ''}` +
+      `<span id="traj-fill" class="muted" style="margin-left:10px"></span>`;
 }
 
-/* ---- 账本状态：按 capture_id 对回 status（分页拉到盖住最早轮次为止） ---- */
-async function loadStatuses(tenant, identity, sinceTs) {
-  state.statusByCapture = new Map();
-  for (let page = 1; page <= 20; page++) {
-    const data = await fetchJson(`/api/audit/requests?tenant=${encodeURIComponent(tenant)}&identity=${encodeURIComponent(identity)}&page=${page}&page_size=200`);
-    const rows = data.requests || [];
-    if (!rows.length) break;
-    for (const r of rows) if (r.capture_id) state.statusByCapture.set(r.capture_id, r);
-    if (rows.length < 200 || Math.min(...rows.map((r) => r.ts)) < sinceTs - 60_000) break;
-  }
-}
 
-/* ---- 前缀森林：节点 = 一个 refs 前缀；同一前缀的轮次收进同一节点 ---- */
-function buildForest(chain, threadLabels) {
-  const trie = new Map(); // refs.join('\u0000') -> node
-  const nodes = [];
-  for (const entry of chain) {
-    const refs = entry.refs || [];
-    if (!refs.length) continue;
-    let parent = null;
-    for (let l = refs.length - 1; l >= 1; l--) {
-      const p = trie.get(refs.slice(0, l).join('\u0000'));
-      if (p) { parent = p; break; }
-    }
-    const key = refs.join('\u0000');
-    let node = trie.get(key);
-    if (!node) {
-      node = { id: nodes.length, refs, parent, children: [], turns: [], threadKey: entry.thread_key };
-      nodes.push(node); trie.set(key, node);
-      if (parent) parent.children.push(node);
-    }
-    node.turns.push(entry);
-    if (entry.first_diff_in_thread_index != null && entry.first_diff_in_thread_role)
-      state.roleByHash.set(refs[entry.first_diff_in_thread_index], entry.first_diff_in_thread_role);
+/* ---- 前缀森林：树由后端 /api/capture/tree 建好（parent 指针/×N 归并），前端只组装展示结构
+   （子树大小/主干链/分支清单——分支显隐是 UI 状态，留在前端；refs 哈希不再出网） ---- */
+function buildForest(tree) {
+  const nodes = tree.nodes.map((n) => ({
+    id: n.id,
+    turns: n.turns.map((t) => ({ ...t, id: t.turn_id })), // id 别名：旧代码全用 t.id
+    parent: null, children: [],
+    threadKey: n.thread_key, refsLen: n.parent_len + n.added_count,
+    parentLen: n.parent_len, addedCount: n.added_count, addedBytes: n.added_bytes,
+    addedRoles: n.added_roles || [],
+  }));
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  for (const dto of tree.nodes) {
+    if (dto.parent == null) continue;
+    const node = byId.get(dto.id), p = byId.get(dto.parent);
+    if (node && p) { node.parent = p; p.children.push(node); }
   }
   const sizes = new Map();
   const sizeOf = (n) => {
@@ -223,18 +201,21 @@ function buildForest(chain, threadLabels) {
   const walk = (n, treeRoot, depth) => {
     const kk = n.children.slice().sort((a, b) => sizes.get(b.id) - sizes.get(a.id));
     kk.forEach((c, i) => {
-      if (i > 0) branches.push({ id: String(c.id), parent: n, node: c, treeRoot, forkAt: n.refs.length + 1, count: sizes.get(c.id), ts: c.turns[0].ts, depth: depth + 1 });
+      if (i > 0) branches.push({ id: String(c.id), parent: n, node: c, treeRoot, forkAt: n.refsLen + 1, count: sizes.get(c.id), ts: c.turns[0].ts, depth: depth + 1 });
       walk(c, treeRoot, i > 0 ? depth + 1 : depth);
     });
   };
+  const threadLabels = new Map(Object.entries(tree.thread_labels || {}));
   for (const root of roots) {
     const label = threadLabels.get(root.threadKey) ?? root.threadKey.slice(0, 12);
     branches.push({ id: 'trunk-' + root.id, trunk: true, node: root, treeRoot: root, count: trunks.get(root.id).length, ts: root.turns[0].ts, depth: 0, label });
     walk(root, root, 0);
   }
   branches.sort((a, b) => (a.trunk ? -1 : b.trunk ? 1 : a.ts - b.ts));
-  state.forest = { nodes, roots, sizes, trunks, byId: new Map(nodes.map((n) => [n.id, n])) };
+  state.forest = { nodes, roots, sizes, trunks, byId, turnNode: new Map(nodes.flatMap((n) => n.turns.map((t) => [t.id, n]))) };
   state.branches = branches;
+  state.outOfWindow = tree.out_of_window || 0;
+  state.turns = nodes.flatMap((n) => n.turns); // 深链定位用扁平清单
 }
 
 /* ---- 可见图：泳道全局分配（跨树连续、≤8 道钳位），行序按 ts 正序 ---- */
@@ -392,7 +373,7 @@ function hiddenSet() {
 }
 function railCol(l) { return RAILS[l % RAILS.length]; }
 function retryColor(list) {
-  const st = list.map((t) => { const r = state.statusByCapture.get(t.capture_id); return r ? r.status : null; });
+  const st = list.map((t) => t.status);
   if (st.length && st.every((s) => s != null && s < 300)) return 'var(--success)';
   if (st.length && st.every((s) => s != null && s >= 400 && s !== 499)) return 'var(--danger)';
   return 'var(--warning)';
@@ -408,9 +389,8 @@ function subtreeOf(root) {
 /* ---- 会话流：每轮默认一行摘要，点行展开消息卡 ---- */
 function railW() { return RAIL_PAD * 2 + Math.min(state.graph.nLanes, MAX_LANES) * LANE_W; }
 function laneX(l) { return RAIL_PAD + Math.min(l, MAX_LANES - 1) * LANE_W + LANE_W / 2; }
-function roleOf(n, data) {
-  const parentLen = n.parent ? n.parent.refs.length : 0;
-  return String(data?.body?.messages?.[parentLen]?.role ?? state.roleByHash.get(n.refs[parentLen]) ?? (n.parent ? '?' : 'S')).toLowerCase();
+function roleOf(n) {
+  return String(n.addedRoles?.[0] ?? (n.parent ? '?' : 'S')).toLowerCase();
 }
 function renderStream() {
   const g = state.graph;
@@ -419,11 +399,9 @@ function renderStream() {
   let prevTs = null;
   for (const n of g.order) {
     const ns = n.turns.length, tN = n.turns[ns - 1], t0 = n.turns[0];
-    const parentLen = n.parent ? n.parent.refs.length : 0;
-    const addedCount = n.refs.length - parentLen;
+    const addedCount = n.addedCount;
     const role = roleOf(n);
-    const fallback = n.parent ? `[${role}] 第 ${parentLen + 1} 条起 +${addedCount}` : '[S] 线程起点';
-    const r = state.statusByCapture.get(tN.capture_id);
+    const fallback = n.parent ? `[${role}] 第 ${n.parentLen + 1} 条起 +${addedCount}` : '[S] 线程起点';
     const gap = prevTs != null ? `<span class="sp" title="距上一条请求的间隔">⏱${fmtGap(tN.ts - prevTs)}</span>` : '';
     prevTs = tN.ts;
     html += `<div class="tblock${state.expanded.has(n.id) ? ' open' : ''}" data-node="${n.id}">` +
@@ -431,7 +409,7 @@ function renderStream() {
       `<div class="th1">` +
       (ns > 1 ? `<button class="xn" data-xn="${n.id}" style="color:${retryColor(n.turns)};border-color:${retryColor(n.turns)}">×${ns} 尝试</button>` : '') +
       `<span class="caret">${state.expanded.has(n.id) ? '▴' : '▾'}</span></div>` +
-      `<div class="th2"><span class="tm">${fmtTime(tN.ts)}</span>${gap}<span class="stt" style="color:${stCol(r?.status)}">${r?.status ?? '—'}</span>` +
+      `<div class="th2"><span class="tm">${fmtTime(tN.ts)}</span>${gap}<span class="stt" style="color:${stCol(tN.status)}">${tN.status ?? '—'}</span>` +
       `<span class="sp">+${addedCount}</span>` +
       (ns > 1 ? `<span class="sp">${fmtTime(t0.ts)}→</span>` : '') +
       (!n.parent ? `<span class="troot" id="tr-${n.id}">线程起点</span>` : '') +
@@ -440,20 +418,20 @@ function renderStream() {
   }
   $('#stream-list').innerHTML = html;
   $('#stream-list').style.marginLeft = railW() + 'px';
-  for (const n of g.order) renderBubbles(n); // 已缓存正文的行立即出气泡；未拉过的由 fillAll 渐进填
-  fillAll();
-}
-/* 正文拉到后原位回填：线程起点·压缩续段标签 / 该行气泡（pill 已随行头移除） */
-function updateRowMetaBits(n, data) {
-  if (!n.parent) {
-    const msgs = data.body?.messages || [];
+  for (const n of g.order) { // 起点标签直接由 tree.added_roles 判定（root 第 2 条不是 user = 压缩续段）
+    if (n.parent) continue;
     const tr = $(`#tr-${n.id}`);
-    if (tr && msgs[1]) tr.textContent = String(msgs[1].role ?? '').toLowerCase() !== 'user' ? '压缩续段' : '线程起点';
+    if (tr) tr.textContent = String(n.addedRoles?.[1] ?? 'user').toLowerCase() !== 'user' ? '压缩续段' : '线程起点';
   }
+  for (const n of g.order) renderBubbles(n); // 已缓存正文的行立即出气泡；未拉过的由 fetchAllDiffs 渐进填
+  fetchAllDiffs();
 }
-function applyRowMeta(n, data) {
-  updateRowMetaBits(n, data);
-  renderBubbles(n);
+/* 正文页到达后原位触发该行气泡重渲（起点标签已在 renderStream 即时判定） */
+function updateRowMetaBits(n) {
+  if (!n.parent) {
+    const tr = $(`#tr-${n.id}`);
+    if (tr) tr.textContent = String(n.addedRoles?.[1] ?? 'user').toLowerCase() !== 'user' ? '压缩续段' : '线程起点';
+  }
 }
 /* 点行展开 / 再点收起：气泡流在收起态钳 2 条，展开全量 */
 function toggleNode(nodeId) {
@@ -476,7 +454,7 @@ function toggleNode(nodeId) {
   scheduleRail();
 }
 /* 行体渲染：气泡流（LLM 侧左绿 / harness 侧右蓝灰）。收起态钳 2 条 + 「还有 N 条」；展开全量。
-   正文未到时保留占位，由 fillAll 渐进回填；展开未缓存时现拉 */
+   正文未到时保留占位，由 fetchAllDiffs 渐进回填；展开未缓存时现拉 */
 function renderBubbles(n) {
   if (!n) return;
   const block = $(`#stream-list .tblock[data-node="${n.id}"]`);
@@ -487,6 +465,7 @@ function renderBubbles(n) {
   div.dataset.want = String(want);
   const data = state.bodies.get(want);
   if (!data) {
+    if (!state.expanded.has(n.id)) return; // 收起行正文由 fetchAllDiffs 渐进填（否则首帧每行一个单轮请求，风暴）
     if (div.dataset.loading === String(want)) return; // 已在途
     div.dataset.loading = String(want);
     div.innerHTML = '<div class="tload">加载中…</div>';
@@ -495,12 +474,13 @@ function renderBubbles(n) {
     return;
   }
   delete div.dataset.loading;
-  updateRowMetaBits(n, data); // 气泡直出路径也回填 pill/起点标签（否则先到的行 pill 停在占位符）
+  updateRowMetaBits(n); // 起点标签即时兜底
   const open = state.expanded.has(n.id);
-  const parentLen = n.parent ? n.parent.refs.length : 0;
-  const added = (data.body?.messages || []).slice(parentLen);
+  const added = data.messages; // 树接口已按 parent_len 切好新增段（正文缺失条 = null 占位）
   if (!added.length) { div.innerHTML = '<div class="tload">（本轮无新增消息——同前缀的另一次尝试）</div>'; scheduleRail(); return; }
-  const cards = added.map((m, j) => msgCard(m, parentLen + j));
+  const cards = added.map((m, j) => m == null
+    ? `<div class="mcard m-h r-tool"><div class="mh"><span class="mr">harness · 已清理</span><span class="mi">#${data.start + j + 1}</span></div><div class="mtext">[正文已被 TTL 清理]</div></div>`
+    : msgCard(m, data.start + j));
   div.innerHTML = (!open && cards.length > 3)
     ? cards.slice(0, 2).join('') + `<button class="morehint" data-node="${n.id}">⋯ 还有 ${cards.length - 2} 条 · 点行展开</button>`
     : cards.join('');
@@ -533,42 +513,55 @@ function msgCard(m, idx) {
     (text ? `<div class="mtext${long ? ' clamp' : ''}">${esc(text)}</div>${long ? '<button class="mfold2">展开全文 ▾</button>' : ''}` : '') + '</div>';
 }
 /* 正文缓存（重渲染/展开复用）+ 角色表回填 */
-async function getBody(turnId) {
+async function getBody(turnId) { // 单轮兜底：旧接口给全量，这里按节点 parent_len 切成新增段
   if (state.bodies.has(turnId)) return state.bodies.get(turnId);
   const data = await fetchJson(`/api/capture/turns/${turnId}`);
-  const msgs = data.body?.messages || [];
-  const refs = data.refs || [];
-  for (let i = 0; i < msgs.length && i < refs.length; i++) state.roleByHash.set(refs[i], String(msgs[i].role ?? '?'));
-  state.bodies.set(turnId, data);
-  return data;
+  const n = state.forest?.turnNode?.get(turnId);
+  const parentLen = n && n.parent ? n.parent.refsLen : 0;
+  const out = { start: parentLen, messages: (data.body?.messages || []).slice(parentLen) };
+  state.bodies.set(turnId, out);
+  return out;
 }
-/* 后台渐进拉正文：填气泡/角色/压缩续段标签（正文缓存与展开共用） */
-let fillRun = 0;
-async function fillAll() {
-  if (!state.graph) return;
-  const run = ++fillRun;
-  const queue = state.graph.order.slice();
-  let i = 0;
-  const worker = async () => {
-    while (i < queue.length) {
-      if (run !== fillRun) return; // 会话/分支已切换，弃
-      const n = queue[i++];
-      const want = state.attempt.get(n.id) ?? n.turns[n.turns.length - 1].id;
-      if (!state.bodies.has(want)) {
-        if (state.pvPending.has(want)) continue;
-        state.pvPending.add(want);
-        try { await getBody(want); } catch { state.pvPending.delete(want); continue; }
-        // 正文到手就更新行摘要（run 变了只代表后续队列弃填，不弃这一行）
-        state.pvPending.delete(want);
-        applyRowMeta(n, state.bodies.get(want));
-      }
-      if (run !== fillRun) return;
-      applyRowMeta(n, state.bodies.get(want));
-      scheduleRail();
+/* 后台渐进拉正文：turn-diffs 游标翻页（每页落地对受影响行原位换气泡）；页失败回退旧单轮接口 */
+let diffRun = 0;
+async function fetchAllDiffs() {
+  const tree = state.tree;
+  if (!tree || !state.graph) return;
+  const run = ++diffRun;
+  const total = tree.nodes.reduce((s, n) => s + n.turns.length, 0);
+  if (state.bodies.size >= total) return; // 已全填（分支显隐重渲不重拉）
+  const progress = (done) => { const el = $('#traj-fill'); if (el) el.textContent = done >= total ? '' : `气泡填充 ${done}/${total}…`; };
+  progress(state.bodies.size);
+  const q = (k, v) => `${k}=${encodeURIComponent(String(v))}`;
+  let afterTs = 0, afterId = 0;
+  const w = tree.window;
+  while (run === diffRun) {
+    let page;
+    try {
+      page = await fetchJson(`/api/capture/tree-diffs?${q('identity', state.identity)}&${q('tenant', state.tenant)}` +
+        `&after_ts=${afterTs}&after_id=${afterId}&since_ts=${w.since_ts}&since_id=${w.since_id}&upto_ts=${w.upto_ts}&limit_turns=60`);
+    } catch { break; } // 翻页失败：交给下面的单轮兜底
+    if (run !== diffRun) return;
+    const touched = new Set();
+    for (const it of page.items) {
+      if (!state.bodies.has(it.turn_id)) state.bodies.set(it.turn_id, { start: it.start, messages: it.messages });
+      touched.add(it.turn_id);
     }
-  };
-  await Promise.all([worker(), worker(), worker(), worker(), worker()]);
-  if (run === fillRun) { renderBranchbar(); scheduleRail(); }
+    for (const n of state.forest.nodes) if (n.turns.some((t) => touched.has(t.id))) renderBubbles(n);
+    progress(state.bodies.size);
+    scheduleRail();
+    if (page.done || !page.items.length) break;
+    afterTs = page.next_after.ts; afterId = page.next_after.id;
+  }
+  if (run !== diffRun) return;
+  progress(state.bodies.size);
+  // 兜底：diff 流没盖住的轮（接口异常/窗口错位）走旧单轮接口，行不空白
+  for (const n of state.forest.nodes) {
+    for (const t of n.turns) {
+      if (state.bodies.has(t.id)) continue;
+      getBody(t.id).then(() => { if (run === diffRun) renderBubbles(n); }).catch(() => {});
+    }
+  }
 }
 
 /* ---- 左缘泳道：块位置量出来后画轨道线/分叉曲线/圆点（绝对定位小元素拼装） ---- */
@@ -647,26 +640,16 @@ function drawRail() {
 /* ---- 会话数据装载 ---- */
 async function loadTurns(identity, tenant) {
   state.identity = identity; state.tenant = tenant;
-  state.turnId = null; state.chainByTurn = new Map();
-  state.chain = []; state.forest = null; state.branches = []; state.sel = {};
-  state.statusByCapture = new Map(); state.roleByHash = new Map(); state.previewByNode = new Map();
-  state.attempt = new Map(); state.bodies = new Map(); state.pvPending = new Set();
-  state.expanded = new Set(); subtreeCache.clear(); fillRun++;
-  const [turns, forensics] = await Promise.all([
-    fetchJson(`/api/capture/turns?identity=${encodeURIComponent(identity)}&tenant=${encodeURIComponent(tenant)}&limit=500`),
-    fetchJson(`/api/capture/cache-forensics?identity=${encodeURIComponent(identity)}&tenant=${encodeURIComponent(tenant)}&limit=500`).catch(() => null),
-  ]);
-  state.turns = turns.turns || [];
-  if (forensics) {
-    state.chain = forensics.chain || [];
-    for (const e of state.chain) state.chainByTurn.set(e.id, e);
-  }
-  state.outOfWindow = state.turns.length - state.chain.length;
-  const threadLabels = new Map((forensics?.threads || []).map((th) => [th.key, th.label]));
-  const sinceTs = state.chain.length ? state.chain[0].ts : 0;
-  buildForest(state.chain, threadLabels);
-  loadStatuses(tenant, identity, sinceTs).then(() => renderMain()).catch(() => {});
-  loadFamilyHeader(state.turns).catch(() => {});
+  state.turnId = null;
+  state.tree = null; state.forest = null; state.branches = []; state.sel = {};
+  state.previewByNode = new Map();
+  state.attempt = new Map(); state.bodies = new Map();
+  state.expanded = new Set(); subtreeCache.clear(); diffRun++;
+  // 聚合下沉：一次 tree 拿树 + 摘要（旧版这里要 turns + cache-forensics + cache-efficiency + 分页 audit 四路）
+  const tree = await fetchJson(`/api/capture/tree?identity=${encodeURIComponent(identity)}&tenant=${encodeURIComponent(tenant)}&limit=500`);
+  state.tree = tree;
+  buildForest(tree);
+  renderFamily(tree.summary);
   renderMain();
 }
 
@@ -697,8 +680,7 @@ $('#stream-list').addEventListener('click', (e) => {
     const strip = document.createElement('div');
     strip.className = 'astrip';
     strip.innerHTML = '同一状态的尝试：' + n.turns.map((t, i) => {
-      const r = state.statusByCapture.get(t.capture_id);
-      return `<button data-attempt="${t.id}" class="${t.id === cur ? 'on' : ''}"><i style="background:${stCol(r?.status)}"></i>#${i + 1} ${r?.status ?? ''} ${fmtTime(t.ts)}</button>`;
+      return `<button data-attempt="${t.id}" class="${t.id === cur ? 'on' : ''}"><i style="background:${stCol(t.status)}"></i>#${i + 1} ${t.status ?? ''} ${fmtTime(t.ts)}</button>`;
     }).join('');
     xn.closest('.thead').after(strip);
     scheduleRail();

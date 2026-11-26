@@ -436,6 +436,179 @@ export class CaptureStore {
     return row ? (row as unknown as CaptureTurnRow) : null;
   }
 
+  /* ---- 轨迹聚合（trajectory 页）：树 + 新增段分页（.scratch/trajectory-gitgraph/tree-aggregation-api.md）----
+     树判定与前端旧 buildForest 同口径：时间序逐轮，取「refs 最长已见前缀」所属节点为父，
+     refs 全等的轮并进同节点（×N 重试）。refs 哈希数组不出网——前端只拿 parent 指针与新增段元数据。 */
+  #treeCore(tenant: string | undefined, identity: string, limit = 500) {
+    const count = Math.max(2, Math.min(500, Math.trunc(Number(limit) || 500)));
+    const rawRows = tenant === undefined
+      ? this.#db.prepare('SELECT id,capture_id,ts,model,message_count,bytes,refs FROM turns WHERE identity=? ORDER BY ts DESC, id DESC LIMIT ?').all(identity, count)
+      : this.#db.prepare('SELECT id,capture_id,ts,model,message_count,bytes,refs FROM turns WHERE tenant=? AND identity=? ORDER BY ts DESC, id DESC LIMIT ?').all(tenant, identity, count);
+    const rows = (rawRows as unknown as Array<{ id: number; capture_id: string; ts: number; model: string | null; message_count: number; bytes: number; refs: string }>).reverse();
+    const parsedRefs: Array<string[]> = [];
+    type TNode = { idx: number; parentIdx: number | null; parentLen: number; refsLen: number; threadKey: string; turnIdx: number[]; children: number[] };
+    const nodes: TNode[] = [];
+    const trie = new Map<string, TNode>();
+    rows.forEach((row, ti) => {
+      let refs: string[] = [];
+      try { refs = JSON.parse(row.refs) as string[]; } catch { refs = []; }
+      parsedRefs.push(refs);
+      if (!refs.length) return;
+      let parent: TNode | null = null;
+      for (let l = refs.length - 1; l >= 1; l--) {
+        const hit = trie.get(refs.slice(0, l).join('\u0000'));
+        if (hit) { parent = hit; break; }
+      }
+      const key = refs.join('\u0000');
+      let node = trie.get(key);
+      if (!node) {
+        const created: TNode = { idx: nodes.length, parentIdx: parent ? parent.idx : null, parentLen: parent ? parent.refsLen : 0, refsLen: refs.length, threadKey: threadKeyOf(refs), turnIdx: [], children: [] };
+        nodes.push(created); trie.set(key, created);
+        if (parent) nodes[parent.idx].children.push(created.idx);
+        node = created;
+      }
+      node.turnIdx.push(ti);
+    });
+    const oldest = rows[0] ?? null;
+    let outOfWindow = 0;
+    if (oldest) { // 窗口外精确计数：比窗口最老轮更早的（ts,id）都有谁
+      const cond: string[] = ['identity=?']; const args: Array<string | number> = [identity];
+      if (tenant !== undefined) { cond.push('tenant=?'); args.push(tenant); }
+      cond.push('(ts<? OR (ts=? AND id<?))'); args.push(oldest.ts, oldest.ts, oldest.id);
+      outOfWindow = Number((this.#db.prepare(`SELECT COUNT(*) AS n FROM turns WHERE ${cond.join(' AND ')}`).get(...args) as { n: number | bigint }).n);
+    }
+    const threadLabels = new Map<string, string>();
+    for (const node of nodes) {
+      if (threadLabels.has(node.threadKey)) continue;
+      threadLabels.set(node.threadKey, node.threadKey === '(none)' ? '(no messages)' : this.contentText(node.threadKey, 160));
+    }
+    return { rows, parsedRefs, nodes, oldest, outOfWindow, threadLabels };
+  }
+
+  // 批量 content 元数据（IN 分块，node:sqlite 变量上限内）：角色要解析正文，字节数走列不解析。
+  #contentRoles(hashes: Set<string>): Map<string, string> {
+    const out = new Map<string, string>();
+    const list = [...hashes];
+    for (let i = 0; i < list.length; i += 400) {
+      const chunk = list.slice(i, i + 400);
+      const rows = this.#db.prepare(`SELECT hash, body FROM content WHERE hash IN (${chunk.map(() => '?').join(',')})`).all(...chunk) as Array<{ hash: string; body: string }>;
+      for (const row of rows) {
+        try { const parsed = JSON.parse(row.body) as { role?: unknown }; if (typeof parsed.role === 'string') out.set(row.hash, parsed.role); } catch { /* 缺陷正文不给 role */ }
+      }
+    }
+    return out;
+  }
+
+  #contentBytes(hashes: Set<string>): Map<string, number> {
+    const out = new Map<string, number>();
+    const list = [...hashes];
+    for (let i = 0; i < list.length; i += 400) {
+      const chunk = list.slice(i, i + 400);
+      const rows = this.#db.prepare(`SELECT hash, bytes FROM content WHERE hash IN (${chunk.map(() => '?').join(',')})`).all(...chunk) as Array<{ hash: string; bytes: number }>;
+      for (const row of rows) out.set(row.hash, Number(row.bytes));
+    }
+    return out;
+  }
+
+  #contentBodies(hashes: Set<string>): Map<string, string> {
+    const out = new Map<string, string>();
+    const list = [...hashes];
+    for (let i = 0; i < list.length; i += 400) {
+      const chunk = list.slice(i, i + 400);
+      const rows = this.#db.prepare(`SELECT hash, body FROM content WHERE hash IN (${chunk.map(() => '?').join(',')})`).all(...chunk) as Array<{ hash: string; body: string }>;
+      for (const row of rows) out.set(row.hash, row.body);
+    }
+    return out;
+  }
+
+  // 树 DTO：parent 指针 + 每轮新增段元数据（added_count/bytes/前 4 条 role）。refs 不出网。
+  buildTree(tenant: string | undefined, identity: string, limit = 500) {
+    const { rows, parsedRefs, nodes, oldest, outOfWindow, threadLabels } = this.#treeCore(tenant, identity, limit);
+    const roleHashes = new Set<string>();
+    const byteHashes = new Set<string>();
+    const perNode: Array<string[]> = [];
+    for (const node of nodes) {
+      const added = parsedRefs[node.turnIdx[0]].slice(node.parentLen); // 同节点各轮 refs 全等，取任一轮
+      perNode.push(added);
+      for (const h of added.slice(0, 4)) roleHashes.add(h);
+      for (const h of added) byteHashes.add(h);
+    }
+    const roles = this.#contentRoles(roleHashes);
+    const sizes = this.#contentBytes(byteHashes);
+    return {
+      nodes: nodes.map((node, i) => {
+        const added = perNode[i];
+        let addedBytes = 0, missing = false;
+        for (const h of added) { const b = sizes.get(h); if (b == null) { missing = true; continue; } addedBytes += b; }
+        return {
+          id: node.idx,
+          turns: node.turnIdx.map((ti) => ({ turn_id: rows[ti].id, capture_id: rows[ti].capture_id, ts: rows[ti].ts, model: rows[ti].model, message_count: rows[ti].message_count, bytes: rows[ti].bytes, status: null as number | null, ms: null as number | null, ttft_ms: null as number | null })),
+          parent: node.parentIdx,
+          parent_len: node.parentLen,
+          added_count: added.length,
+          added_bytes: missing ? null : addedBytes, // null = 新增段里有正文被 TTL 清理（半截降级）
+          thread_key: node.threadKey,
+          added_roles: added.slice(0, 4).map((h) => roles.get(h) ?? null),
+        };
+      }),
+      roots: nodes.filter((n) => n.parentIdx == null).map((n) => n.idx),
+      thread_labels: Object.fromEntries(threadLabels),
+      out_of_window: outOfWindow,
+      window: oldest ? { since_ts: oldest.ts, since_id: oldest.id, upto_ts: rows[rows.length - 1].ts } : { since_ts: 0, since_id: 0, upto_ts: 0 },
+      window_turns: rows.length,
+    };
+  }
+
+  // 新增段正文分页：keyset 游标 (ts,id) 全局单调（树序不单调，不能用 turn_id 当游标）；
+  // upto/since 锁客户端树快照窗口。单页 limit_turns 轮且 byteCap 字节先到即停；
+  // 孤轮豁免：首个候选独超 byteCap 也放行（否则客户端永远拿不到它，空转）。
+  treeDiffs(tenant: string | undefined, identity: string, opts: { afterTs?: number; afterId?: number; sinceTs?: number; sinceId?: number; uptoTs?: number; limitTurns?: number; byteCap?: number } = {}) {
+    const { rows, parsedRefs, nodes } = this.#treeCore(tenant, identity, 500);
+    const parentLenByTurn = new Map<number, number>();
+    for (const node of nodes) for (const ti of node.turnIdx) parentLenByTurn.set(rows[ti].id, node.parentLen);
+    const limitTurns = Math.max(1, Math.min(200, Math.trunc(Number(opts.limitTurns) || 60)));
+    const byteCap = Math.max(64 * 1024, Math.trunc(Number(opts.byteCap) || 2 * 1024 * 1024));
+    const afterTs = Math.max(0, Math.trunc(Number(opts.afterTs) || 0));
+    const afterId = Math.max(0, Math.trunc(Number(opts.afterId) || 0));
+    const sinceTs = Math.max(0, Math.trunc(Number(opts.sinceTs) || 0));
+    const sinceId = Math.max(0, Math.trunc(Number(opts.sinceId) || 0));
+    const uptoTs = Number.isFinite(Number(opts.uptoTs)) ? Math.trunc(Number(opts.uptoTs)) : Number.MAX_SAFE_INTEGER;
+    const cond: string[] = ['identity=?']; const args: Array<string | number> = [identity];
+    if (tenant !== undefined) { cond.push('tenant=?'); args.push(tenant); }
+    cond.push('ts<=?'); args.push(uptoTs);
+    if (sinceTs > 0 || sinceId > 0) { cond.push('(ts>? OR (ts=? AND id>=?))'); args.push(sinceTs, sinceTs, sinceId); } // since 含边界（窗口最老轮本身）；after 游标排他（=上一页末轮）
+    if (afterTs > 0 || afterId > 0) { cond.push('(ts>? OR (ts=? AND id>?))'); args.push(afterTs, afterTs, afterId); }
+    const remaining = this.#db.prepare(`SELECT id,ts,refs FROM turns WHERE ${cond.join(' AND ')} ORDER BY ts ASC, id ASC`).all(...args) as unknown as Array<{ id: number; ts: number; refs: string }>;
+    const candidates: Array<{ turnId: number; ts: number; start: number; hashes: string[] }> = [];
+    for (const row of remaining) {
+      if (candidates.length >= limitTurns) break;
+      let refs: string[] = [];
+      try { refs = JSON.parse(row.refs) as string[]; } catch { refs = []; }
+      const start = Math.min(parentLenByTurn.get(row.id) ?? 0, refs.length); // 不在树里的轮（窗口错位）兜底 parent_len=0，宁可多传不传错
+      candidates.push({ turnId: row.id, ts: row.ts, start, hashes: refs.slice(start) });
+    }
+    const candHashes = new Set<string>();
+    for (const c of candidates) for (const h of c.hashes) candHashes.add(h);
+    const sizeById = this.#contentBytes(candHashes);
+    let kept = 0, acc = 0;
+    while (kept < candidates.length) {
+      let turnBytes = 0;
+      for (const h of candidates[kept].hashes) turnBytes += sizeById.get(h) ?? 0;
+      if (kept > 0 && acc + turnBytes > byteCap) break;
+      acc += turnBytes; kept += 1;
+    }
+    const keptHashes = new Set<string>();
+    for (const c of candidates.slice(0, kept)) for (const h of c.hashes) keptHashes.add(h);
+    const bodies = this.#contentBodies(keptHashes);
+    const items = candidates.slice(0, kept).map((c) => ({
+      turn_id: c.turnId,
+      start: c.start,
+      messages: c.hashes.map((h) => { const b = bodies.get(h); return b == null ? null : JSON.parse(b) as unknown; }), // null = 正文被 TTL 清理（半截降级）
+    }));
+    const last = candidates[kept - 1];
+    return { items, next_after: last ? { ts: last.ts, id: last.turnId } : null, done: kept >= remaining.length };
+  }
+
   // 引用了某条内容哈希的轮次（升序 = 该内容第一次出现的轮，回答「哪一轮吸进来的」）。
   turnsContaining(tenant: string, hash: string, limit = 5): CaptureTurnRow[] {
     const rows = this.#db.prepare(`SELECT id,capture_id,ts,tenant,identity,identity_kind,model,message_count,bytes,response_refs
