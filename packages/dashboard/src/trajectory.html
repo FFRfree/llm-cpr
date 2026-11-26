@@ -63,6 +63,8 @@
 /* 消息卡：轮展开后每条消息一张卡；系统/工具回显再折叠一层 */
 .mcard{border:1px solid var(--border);border-radius:8px;padding:7px 10px;margin:7px 0 0;background:var(--surface);font-size:12px;min-width:0}
 .mcard:last-child{margin-bottom:0}
+.seclab{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--muted);letter-spacing:.5px;margin:9px 0 -3px}
+.seclab::after{content:'';flex:1;height:1px;background:var(--border)}
 .mcard.r-user{border-left:3px solid var(--accent-bright,#5b8def)}
 .mcard.r-assistant{border-left:3px solid var(--success)}
 .mcard.r-tool,.mcard.r-system{border-left:3px solid var(--muted);color:var(--text-2)}
@@ -491,8 +493,22 @@ async function fillBody(n, div) {
   if (!div.isConnected || div.dataset.want !== String(want)) return; // 已收起或换了尝试，弃
   const parentLen = n.parent ? n.parent.refs.length : 0;
   const added = (data.body?.messages || []).slice(parentLen);
-  div.innerHTML = added.length ? added.map((m, j) => msgCard(m, parentLen + j)).join('')
-    : '<div class="tload">（本轮无新增消息——同前缀的另一次尝试）</div>';
+  let html;
+  if (!added.length) {
+    html = '<div class="tload">（本轮无新增消息——同前缀的另一次尝试）</div>';
+  } else {
+    // 新增段分组：开头的 assistant 消息 = 上一条请求的回复（入账），其后首个非 assistant = 触发本次请求的新输入
+    const parts = [];
+    const answered = !!n.parent && String(added[0].role ?? '').toLowerCase() === 'assistant';
+    let labInput = answered;
+    added.forEach((m, j) => {
+      if (j === 0 && answered) parts.push('<div class="seclab">回答 · 上一条请求的回复</div>');
+      else if (labInput && String(m.role ?? '').toLowerCase() !== 'assistant') { parts.push('<div class="seclab">本轮新输入</div>'); labInput = false; }
+      parts.push(msgCard(m, parentLen + j));
+    });
+    html = parts.join('');
+  }
+  div.innerHTML = html;
   scheduleRail();
 }
 /* 消息卡：系统/工具回显默认折叠，工具调用收成一行 chip，长文钳 10 行（show more/less） */
