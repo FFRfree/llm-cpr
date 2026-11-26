@@ -494,12 +494,12 @@ export function View({ reloadKey }) {
     <div class="traj">
       <section id="pane-sessions">
         <h3>会话（有捕获的）</h3>
-        <ul>${sessions.map((s) => html`
+        <ul id="traj-sessions">${sessions.length ? sessions.map((s) => html`
           <li key=${s.identity + '|' + (s.tenant || '')} class=${st.identity === s.identity ? 'active' : ''}
               onClick=${() => loadTurns(s.identity, s.tenant || 'default').catch((e2) => setErr(`轮次加载失败：${e2.message}`))}>
             <div class="who">${s.identity}</div>
             <div class="meta">${s.tenant || 'default'} · ${s.requests} 请求 · ${rel(s.last_ts)}</div>
-          </li>`) || html`<li class="empty">没有匹配的会话</li>`}
+          </li>`) : html`<li class="empty">没有匹配的会话</li>`}
         </ul>
       </section>
       <section id="pane-main">
