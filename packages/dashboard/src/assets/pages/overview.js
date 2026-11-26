@@ -77,8 +77,7 @@ function UsageTable({ usage, st }) {
   </table>`;
 }
 
-export function App() {
-  const [routeStatus, setRouteStatus] = useState(null);
+export function View({ routeStatus, reloadKey }) {
   const [summary, setSummary] = useState(null);
   const [usage, setUsage] = useState(null);
   const [days, setDays] = useState('7');
@@ -90,17 +89,13 @@ export function App() {
   };
 
   useEffect(() => {
-    initChrome('index.html').then(([st]) => {
-      const rs = st.value;
-      setRouteStatus(rs);
-      (async () => {
-        try {
-          const [sum] = await Promise.all([fetchJson(withTenant('/api/audit/summary')), loadUsage('7')]);
-          setSummary(sum?.summary);
-        } catch (e) { setErr(`加载失败：${e.message}`); }
-      })();
-    });
-  }, []);
+    (async () => {
+      try {
+        const [sum] = await Promise.all([fetchJson(withTenant('/api/audit/summary')), loadUsage('7')]);
+        setSummary(sum?.summary);
+      } catch (e) { setErr(`加载失败：${e.message}`); }
+    })();
+  }, [reloadKey]);
 
   const onDays = (e) => {
     const d = e.target.value;
@@ -132,5 +127,3 @@ export function App() {
     <${UsageTable} usage=${usage} st=${routeStatus} />
   <//>`;
 }
-
-render(html`<${App} />`, document.getElementById('app'));

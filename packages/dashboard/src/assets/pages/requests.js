@@ -48,12 +48,12 @@ function RequestRow({ r, subs, expanded, onToggle }) {
   <//>`;
 }
 
-export function App() {
-  const [subs, setSubs] = useState([]);
+export function View({ routeStatus, reloadKey }) {
   const [q, setQ] = useState({ sort: { key: 'ts', dir: 'desc' }, page: 1, filters: { identity: '', model: '', status: '', days: '' } });
   const [expanded, setExpanded] = useState(null);
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
+  const subs = routeStatus?.subscriptions || [];
 
   const buildQuery = (s) => {
     const p = new URLSearchParams({ page: String(s.page), page_size: '50', sort: s.sort.key, order: s.sort.dir });
@@ -69,10 +69,9 @@ export function App() {
   const apply = (patch) => { const next = { ...q, ...patch }; setQ(next); load(next); };
 
   useEffect(() => {
-    initChrome('requests.html').then(async ([st]) => {
-      setSubs(st.value?.subscriptions ?? []);
-      /* 带 capture_id 进入：先用默认筛选定位，再翻到所在页并展开 */
-      const captureId = new URLSearchParams(location.search).get('capture_id');
+    /* 带 capture_id 进入：先用默认筛选定位，再翻到所在页并展开 */
+    const captureId = new URLSearchParams(location.search).get('capture_id');
+    (async () => {
       let next = q;
       if (captureId) {
         try {
@@ -87,8 +86,8 @@ export function App() {
         } catch {}
       }
       load(next);
-    });
-  }, []);
+    })();
+  }, [reloadKey]);
 
   const onSort = (k) => apply({ sort: { key: k, dir: q.sort.key === k && q.sort.dir === 'desc' ? 'asc' : 'desc' }, page: 1 });
   const onFilter = (k, v) => apply({ filters: { ...q.filters, [k]: v }, page: 1 });
@@ -126,4 +125,3 @@ export function App() {
   <//>`;
 }
 
-render(html`<${App} />`, document.getElementById('app'));

@@ -108,7 +108,7 @@ function Events() {
   <//>`;
 }
 
-export function App() {
+export function View() {
   return html`<${Fragment}>
     <h2>正文捕获状态</h2>
     <${CaptureStatus} />
@@ -121,4 +121,3 @@ export function App() {
   <//>`;
 }
 
-render(html`<${App} />`, document.getElementById('app'));

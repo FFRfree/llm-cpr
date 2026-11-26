@@ -25,8 +25,21 @@ const STATIC_TYPES: Record<string, string> = {
 };
 function serveStatic(url: URL, res: http.ServerResponse): boolean {
   const pathname = url.pathname === '/' ? '/index.html' : url.pathname;
-  const type = STATIC_TYPES[path.extname(pathname).toLowerCase()];
-  if (!type) return false;
+  const ext = path.extname(pathname).toLowerCase();
+  const type = STATIC_TYPES[ext];
+  if (!type) {
+    // SPA fallback：无扩展名且非 /api 的未知路径回落到壳页 index.html（后台 pushState 路由）。
+    // 带扩展名的未知资产维持 404；/api/* 维持 JSON 404（serveStatic 先于 API 路由跑，必须排除）。
+    if (ext === '' && !pathname.startsWith('/api/')) {
+      try {
+        const bytes = fs.readFileSync(path.join(STATIC_ROOT, 'index.html'));
+        res.writeHead(200, { 'content-type': STATIC_TYPES['.html'], 'content-length': bytes.length, 'cache-control': 'no-store' });
+        res.end(bytes);
+        return true;
+      } catch { return false; }
+    }
+    return false;
+  }
   let rel = '';
   try { rel = path.normalize(decodeURIComponent(pathname)).replace(/^[/\\]+/, ''); } catch { return false; }
   const abs = path.join(STATIC_ROOT, rel);

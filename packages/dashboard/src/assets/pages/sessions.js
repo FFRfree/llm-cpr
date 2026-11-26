@@ -52,7 +52,7 @@ function SessionDetail({ identity, tenant }) {
     </tbody></table></details>`}`;
 }
 
-export function App() {
+export function View({ reloadKey }) {
   const [q, setQ] = useState({ sort: { key: 'last_ts', dir: 'desc' }, page: 1, days: '' });
   const [expanded, setExpanded] = useState(null);
   const [data, setData] = useState(null);
@@ -72,12 +72,11 @@ export function App() {
   const apply = (patch) => { const next = { ...q, ...patch }; setQ(next); load(next); };
 
   useEffect(() => {
-    initChrome('sessions.html').then(async () => {
-      const identity = new URLSearchParams(location.search).get('identity');
-      if (identity) setExpanded(`${tenantFilter.get() || 'default'}|${identity}`);
-      await load(q);
-    });
-  }, []);
+    /* 带 identity 进入：自动展开该会话 */
+    const identity = new URLSearchParams(location.search).get('identity');
+    if (identity) setExpanded(`${tenantFilter.get() || 'default'}|${identity}`);
+    load(q);
+  }, [reloadKey]);
 
   const onSort = (k) => apply({ sort: { key: k, dir: q.sort.key === k && q.sort.dir === 'desc' ? 'asc' : 'desc' }, page: 1 });
 
@@ -125,4 +124,3 @@ export function App() {
   <//>`;
 }
 
-render(html`<${App} />`, document.getElementById('app'));

@@ -3,8 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>概览 · LLM CPR 后台</title>
+<title>LLM CPR 后台</title>
 <link rel="stylesheet" href="/assets/app.css">
+<!-- SPA 壳：唯一定制入口（/ 与无扩展名路径经 core SPA fallback 都落到这），四个视图组件按 pushState 路由切换 -->
 <script type="importmap">
 {"imports":{"preact":"/assets/vendor/preact.js","preact/hooks":"/assets/vendor/hooks.js","htm":"/assets/vendor/htm.js"}}
 </script>
@@ -12,6 +13,6 @@
 <body>
 <main><div id="app"></div></main>
 <script src="/assets/app.js"></script>
-<script type="module" src="/assets/pages/overview.js"></script>
+<script type="module" src="/assets/pages/app.js"></script>
 </body>
 </html>

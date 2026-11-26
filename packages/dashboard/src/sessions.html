@@ -2,16 +2,10 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>会话 · LLM CPR 后台</title>
-<link rel="stylesheet" href="/assets/app.css">
-<script type="importmap">
-{"imports":{"preact":"/assets/vendor/preact.js","preact/hooks":"/assets/vendor/hooks.js","htm":"/assets/vendor/htm.js"}}
-</script>
+<!-- SPA 化后本页并入壳路由：老地址改写到 /sessions（保查询串，深链不断） -->
+<script>location.replace('/sessions' + location.search + location.hash);</script>
+<meta http-equiv="refresh" content="0;url=/sessions">
 </head>
-<body>
-<main><div id="app"></div></main>
-<script src="/assets/app.js"></script>
-<script type="module" src="/assets/pages/sessions.js"></script>
-</body>
+<body></body>
 </html>

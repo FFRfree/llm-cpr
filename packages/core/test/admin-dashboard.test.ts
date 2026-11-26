@@ -56,13 +56,18 @@ test('admin API exposes subscription snapshots, audit queries and index page con
   const detail = await fetch(`${root}/api/audit/sessions/session-1`).then((r: Response): Promise<RequestsPayload> => r.json());
   assert.equal(detail.requests[0].cache_hit_tokens, 20);
   const html = await fetch(root).then((r) => r.text());
-  // 后台 v2：'/' 发 static/index.html（共享 app.css 的多页 Admin）
-  assert.match(html, /5 小时/);
-  assert.match(html, /每周/);
-  assert.match(html, /订阅实际消耗/);
+  // 后台 v3：'/' 发 static/index.html——SPA 壳页（视图组件按 pushState 路由切换，壳上只认挂载点与 import map）
+  assert.match(html, /id="app"/);
+  assert.match(html, /assets\/pages\/app\.js/);
   assert.match(html, /assets\/app\.css/);
   assert.equal((await fetch(`${root}/api/audit/requests?limit=1`)).status, 200);
   assert.equal((await fetch(`${root}/assets/app.js`)).status, 200);
+  // SPA fallback：无扩展名且非 /api 的未知路径回落壳页；带扩展名资产与 /api 维持 404
+  const fallback = await fetch(`${root}/requests`).then((r) => r.text());
+  assert.match(fallback, /id="app"/);
+  assert.equal((await fetch(`${root}/observability`)).status, 200);
+  assert.equal((await fetch(`${root}/api/no-such-endpoint`)).status, 404);
+  assert.equal((await fetch(`${root}/assets/no-such.js`)).status, 404);
 });
 
 test('startGateway ignores configured public admin host and binds the admin listener to loopback', async (t: TestContext): Promise<void> => {
