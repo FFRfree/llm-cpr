@@ -189,6 +189,54 @@ export function createAdminServer({ policy, policyAdmin, tenants, snapshots, aud
       const found = capture.turnBody(Number(captureTurn[1]));
       return found ? json(res, 200, found) : json(res, 404, { error: { message: 'capture turn not found (or content missing in degraded state)', type: 'not_found_error' } });
     }
+    // 轨迹聚合（trajectory 页，.scratch/trajectory-gitgraph/tree-aggregation-api.md）：
+    // tree = 后端建树（parent 指针/×N 归并/thread_key/新增段元数据/摘要），refs 哈希不出网；
+    // tree-diffs = 新增段正文 keyset 翻页。两接口只读，旧 /turns/<id> 保留作单轮兜底。
+    if (url.pathname === '/api/capture/tree') {
+      if (!capture) return json(res, 404, { error: { message: 'capture is not enabled for any tenant', type: 'not_found_error' } });
+      const identity = url.searchParams.get('identity');
+      if (!identity) return json(res, 400, { error: { message: 'identity query parameter is required (pick a session from /api/audit/sessions)', type: 'invalid_request_error' } });
+      const tenant = url.searchParams.get('tenant') ?? undefined;
+      const limitParam = Number(url.searchParams.get('limit') ?? 500);
+      const tree = capture.buildTree(tenant, identity, Number.isFinite(limitParam) ? limitParam : undefined);
+      const caps = tree.nodes.flatMap((n) => n.turns.map((t) => t.capture_id));
+      const statuses = audit.statusByCaptureIds(caps);
+      for (const node of tree.nodes) for (const t of node.turns) {
+        const s = statuses.get(t.capture_id);
+        t.status = s?.status ?? null; t.ms = s?.ms ?? null; t.ttft_ms = s?.ttft_ms ?? null;
+      }
+      let summary: Record<string, unknown> | null = null;
+      try { // 效率摘要复用 cache-efficiency 口径（core 已有实现，前端不再自己算）
+        const usage = audit.usageByCaptureIds(caps);
+        const windowTurns = capture.turnRefsWindow(tenant, identity, Number.isFinite(limitParam) ? limitParam : undefined);
+        const eff = capture.cacheEfficiency(windowTurns, usage, DEFAULT_RATES);
+        summary = {
+          turns: windowTurns.length,
+          threads: Object.keys(tree.thread_labels).length,
+          efficiency: eff.totals?.efficiency ?? null,
+          waste_share: eff.totals?.waste_share ?? null,
+          read_multiplier: eff.totals?.read_multiplier ?? null,
+          corpus_tokens_est: eff.totals?.corpus_tokens_est ?? null,
+          turns_skipped_no_usage: eff.totals?.turns_skipped_no_usage ?? null,
+        };
+      } catch { /* 效率条失败不挡轨迹（summary=null，前端退回基础行） */ }
+      return json(res, 200, { ...tree, summary });
+    }
+    if (url.pathname === '/api/capture/tree-diffs') {
+      if (!capture) return json(res, 404, { error: { message: 'capture is not enabled for any tenant', type: 'not_found_error' } });
+      const identity = url.searchParams.get('identity');
+      if (!identity) return json(res, 400, { error: { message: 'identity query parameter is required (pick a session from /api/audit/sessions)', type: 'invalid_request_error' } });
+      const num = (key: string) => { const v = Number(url.searchParams.get(key) ?? NaN); return Number.isFinite(v) ? v : undefined; };
+      const limitTurns = num('limit_turns');
+      if (limitTurns !== undefined && (limitTurns < 1 || limitTurns > 200)) {
+        return json(res, 400, { error: { message: 'invalid limit_turns (expected 1..200)', type: 'invalid_request_error' } });
+      }
+      return json(res, 200, capture.treeDiffs(url.searchParams.get('tenant') ?? undefined, identity, {
+        afterTs: num('after_ts'), afterId: num('after_id'),
+        sinceTs: num('since_ts'), sinceId: num('since_id'), uptoTs: num('upto_ts'),
+        limitTurns,
+      }));
+    }
     if (url.pathname === '/api/capture/status') {
       return json(res, 200, capture ? capture.status() : { enabled: false, turns: 0, contents: 0, bytes: 0, dropped: 0, degraded: false });
     }

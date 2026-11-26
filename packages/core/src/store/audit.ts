@@ -169,6 +169,27 @@ export class UsageAudit {
     if (since !== undefined) { parts.push('ts>=?'); args.push(since); }
     return { sql: parts.length ? ` WHERE ${parts.join(' AND ')}` : '', args };
   }
+  // 轨迹聚合（tree 接口）：按 capture_id 精确取状态/耗时（口径同 usageByCaptureIds 的锚点直查，
+  // 不与「最新 N 行」窗口错位）。查无行 = 账本缺行，status/ms 以 null 呈现。
+  statusByCaptureIds(captureIds: string[]): Map<string, { status: number | null; ms: number | null; ttft_ms: number | null }> {
+    const out = new Map<string, { status: number | null; ms: number | null; ttft_ms: number | null }>();
+    const ids = [...new Set(captureIds)].slice(0, 500);
+    if (ids.length === 0) return out;
+    return this.#read(out, (db) => {
+      const placeholders = ids.map(() => '?').join(',');
+      const rows = db.prepare(`SELECT capture_id, status, ms, ttft_ms FROM requests WHERE capture_id IN (${placeholders})`).all(...ids) as Array<Record<string, unknown>>;
+      for (const row of rows) {
+        if (typeof row.capture_id !== 'string') continue;
+        out.set(row.capture_id, {
+          status: typeof row.status === 'number' ? row.status : null,
+          ms: typeof row.ms === 'number' ? row.ms : null,
+          ttft_ms: typeof row.ttft_ms === 'number' ? row.ttft_ms : null,
+        });
+      }
+      return out;
+    });
+  }
+
   listRequestsPaged({ page = 1, pageSize = 50, sort = 'ts', order = 'desc', tenant, identity, model, status, days, now = Date.now() }: {
     page?: number | string | null; pageSize?: number | string | null; sort?: string | null; order?: string | null;
     tenant?: string; identity?: string; model?: string; status?: number | string | null; days?: number | string | null; now?: number;

@@ -134,9 +134,17 @@ test('cache forensics: chain reports common prefix, first divergence position an
   assert.equal((await send([{ role: 'system', content: sysA }, { role: 'user', content: 'q1' }, { role: 'user', content: 'q2' }])).status, 200);
   assert.equal((await send([{ role: 'system', content: sysB }, { role: 'user', content: 'q1' }, { role: 'user', content: 'q2' }])).status, 200);
   await settle();
-  const forensics = await fetch(`${app.adminUrl}/api/capture/cache-forensics?tenant=main&identity=cache-1`).then((r) => r.json()) as { chain: Array<{ id: number; common_prefix: number; first_diff_index: number | null; first_diff_role: string | null; chars_delta: number | null; prev_message_count: number | null }>; rebinds: unknown[] };
+  const forensics = await fetch(`${app.adminUrl}/api/capture/cache-forensics?tenant=main&identity=cache-1`).then((r) => r.json()) as { chain: Array<{ id: number; common_prefix: number; first_diff_index: number | null; first_diff_role: string | null; chars_delta: number | null; prev_message_count: number | null; refs: string[] }>; rebinds: unknown[] };
   assert.equal(forensics.chain.length, 3);
-  const [, second, third] = forensics.chain;
+  const [first, second, third] = forensics.chain;
+  // 每条链条目带本轮完整盐化引用列表（轨迹页前端建前缀树用）：
+  // 轮次 1 两条消息、轮次 2 追加一条（前两条哈希与轮次 1 一致）、轮次 3 换 system（全变）。
+  assert.equal(first.refs.length, 2);
+  assert.equal(second.refs.length, 3);
+  assert.deepEqual(second.refs.slice(0, 2), first.refs);
+  assert.notEqual(second.refs[2], first.refs[1]);
+  assert.equal(third.refs.length, 3);
+  assert.notEqual(third.refs[0], first.refs[0]);
   // 第二轮在前缀上追加：common=2，分歧位置 2，角色 user。
   assert.equal(second.common_prefix, 2);
   assert.equal(second.first_diff_index, 2);
