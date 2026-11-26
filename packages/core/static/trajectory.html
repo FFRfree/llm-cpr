@@ -600,9 +600,11 @@ function drawRail() {
   const bend = (x1, y1, x2, y2, col) => {
     const L = Math.min(x1, x2) - 3, T = y1 - 3;
     const w = Math.abs(x2 - x1) + 6, h = Math.max(y2 - y1, 1) + 6;
-    const lx1 = x1 - L, lx2 = x2 - L, dy = (h - 6) * 0.5;
+    const lx1 = x1 - L, lx2 = x2 - L;
+    const dx = lx2 - lx1, dy = h - 6;
+    // peel-off 弧：从分叉点斜出（~35°），竖直汇入分支列（git graph 的分叉观感，比纯 S 圆润）
     return `<svg class="rsvg" style="left:${L}px;top:${T}px" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
-      `<path d="M${lx1} 3 C${lx1} ${3 + dy} ${lx2} ${h - 3 - dy} ${lx2} ${h - 3}" stroke="${col}" stroke-width="1.5" fill="none" opacity="0.9"/></svg>`;
+      `<path d="M${lx1} 3 C${lx1 + dx * 0.35} ${3 + dy * 0.25} ${lx2} ${3 + dy * 0.55} ${lx2} ${h - 3}" stroke="${col}" stroke-width="1.5" fill="none" opacity="0.9"/></svg>`;
   };
   let s = '';
   /* git graph 语言：分支 = 分叉点处 ≤2 行高的短弯换道 + 笔直竖线贯穿到本分支末节点；列回收后线短图紧凑 */
@@ -618,7 +620,7 @@ function drawRail() {
     const yp = yOf.get(bi.parent);
     if (yp == null) continue;
     const x1 = laneX(state.graph.laneOf.get(bi.parent) ?? bi.lane);
-    const yEnd = Math.min(yp + 64, yl); // 短弯最多 ~1.5 行高，弯完即直线
+    const yEnd = Math.min(yp + 112, yh); // 弯线必须落在本分支首节点行（首点在线上）；缺口大时弯 112px 后直线贯穿
     if (yEnd > yp + 1 && Math.abs(x1 - x) > 1) s += bend(x1, yp, x, yEnd, bi.color);
     else if (yl > yp) s += seg(x, Math.max(yp, yh), yl, bi.color);
     if (yEnd < yl - 6) s += seg(x, yEnd, yl, bi.color);
