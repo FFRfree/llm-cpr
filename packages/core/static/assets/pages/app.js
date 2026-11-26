@@ -9,16 +9,18 @@ import { View as Overview } from './overview.js';
 import { View as Requests } from './requests.js';
 import { View as Sessions } from './sessions.js';
 import { View as Observability } from './observability.js';
+import { View as Trajectory } from './trajectory.js';
 
 const ROUTES = [
   ['/', '概览', Overview],
   ['/requests', '请求', Requests],
   ['/sessions', '会话', Sessions],
+  ['/trajectory', '轨迹', Trajectory],
   ['/observability', '观测', Observability],
 ];
 const TITLES = Object.fromEntries(ROUTES.map(([p, l]) => [p, `${l} · LLM CPR 后台`]));
 /* 旧的 .html 地址进壳时改写到新路由（保查询串；服务端 /requests 等无扩展名路径已回落壳页） */
-const LEGACY = { '/index.html': '/', '/requests.html': '/requests', '/sessions.html': '/sessions', '/observability.html': '/observability' };
+const LEGACY = { '/index.html': '/', '/requests.html': '/requests', '/sessions.html': '/sessions', '/trajectory.html': '/trajectory', '/observability.html': '/observability' };
 
 function currentPath() {
   const legacy = LEGACY[location.pathname];
@@ -35,7 +37,6 @@ function Chrome({ path, snap, version, routeStatus, onNavigate, onTenant, onRefr
     <nav>${ROUTES.map(([href, label]) => html`
       <a key=${href} href=${href} aria-current=${path === href ? 'page' : undefined}
          onClick=${(e) => { e.preventDefault(); onNavigate(href); }}>${label}</a>`)}
-      <a href="/trajectory.html" title="独立整页（重写另议）">轨迹</a>
     </nav>
     <span id="status" class=${snap.cls}><span class="dot"></span><span id="status-text">${snap.text}</span></span>
     <span id="ver" class="muted" style="font-size:12px">${version}</span>
@@ -84,6 +85,26 @@ function App() {
     const onPop = () => setPath(currentPath());
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  /* 全局链接接管：指向本 SPA 路由（含老 .html 地址）的 <a> 改走 pushState，跨页互跳不再整页刷新。
+     普通拦截规则：同源 + 目标在路由表/legacy 表 + 无修饰键 + 无 target。 */
+  useEffect(() => {
+    const onClick = (e) => {
+      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+      const a = e.target.closest && e.target.closest('a');
+      if (!a || a.target) return;
+      let u;
+      try { u = new URL(a.href, location.origin); } catch { return; }
+      if (u.origin !== location.origin) return;
+      const to = LEGACY[u.pathname] ?? (ROUTES.some(([p]) => p === u.pathname) ? u.pathname : null);
+      if (to == null) return;
+      e.preventDefault();
+      history.pushState(null, '', to + u.search + u.hash);
+      setPath(to);
+    };
+    document.addEventListener('click', onClick);
+    return () => document.removeEventListener('click', onClick);
   }, []);
 
   /* 每次路由变化同步页面标题 */

@@ -42,7 +42,7 @@ function RequestRow({ r, subs, expanded, onToggle }) {
       <td class="num" data-l="cache hit">${r.cache_hit_tokens ?? '—'}${missBad && html`<span class="lost">⚠</span>`}</td>
       <td class="num" data-l="TTFT">${num(r.ttft_ms) ? (r.ttft_ms / 1000).toFixed(2) + 's' : '—'}</td>
       <td class="num" data-l="耗时">${num(r.ms) ? r.ms + 'ms' : '—'}</td>
-      <td data-l="轨迹">${r.capture_id ? html`<a href="/trajectory.html?identity=${encodeURIComponent(r.identity || '')}&tenant=${encodeURIComponent(r.tenant)}&capture_id=${encodeURIComponent(r.capture_id)}">看轨迹</a>` : html`<span class="muted">未捕获</span>`}</td>
+      <td data-l="轨迹">${r.capture_id ? html`<a href="/trajectory?identity=${encodeURIComponent(r.identity || '')}&tenant=${encodeURIComponent(r.tenant)}&capture_id=${encodeURIComponent(r.capture_id)}">看轨迹</a>` : html`<span class="muted">未捕获</span>`}</td>
     </tr>
     ${isExpanded && html`<tr class="detail-row"><td colspan="11"><${RequestDetail} id=${String(r.id)} identity=${r.identity || ''} /></td></tr>`}
   <//>`;

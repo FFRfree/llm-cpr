@@ -114,7 +114,7 @@ export function View({ reloadKey }) {
             <td class="num" data-l="cache miss">${miss == null ? html`<span class="muted">—</span>` : html`<span class=${miss >= 0.5 ? 'lost' : miss >= 0.2 ? 'warnmiss' : ''}>${(100 * miss).toFixed(1)}%</span>`}</td>
             <td class="num" data-l="丢失">${(s.loss_events || []).length ? html`<span class="lost">⚠ ${s.loss_events.length}</span>` : html`<span class="muted">0</span>`}</td>
             <td class="num" data-l="最后活跃">${rel(s.last_ts)}</td>
-            <td data-l="轨迹"><a href="/trajectory.html?identity=${encodeURIComponent(s.identity)}&tenant=${encodeURIComponent(tenant)}">看轨迹</a></td>
+            <td data-l="轨迹"><a href="/trajectory?identity=${encodeURIComponent(s.identity)}&tenant=${encodeURIComponent(tenant)}">看轨迹</a></td>
           </tr>
           ${isExpanded && html`<tr class="detail-row"><td colspan="6"><${SessionDetail} identity=${s.identity} tenant=${tenant} /></td></tr>`}
         <//>`;
