@@ -523,14 +523,15 @@ async function getBody(turnId) { // 单轮兜底：旧接口给全量，这里�
   state.bodies.set(turnId, out);
   return out;
 }
-/* 后台渐进拉正文：turn-diffs 游标翻页（每页落地对受影响行原位换气泡）；页失败回退旧单轮接口 */
+/* 后台渐进拉正文：turn-diffs 游标翻页（每页落地对受影响行原位换气泡）；页失败回退旧单轮接口。
+   失败一次性闸门：翻页整体挂掉时兜底只做一轮（5 并发），之后 renderMain 不再从游标 0 重翻全量 */
 let diffRun = 0;
 async function fetchAllDiffs() {
   const tree = state.tree;
   if (!tree || !state.graph) return;
   const run = ++diffRun;
   const total = tree.nodes.reduce((s, n) => s + n.turns.length, 0);
-  if (state.bodies.size >= total) return; // 已全填（分支显隐重渲不重拉）
+  if (state.bodies.size >= total || state.diffFailed) return; // 已全填 / 翻页已失败且兜底过
   const progress = (done) => { const el = $('#traj-fill'); if (el) el.textContent = done >= total ? '' : `气泡填充 ${done}/${total}…`; };
   progress(state.bodies.size);
   const q = (k, v) => `${k}=${encodeURIComponent(String(v))}`;
@@ -541,7 +542,7 @@ async function fetchAllDiffs() {
     try {
       page = await fetchJson(`/api/capture/tree-diffs?${q('identity', state.identity)}&${q('tenant', state.tenant)}` +
         `&after_ts=${afterTs}&after_id=${afterId}&since_ts=${w.since_ts}&since_id=${w.since_id}&upto_ts=${w.upto_ts}&limit_turns=60`);
-    } catch { break; } // 翻页失败：交给下面的单轮兜底
+    } catch { state.diffFailed = true; break; } // 翻页失败：交给下面的单轮兜底（一次性）
     if (run !== diffRun) return;
     const touched = new Set();
     for (const it of page.items) {
@@ -556,13 +557,18 @@ async function fetchAllDiffs() {
   }
   if (run !== diffRun) return;
   progress(state.bodies.size);
-  // 兜底：diff 流没盖住的轮（接口异常/窗口错位）走旧单轮接口，行不空白
-  for (const n of state.forest.nodes) {
-    for (const t of n.turns) {
-      if (state.bodies.has(t.id)) continue;
-      getBody(t.id).then(() => { if (run === diffRun) renderBubbles(n); }).catch(() => {});
+  // 兜底：diff 流没盖住的轮（接口异常/窗口错位）走旧单轮接口，5 并发，行不空白
+  const missing = [];
+  for (const n of state.forest.nodes) for (const t of n.turns) if (!state.bodies.has(t.id)) missing.push({ n, id: t.id });
+  let i = 0;
+  const worker = async () => {
+    while (i < missing.length) {
+      const m = missing[i++];
+      try { await getBody(m.id); if (run === diffRun) renderBubbles(m.n); } catch { /* 单轮 404/失败：该行保持占位 */ }
     }
-  }
+  };
+  await Promise.all([worker(), worker(), worker(), worker(), worker()]);
+  progress(state.bodies.size);
 }
 
 /* ---- 左缘泳道：块位置量出来后画轨道线/分叉曲线/圆点（绝对定位小元素拼装） ---- */
@@ -644,7 +650,7 @@ async function loadTurns(identity, tenant) {
   state.turnId = null;
   state.tree = null; state.forest = null; state.branches = []; state.sel = {};
   state.previewByNode = new Map();
-  state.attempt = new Map(); state.bodies = new Map();
+  state.attempt = new Map(); state.bodies = new Map(); state.diffFailed = false;
   state.expanded = new Set(); subtreeCache.clear(); diffRun++;
   // 聚合下沉：一次 tree 拿树 + 摘要（旧版这里要 turns + cache-forensics + cache-efficiency + 分页 audit 四路）
   const tree = await fetchJson(`/api/capture/tree?identity=${encodeURIComponent(identity)}&tenant=${encodeURIComponent(tenant)}&limit=500`);

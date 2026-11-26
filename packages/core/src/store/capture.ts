@@ -603,7 +603,11 @@ export class CaptureStore {
     const items = candidates.slice(0, kept).map((c) => ({
       turn_id: c.turnId,
       start: c.start,
-      messages: c.hashes.map((h) => { const b = bodies.get(h); return b == null ? null : JSON.parse(b) as unknown; }), // null = 正文被 TTL 清理（半截降级）
+      messages: c.hashes.map((h) => { // null = 正文被 TTL 清理或单条损坏——半截降级，不 500 整页
+        const b = bodies.get(h);
+        if (b == null) return null;
+        try { return JSON.parse(b) as unknown; } catch { return null; }
+      }),
     }));
     const last = candidates[kept - 1];
     return { items, next_after: last ? { ts: last.ts, id: last.turnId } : null, done: kept >= remaining.length };
