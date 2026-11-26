@@ -90,9 +90,8 @@ export function View({ reloadKey }) {
       <span class="hint muted">点行展开请求明细 + 缓存取证；「轨迹」进逐轮正文浏览</span>
     </div>
     ${err && html`<div id="err">${err}</div>`}
-    <table>
+    <table id="sessions-table">
       <thead><tr>
-        <${SortTh} k="identity" label="会话" sort=${q.sort} onSort=${onSort} />
         <${SortTh} k="requests" label="请求" sort=${q.sort} onSort=${onSort} num />
         <${SortTh} k="full_miss_rate" label="cache miss" sort=${q.sort} onSort=${onSort} num />
         <${SortTh} k="full_misses" label="丢失" sort=${q.sort} onSort=${onSort} num />

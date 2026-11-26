@@ -29,8 +29,9 @@ function serveStatic(url: URL, res: http.ServerResponse): boolean {
   const type = STATIC_TYPES[ext];
   if (!type) {
     // SPA fallback：无扩展名且非 /api 的未知路径回落到壳页 index.html（后台 pushState 路由）。
-    // 带扩展名的未知资产维持 404；/api/* 维持 JSON 404（serveStatic 先于 API 路由跑，必须排除）。
-    if (ext === '' && !pathname.startsWith('/api/')) {
+    // 仅 GET/HEAD 出壳（写方法语义上应落 API 404）；裸 /api（无尾斜杠）同样排除。
+    // 带扩展名的未知资产维持 404；/api* 维持 JSON 404（serveStatic 先于 API 路由跑，必须排除）。
+    if (ext === '' && !pathname.startsWith('/api') && (res.req?.method === 'GET' || res.req?.method === 'HEAD')) {
       try {
         const bytes = fs.readFileSync(path.join(STATIC_ROOT, 'index.html'));
         res.writeHead(200, { 'content-type': STATIC_TYPES['.html'], 'content-length': bytes.length, 'cache-control': 'no-store' });

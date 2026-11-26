@@ -5,7 +5,7 @@ import { render, Fragment } from 'preact';
 import { html } from '../lib/html.js';
 
 /* 正文捕获状态：拉不到接口或未开启 → 显示关闭提示 */
-function CaptureStatus() {
+function CaptureStatus({ reloadKey }) {
   const [st, setSt] = useState({ loading: true });
   useEffect(() => {
     let alive = true;
@@ -13,7 +13,7 @@ function CaptureStatus() {
       .then((status) => alive && setSt({ loading: false, status }))
       .catch(() => alive && setSt({ loading: false, off: true }));
     return () => { alive = false; };
-  }, []);
+  }, [reloadKey]);
   if (st.loading) return null;
   const status = st.status;
   const on = status && status.enabled !== false && status.turns !== undefined;
@@ -23,7 +23,7 @@ function CaptureStatus() {
 }
 
 /* 工具 / skill 灌上下文分析 */
-function CaptureTools() {
+function CaptureTools({ reloadKey }) {
   const [days, setDays] = useState('7');
   const [st, setSt] = useState({});
   useEffect(() => {
@@ -32,7 +32,7 @@ function CaptureTools() {
       .then((t) => alive && setSt(t || {}))
       .catch((e) => alive && setSt({ error: e.message }));
     return () => { alive = false; };
-  }, [days]);
+  }, [days, reloadKey]);
   const rows = (st.tools || []).map((t) => html`
     <tr key=${t.tool}><td>${t.tool}</td><td class="num">${t.calls}</td><td class="num">${t.results}</td>
       <td class="num">${t.errors ? html`<span class="lost">${t.errors}</span>` : '0'}</td><td class="num">${t.result_chars}</td><td class="num">≈${t.result_tokens_est}</td></tr>`);
@@ -51,7 +51,7 @@ function CaptureTools() {
 }
 
 /* 泄漏取证命中 */
-function CapturePrivacy() {
+function CapturePrivacy({ reloadKey }) {
   const [hits, setHits] = useState(null);
   useEffect(() => {
     let alive = true;
@@ -59,7 +59,7 @@ function CapturePrivacy() {
       .then((p) => alive && setHits(p?.hits || []))
       .catch(() => alive && setHits([]));
     return () => { alive = false; };
-  }, []);
+  }, [reloadKey]);
   return html`<table>
     <thead><tr><th>时间</th><th>租户</th><th>规则</th><th>位置</th><th>首次出现</th></tr></thead>
     <tbody>${hits === null ? html`<tr><td colspan="5" class="empty">加载中…</td></tr>`
@@ -73,7 +73,7 @@ function CapturePrivacy() {
 }
 
 /* 系统事件流 */
-function Events() {
+function Events({ reloadKey }) {
   const [kind, setKind] = useState('');
   const [events, setEvents] = useState(null);
   const [err, setErr] = useState('');
@@ -83,7 +83,7 @@ function Events() {
       .then((d) => { if (alive) { setEvents(d.events || []); setErr(''); } })
       .catch((e) => { if (alive) setErr(String(e.message || e)); });
     return () => { alive = false; };
-  }, [kind]);
+  }, [kind, reloadKey]);
   return html`<${Fragment}>
     <div class="toolbar">
       <select value=${kind} onChange=${(e) => setKind(e.target.value)}>
@@ -108,16 +108,16 @@ function Events() {
   <//>`;
 }
 
-export function View() {
+export function View({ reloadKey }) {
   return html`<${Fragment}>
     <h2>正文捕获状态</h2>
-    <${CaptureStatus} />
+    <${CaptureStatus} reloadKey=${reloadKey} />
     <h2>工具 / skill 灌上下文分析</h2>
-    <${CaptureTools} />
+    <${CaptureTools} reloadKey=${reloadKey} />
     <h2>泄漏取证命中</h2>
-    <${CapturePrivacy} />
+    <${CapturePrivacy} reloadKey=${reloadKey} />
     <h2>系统事件流</h2>
-    <${Events} />
+    <${Events} reloadKey=${reloadKey} />
   <//>`;
 }
 

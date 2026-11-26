@@ -57,7 +57,7 @@ function UsageTable({ usage, st }) {
   const max = Math.max(1, ...usage.subscriptions.flatMap((s) => Object.values(s.by_day).map((d) => d.total_tokens)));
   return html`<table>
     <thead><tr><th>订阅</th><th>近 N 天</th><th class="num">请求</th><th class="num">错误</th><th class="num">tokens</th><th class="num">cache 命中 tokens</th><th>每日 tokens</th></tr></thead>
-    <tbody>${usage.subscriptions.map((s) => {
+    <tbody>${usage.subscriptions.length ? usage.subscriptions.map((s) => {
       const cells = usage.days.map((label) => {
         const d = s.by_day[label];
         const tokens = d ? d.total_tokens : 0;
@@ -73,7 +73,7 @@ function UsageTable({ usage, st }) {
         <td class="num">${fmtTok(s.total.cache_hit_tokens)}</td>
         <td><div class="daygrid">${cells}</div><div class="daycols">${usage.days.map((l) => html`<span key=${l}>${l.slice(5)}</span>`)}</div></td>
       </tr>`;
-    }) || html`<tr><td colspan="7" class="empty">窗口内没有请求</td></tr>`}</tbody>
+    }) : html`<tr><td colspan="7" class="empty">窗口内没有请求</td></tr>`}</tbody>
   </table>`;
 }
 
@@ -91,7 +91,7 @@ export function View({ routeStatus, reloadKey }) {
   useEffect(() => {
     (async () => {
       try {
-        const [sum] = await Promise.all([fetchJson(withTenant('/api/audit/summary')), loadUsage('7')]);
+        const [sum] = await Promise.all([fetchJson(withTenant('/api/audit/summary')), loadUsage(days)]);
         setSummary(sum?.summary);
       } catch (e) { setErr(`加载失败：${e.message}`); }
     })();

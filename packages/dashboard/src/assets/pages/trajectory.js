@@ -181,8 +181,13 @@ function visibleGraph(forest, branches, sel) {
 const railW = (g) => RAIL_PAD * 2 + Math.min(g.nLanes, MAX_LANES) * LANE_W;
 const laneX = (l) => RAIL_PAD + Math.min(l, MAX_LANES - 1) * LANE_W + LANE_W / 2;
 
-/* ---- 消息卡（bubble）：LLM 侧左绿 / harness 侧右蓝灰；折叠态局部状态 ---- */
+/* ---- 消息卡（bubble）：LLM 侧左绿 / harness 侧右蓝灰；折叠态局部状态 ----
+   外壳只判空（tree-diffs 半截降级会给 null 占位），hooks 全在内壳——hook 数恒定不受判空影响 */
 function MsgCard({ m, idx }) {
+  if (m == null) return html`<div class="mcard m-h r-tool"><div class="mh"><span class="mr">harness · 已清理</span><span class="mi">#${idx + 1}</span></div><div class="mtext">[正文已被 TTL 清理]</div></div>`;
+  return html`<${CardInner} m=${m} idx=${idx} />`;
+}
+function CardInner({ m, idx }) {
   const [fold, setFold] = useState(true);   // system/tool 回显默认折叠
   const [clamped, setClamped] = useState(true); // 长文钳 10 行
   const [tcsOpen, setTcsOpen] = useState(false); // 工具调用参数展开（逐 chip）
@@ -194,7 +199,6 @@ function MsgCard({ m, idx }) {
   const side = role === 'assistant' ? 'm-llm' : 'm-h';
   const who = role === 'assistant' ? 'LLM · assistant' : `harness · ${role}`;
   const respond = m.tool_call_id ? html`<span class="mi">回应 ${String(m.tool_call_id)}</span>` : '';
-  if (m == null) return html`<div class="mcard m-h r-tool"><div class="mh"><span class="mr">harness · 已清理</span><span class="mi">#${idx + 1}</span></div><div class="mtext">[正文已被 TTL 清理]</div></div>`;
   const tc = toolCalls.length ? html`<div class="tcalls">${toolCalls.map((tcall, i) => {
     let pretty = tcall.function?.arguments ?? '';
     try { pretty = JSON.stringify(JSON.parse(pretty), null, 2); } catch {}
@@ -232,7 +236,7 @@ function RowBody({ st, n, bump, open }) {
   }, [want, open, !!data]);
   if (!data) {
     if (st.errors?.has(want)) return html`<div class="tload">正文加载失败：${st.errors.get(want)}</div>`;
-    return html`<div class="tload">${open ? '加载中…' : `[${roleOf(n)}] 第 ${n.parentLen + 1} 条起 +${n.addedCount}`}</div>`;
+    return html`<div class="tload">${n.parent ? `[${roleOf(n)}] 第 ${n.parentLen + 1} 条起 +${n.addedCount}` : '[S] 线程起点'}</div>`;
   }
   const added = data.messages;
   if (!added.length) return html`<div class="tload">（本轮无新增消息——同前缀的另一次尝试）</div>`;
@@ -452,6 +456,9 @@ export function View({ reloadKey }) {
     const params = new URLSearchParams(location.search);
     const identity = params.get('identity');
     if (!identity) return;
+    const deepKey = `${identity}|${reloadKey}|${sessions.length}`;
+    if (st.deepKey === deepKey) return; // 同一（identity, 租户代, 清单代）只装载一次——deps 双触发去重
+    st.deepKey = deepKey;
     (async () => {
       const s = sessions.find((x) => x.identity === identity) ||
         (await fetchJson(withTenant('/api/audit/sessions?page=1&page_size=200&sort=last_ts&order=desc')).catch(() => null))?.sessions?.find((x) => x.identity === identity);
@@ -473,7 +480,7 @@ export function View({ reloadKey }) {
         }
       } catch (e) { setErr(`轮次加载失败：${e.message}`); }
     })();
-  }, [sessions.length > 0 && reloadKey === 0]); // 首次装载后跑一次；sessions 就绪即试
+  }, [sessions.length > 0, reloadKey]); // 首次装载后跑一次；sessions 就绪即试；切租户（reloadKey）后按新租户重解深链
 
   const g = st.graph;
   let prevTs = null;
@@ -530,7 +537,7 @@ export function View({ reloadKey }) {
             ${st.forest && g && html`<${Fragment}>
               ${st.outOfWindow > 0 && html`<div class="traj-note2">${st.outOfWindow} 轮在 500 轮取证窗口外（编号按窗口内）。</div>`}
               ${!g.order.length && html`<div class="empty" style="padding:20px;text-align:center">没有可展示的轮次——至少勾一条分支。</div>`}
-              ${g.order.map((n) => { const row = html`<${Row} st=${st} n=${n} prevTs=${prevTs} bump=${bump} />`; prevTs = n.turns[n.turns.length - 1].ts; return row; })}
+              ${g.order.map((n) => { const row = html`<${Row} key=${n.id} st=${st} n=${n} prevTs=${prevTs} bump=${bump} />`; prevTs = n.turns[n.turns.length - 1].ts; return row; })}
             <//>`}
           </div>
         </div>
@@ -552,7 +559,7 @@ function FamLine({ st, family, progress }) {
   const pct = (v) => v == null ? '—' : `${(v * 100).toFixed(1)}%`;
   const k = (v) => v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 });
   if (!st.forest) return html`挑一个会话`;
-  return html`<b>${family && family.threads > 1 ? 'deleg 家族' : '单线程'}</b> · ${family ? family.threads : '?'} 线程 · ${family ? family.turns : st.forest.nodes.length} 轮
+  return html`<b>${family && family.threads > 1 ? 'deleg 家族' : '单线程'}</b> · ${family ? family.threads : '?'} 线程 · ${family ? family.turns : (st.turns ? st.turns.length : 0)} 轮
   ${family && html` · 效率 <b>${pct(family.efficiency)}</b> · 浪费 ${pct(family.waste_share)} · 重读 ×${k(family.read_multiplier)} · ~${k(family.corpus_tokens_est)} tok`}
   ${family?.turns_skipped_no_usage ? html` · ${family.turns_skipped_no_usage} 轮无 usage` : ''}
   ${progress && html`<span class="muted" style="margin-left:10px">${progress}</span>`}`;

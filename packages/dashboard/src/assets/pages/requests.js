@@ -107,9 +107,8 @@ export function View({ routeStatus, reloadKey }) {
       <span class="hint muted">点行展开明细；桌面端可点表头排序</span>
     </div>
     ${err && html`<div id="err">${err}</div>`}
-    <table>
+    <table id="requests-table">
       <thead><tr>
-        <${SortTh} k="ts" label="时间" sort=${q.sort} onSort=${onSort} />
         <${SortTh} k="model" label="模型" sort=${q.sort} onSort=${onSort} />
         <${SortTh} k="subscription" label="订阅" sort=${q.sort} onSort=${onSort} />
         <${SortTh} k="status" label="状态" sort=${q.sort} onSort=${onSort} num />
